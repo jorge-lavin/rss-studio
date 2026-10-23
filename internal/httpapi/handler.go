@@ -122,67 +122,94 @@ func requestLogger(next http.Handler) http.Handler {
 }
 
 var homeTemplate = template.Must(template.New("home").Parse(`<!doctype html>
-<html lang="en">
+<html lang="en" class="h-full bg-slate-100">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>RSS Studio</title>
-  <style>
-    :root { color-scheme: dark; --ink:#f4f1e8; --muted:#a9a69d; --panel:#181a19; --line:#343734; --acid:#c8f135; --danger:#ff806f; }
-    * { box-sizing:border-box; }
-    body { margin:0; background:#0c0e0d; color:var(--ink); font:16px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace; }
-    main { width:min(1080px,calc(100% - 32px)); margin:0 auto; padding:64px 0 96px; }
-    header { border-bottom:1px solid var(--line); margin-bottom:40px; padding-bottom:24px; }
-    h1 { font-size:clamp(2.5rem,8vw,6rem); letter-spacing:-.08em; line-height:.85; margin:0; text-transform:uppercase; }
-    h1 span { color:var(--acid); }
-    header p { color:var(--muted); margin:24px 0 0; max-width:620px; }
-    .grid { display:grid; grid-template-columns:minmax(280px,.8fr) minmax(360px,1.2fr); gap:24px; align-items:start; }
-    section { background:var(--panel); border:1px solid var(--line); padding:24px; }
-    h2 { font-size:.8rem; letter-spacing:.16em; margin:0 0 24px; text-transform:uppercase; color:var(--acid); }
-    label { display:block; font-size:.78rem; color:var(--muted); margin:18px 0 6px; text-transform:uppercase; }
-    input { width:100%; border:1px solid var(--line); background:#0f1110; color:var(--ink); padding:12px; border-radius:0; font:inherit; }
-    input:focus { outline:2px solid var(--acid); outline-offset:1px; }
-    button { border:0; background:var(--acid); color:#10120d; cursor:pointer; font:700 .8rem ui-monospace,monospace; letter-spacing:.08em; padding:13px 18px; text-transform:uppercase; }
-    form > button { margin-top:24px; width:100%; }
-    .error { border:1px solid var(--danger); color:var(--danger); padding:10px; }
-    .empty { color:var(--muted); }
-    article { border-top:1px solid var(--line); padding:20px 0; }
-    article:first-of-type { border-top:0; padding-top:0; }
-    article h3 { font-size:1.15rem; margin:0 0 6px; }
-    .rule { color:var(--muted); font-size:.82rem; margin:0 0 14px; overflow-wrap:anywhere; }
-    .rule b { color:var(--ink); }
-    .feed-url { color:var(--acid); display:block; font-size:.82rem; overflow-wrap:anywhere; }
-    .delete { background:none; color:var(--danger); margin-top:14px; padding:0; }
-    @media (max-width:760px) { main { padding-top:36px; } .grid { grid-template-columns:1fr; } }
-  </style>
+  <script src="https://cdn.tailwindcss.com"></script>
 </head>
-<body>
-<main>
-  <header><h1>RSS<br><span>Studio</span></h1><p>Cut noise from podcast feeds. Match episode titles, publish clean RSS, subscribe from any RSS-compatible reader.</p></header>
-  <div class="grid">
-    <section>
-      <h2>New output</h2>
-      {{if .Error}}<p class="error">{{.Error}}</p>{{end}}
-      <form method="post" action="/feeds">
-        <label for="name">Feed name</label><input id="name" name="name" maxlength="120" placeholder="My Foo Episodes" required>
-        <label for="source_url">Source RSS URL</label><input id="source_url" name="source_url" type="url" maxlength="2048" placeholder="https://example.com/feed.xml" required>
-        <label for="keyword">Title contains</label><input id="keyword" name="keyword" maxlength="200" placeholder="foo" required>
-        <button type="submit">Create feed</button>
+<body class="min-h-full bg-slate-100 text-slate-950 antialiased">
+<div class="min-h-screen">
+  <header class="bg-slate-950 text-white">
+    <div class="mx-auto max-w-6xl px-5 sm:px-8">
+      <nav class="flex items-center justify-between border-b border-white/10 py-5">
+        <a href="/" class="flex items-center gap-2 text-base font-semibold tracking-tight">
+          <span class="flex h-8 w-8 items-center justify-center rounded-lg bg-violet-600 text-sm font-black text-white">R</span>
+          RSS Studio
+        </a>
+        <span class="hidden text-sm text-slate-400 sm:block">Podcast feed filter</span>
+      </nav>
+    </div>
+  </header>
+
+  <main class="mx-auto max-w-6xl px-5 pb-16 sm:px-8">
+    <section class="mt-10 rounded-2xl bg-white p-6 shadow-xl shadow-slate-900/5 ring-1 ring-slate-200 sm:p-8">
+      <div class="mb-7 flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
+        <div>
+          <h2 class="text-xl font-semibold tracking-tight">Create a filtered feed</h2>
+          <p class="mt-1 text-sm text-slate-500">One keyword. Less noise.</p>
+        </div>
+        <span class="text-xs font-medium uppercase tracking-wider text-slate-400">New feed</span>
+      </div>
+      {{if .Error}}<div class="mb-6 flex items-start gap-3 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700" role="alert"><span class="mt-0.5 font-bold">!</span><p>{{.Error}}</p></div>{{end}}
+      <form method="post" action="/feeds" class="grid gap-5 lg:grid-cols-[1fr_1.4fr_0.8fr_auto] lg:items-end">
+        <div>
+          <label for="name" class="mb-2 block text-sm font-medium text-slate-700">Feed name</label>
+          <input id="name" name="name" maxlength="120" placeholder="My tech episodes" required class="block w-full rounded-lg border border-slate-300 bg-white px-3.5 py-3 text-sm text-slate-900 shadow-sm outline-none transition placeholder:text-slate-400 focus:border-violet-600 focus:ring-4 focus:ring-violet-600/10">
+        </div>
+        <div>
+          <label for="source_url" class="mb-2 block text-sm font-medium text-slate-700">Source RSS URL</label>
+          <input id="source_url" name="source_url" type="url" maxlength="2048" placeholder="https://example.com/feed.xml" required class="block w-full rounded-lg border border-slate-300 bg-white px-3.5 py-3 text-sm text-slate-900 shadow-sm outline-none transition placeholder:text-slate-400 focus:border-violet-600 focus:ring-4 focus:ring-violet-600/10">
+        </div>
+        <div>
+          <label for="keyword" class="mb-2 block text-sm font-medium text-slate-700">Match title</label>
+          <input id="keyword" name="keyword" maxlength="200" placeholder="e.g. AI" required class="block w-full rounded-lg border border-slate-300 bg-white px-3.5 py-3 text-sm text-slate-900 shadow-sm outline-none transition placeholder:text-slate-400 focus:border-violet-600 focus:ring-4 focus:ring-violet-600/10">
+        </div>
+        <button type="submit" class="inline-flex min-h-[46px] items-center justify-center gap-2 rounded-lg bg-violet-600 px-5 py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-violet-700 focus:outline-none focus:ring-4 focus:ring-violet-600/20 lg:mb-0">Publish feed <span aria-hidden="true">→</span></button>
       </form>
     </section>
-    <section>
-      <h2>Published feeds / {{len .Feeds}}</h2>
-      {{if not .Feeds}}<p class="empty">No outputs yet.</p>{{end}}
-      {{range .Feeds}}
-      <article>
-        <h3>{{.Name}}</h3>
-        <p class="rule">title contains <b>“{{.Keyword}}”</b><br>source: {{.SourceURL}}</p>
-        <a class="feed-url" href="/feeds/{{.Slug}}.xml">{{$.BaseURL}}/feeds/{{.Slug}}.xml</a>
-        <form method="post" action="/feeds/{{.Slug}}/delete"><button class="delete" type="submit">Delete</button></form>
-      </article>
+
+    <section class="mt-12">
+      <div class="mb-5 flex items-center justify-between gap-4">
+        <div>
+          <h2 class="text-xl font-semibold tracking-tight">Published feeds</h2>
+          <p class="mt-1 text-sm text-slate-500">Ready to add to any RSS reader.</p>
+        </div>
+        <span class="rounded-full bg-slate-200 px-3 py-1 text-sm font-medium text-slate-600">{{len .Feeds}}</span>
+      </div>
+      {{if not .Feeds}}
+      <div class="rounded-2xl border border-dashed border-slate-300 bg-white px-6 py-14 text-center">
+        <div class="mx-auto flex h-11 w-11 items-center justify-center rounded-full bg-violet-50 text-xl text-violet-600">＋</div>
+        <h3 class="mt-4 text-sm font-semibold text-slate-900">No filtered feeds yet</h3>
+        <p class="mt-1 text-sm text-slate-500">Create your first one above.</p>
+      </div>
+      {{else}}
+      <div class="space-y-3">
+        {{range .Feeds}}
+        <article class="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
+          <div class="flex flex-col gap-5 lg:flex-row lg:items-center lg:justify-between">
+            <div class="min-w-0">
+              <div class="flex flex-wrap items-center gap-3">
+                <h3 class="text-base font-semibold text-slate-900">{{.Name}}</h3>
+                <span class="rounded-full bg-violet-50 px-2.5 py-1 text-xs font-medium text-violet-700">Contains “{{.Keyword}}”</span>
+              </div>
+              <p class="mt-2 truncate text-sm text-slate-500" title="{{.SourceURL}}">Source: {{.SourceURL}}</p>
+              <a href="/feeds/{{.Slug}}.xml" class="mt-3 block truncate text-sm font-medium text-violet-600 hover:text-violet-700 hover:underline" title="{{$.BaseURL}}/feeds/{{.Slug}}.xml">{{$.BaseURL}}/feeds/{{.Slug}}.xml</a>
+            </div>
+            <div class="flex shrink-0 items-center gap-4 border-t border-slate-100 pt-4 lg:border-0 lg:pt-0">
+              <a href="/feeds/{{.Slug}}.xml" class="text-sm font-semibold text-slate-700 hover:text-slate-950">Open feed <span aria-hidden="true">↗</span></a>
+              <form method="post" action="/feeds/{{.Slug}}/delete"><button class="text-sm font-medium text-rose-600 hover:text-rose-700" type="submit">Delete</button></form>
+            </div>
+          </div>
+        </article>
+        {{end}}
+      </div>
       {{end}}
     </section>
-  </div>
-</main>
+  </main>
+
+  <footer class="mx-auto max-w-6xl px-5 pb-8 text-xs text-slate-400 sm:px-8">RSS Studio · Filter the feed, not your attention.</footer>
+</div>
 </body>
 </html>`))
