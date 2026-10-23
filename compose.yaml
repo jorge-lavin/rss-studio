@@ -1,0 +1,18 @@
+services:
+  rss-studio:
+    container_name: rss-studio
+    build: .
+    dns:
+      - 1.1.1.1
+      - 8.8.8.8
+    volumes:
+      - rss-studio-data:/data
+    restart: unless-stopped
+
+volumes:
+  rss-studio-data:
+
+networks:
+  default:
+    external: true
+    name: rss-studio-network
