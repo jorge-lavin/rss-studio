@@ -122,8 +122,8 @@ func (a *app) cacheIsFresh(ctx context.Context, feed feedDefinition) (bool, erro
 	lastModifiedHeader := response.Header.Get("Last-Modified")
 	lastModified, err := http.ParseTime(lastModifiedHeader)
 	if err != nil {
-		log.Printf("source %s returned no valid Last-Modified; refreshing feed", feed.Slug)
-		return false, nil
+		log.Printf("source %s returned no valid Last-Modified; keeping cached feed", feed.Slug)
+		return true, nil
 	}
 	if metadata.LastModified.IsZero() {
 		log.Printf("cache %s has no Last-Modified value", feed.Slug)
