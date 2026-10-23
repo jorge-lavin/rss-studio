@@ -11,6 +11,9 @@ env:
 jobs:
   test:
     runs-on: ubuntu-latest
+    env:
+      GOMODCACHE: ${{ github.workspace }}/.go/pkg/mod
+      GOCACHE: ${{ github.workspace }}/.go/build-cache
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
