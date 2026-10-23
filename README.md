@@ -1,6 +1,6 @@
 # RSS Studio
 
-Self-hosted podcast feed filtering for AntennaPod. RSS Studio keeps episodes whose titles contain a keyword and publishes a stable RSS URL while preserving original GUIDs, enclosures, and podcast metadata.
+Self-hosted podcast feed filtering. RSS Studio keeps episodes whose titles contain a keyword and publishes a stable RSS URL while preserving original GUIDs, enclosures, and podcast metadata.
 
 ## Deploy
 

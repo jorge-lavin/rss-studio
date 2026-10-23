@@ -210,7 +210,7 @@ var homeTemplate = template.Must(template.New("home").Parse(`<!doctype html>
 </head>
 <body>
 <main>
-  <header><h1>RSS<br><span>Studio</span></h1><p>Cut noise from podcast feeds. Match episode titles, publish clean RSS, subscribe from AntennaPod.</p></header>
+  <header><h1>RSS<br><span>Studio</span></h1><p>Cut noise from podcast feeds. Match episode titles, publish clean RSS, subscribe from any RSS-compatible reader.</p></header>
   <div class="grid">
     <section>
       <h2>New output</h2>

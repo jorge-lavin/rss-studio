@@ -3,7 +3,7 @@
 ## Scope
 
 RSS Studio is a small Go service that filters podcast feeds by episode title
-and publishes cached RSS output for AntennaPod.
+and publishes cached RSS output for any RSS-compatible reader.
 
 Keep changes small. Prefer the standard library and existing project patterns.
 
