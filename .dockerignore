@@ -1,4 +1,5 @@
 .git
 .env
+.docker
 data
 rss-studio

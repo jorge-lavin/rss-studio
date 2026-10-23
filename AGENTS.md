@@ -46,3 +46,7 @@ sources.
 - Keep runtime state in the Docker volume, not in the repository.
 
 Use Conventional Commits (`feat:`, `fix:`, `ci:`, `docs:`, `chore:`).
+
+## Forgejo
+
+Use `tea` to interact with Forgejo.
