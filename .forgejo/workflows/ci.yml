@@ -81,12 +81,9 @@ jobs:
 
           version=0.1.0
           api_url="${GITHUB_API_URL%/}"
-          payload=$(jq -n \
-            --arg tag "v$version" \
-            --arg target "$GITHUB_SHA" \
-            --arg name "v$version" \
-            --arg body "Initial release of RSS Studio." \
-            '{tag_name: $tag, target_commitish: $target, name: $name, body: $body, draft: false, prerelease: false}')
+          payload=$(printf \
+            '{"tag_name":"v%s","target_commitish":"%s","name":"v%s","body":"Initial release of RSS Studio.","draft":false,"prerelease":false}' \
+            "$version" "$GITHUB_SHA" "$version")
 
           curl -fsS \
             -X POST \
