@@ -1,4 +1,4 @@
-package main
+package rss
 
 import (
 	"strings"
@@ -7,10 +7,10 @@ import (
 	"github.com/beevik/etree"
 )
 
-func TestFilterRSSKeepsMatchingPodcastItems(t *testing.T) {
+func TestFilterKeepsMatchingItems(t *testing.T) {
 	source := []byte(`<?xml version="1.0"?><rss version="2.0" xmlns:itunes="http://www.itunes.com/dtds/podcast-1.0.dtd"><channel><title>Original</title><item><title>Foo weekly</title><guid>one</guid><enclosure url="https://media.test/one.mp3" type="audio/mpeg"/><itunes:duration>10</itunes:duration></item><item><title>Other show</title><guid>two</guid></item></channel></rss>`)
 
-	result, count, err := filterRSS(source, "fOO", "Filtered Feed")
+	result, count, err := Filter(source, "fOO", "Filtered Feed")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -35,8 +35,8 @@ func TestFilterRSSKeepsMatchingPodcastItems(t *testing.T) {
 	}
 }
 
-func TestFilterRSSRejectsAtom(t *testing.T) {
-	_, _, err := filterRSS([]byte(`<feed xmlns="http://www.w3.org/2005/Atom"></feed>`), "foo", "Feed")
+func TestFilterRejectsAtom(t *testing.T) {
+	_, _, err := Filter([]byte(`<feed xmlns="http://www.w3.org/2005/Atom"></feed>`), "foo", "Feed")
 	if err == nil {
 		t.Fatal("expected non-RSS feed to fail")
 	}

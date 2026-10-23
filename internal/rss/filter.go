@@ -1,4 +1,4 @@
-package main
+package rss
 
 import (
 	"fmt"
@@ -7,7 +7,7 @@ import (
 	"github.com/beevik/etree"
 )
 
-func filterRSS(source []byte, keyword, outputTitle string) ([]byte, int, error) {
+func Filter(source []byte, keyword, outputTitle string) ([]byte, int, error) {
 	document := etree.NewDocument()
 	if err := document.ReadFromBytes(source); err != nil {
 		return nil, 0, fmt.Errorf("parse source feed: %w", err)

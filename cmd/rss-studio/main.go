@@ -4,27 +4,35 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
 	"time"
+
+	"rss-studio/internal/application"
+	"rss-studio/internal/cache"
+	"rss-studio/internal/httpapi"
+	"rss-studio/internal/rss"
+	"rss-studio/internal/source"
+	"rss-studio/internal/storage"
 )
 
 func main() {
 	address := envOrDefault("RSS_STUDIO_ADDRESS", ":8080")
 	dataPath := envOrDefault("RSS_STUDIO_DATA", "/data/feeds.json")
 
-	store, err := newStore(dataPath)
+	store, err := storage.NewJSONStore(dataPath)
 	if err != nil {
 		log.Fatalf("open store: %v", err)
 	}
 
-	transport := http.DefaultTransport.(*http.Transport).Clone()
-	transport.DisableCompression = true
-	app := newApp(store, &http.Client{
-		Timeout:   20 * time.Second,
-		Transport: transport,
-	})
+	service := application.NewService(
+		store,
+		cache.NewFileCache(filepath.Join(filepath.Dir(dataPath), "cache")),
+		source.NewHTTPSource(&http.Client{Timeout: 20 * time.Second}),
+		rss.Filter,
+	)
 	server := &http.Server{
 		Addr:              address,
-		Handler:           app.routes(),
+		Handler:           httpapi.NewHandler(service),
 		ReadHeaderTimeout: 5 * time.Second,
 		IdleTimeout:       60 * time.Second,
 	}

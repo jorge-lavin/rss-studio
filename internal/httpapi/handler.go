@@ -1,157 +1,105 @@
-package main
+package httpapi
 
 import (
 	"errors"
-	"fmt"
 	"html/template"
 	"log"
 	"net/http"
-	"net/url"
-	"os"
-	"path/filepath"
 	"strings"
-	"sync"
 	"time"
+
+	"rss-studio/internal/application"
+	"rss-studio/internal/domain"
 )
 
-type app struct {
-	store      *store
-	client     *http.Client
-	cacheDir   string
-	refreshMu  sync.Mutex
-	stateMu    sync.Mutex
-	refreshing map[string]bool
-	checkedAt  map[string]time.Time
+type Handler struct {
+	service *application.Service
 }
 
 type homePageData struct {
-	Feeds   []feedDefinition
+	Feeds   []domain.Feed
 	BaseURL string
 	Error   string
 }
 
-func newApp(store *store, client *http.Client) *app {
-	return &app{
-		store:      store,
-		client:     client,
-		cacheDir:   filepath.Join(filepath.Dir(store.path), "cache"),
-		refreshing: make(map[string]bool),
-		checkedAt:  make(map[string]time.Time),
-	}
-}
-
-func (a *app) routes() http.Handler {
+func NewHandler(service *application.Service) http.Handler {
+	handler := &Handler{service: service}
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /{$}", a.home)
-	mux.HandleFunc("POST /feeds", a.createFeed)
-	mux.HandleFunc("GET /feeds/{file}", a.serveFeed)
-	mux.HandleFunc("POST /feeds/{slug}/delete", a.deleteFeed)
+	mux.HandleFunc("GET /{$}", handler.home)
+	mux.HandleFunc("POST /feeds", handler.createFeed)
+	mux.HandleFunc("GET /feeds/{file}", handler.serveFeed)
+	mux.HandleFunc("POST /feeds/{slug}/delete", handler.deleteFeed)
 	return requestLogger(mux)
 }
 
-func (a *app) home(writer http.ResponseWriter, request *http.Request) {
-	a.renderHome(writer, request, "", http.StatusOK)
+func (h *Handler) home(writer http.ResponseWriter, request *http.Request) {
+	h.renderHome(writer, request, "", http.StatusOK)
 }
 
-func (a *app) createFeed(writer http.ResponseWriter, request *http.Request) {
+func (h *Handler) createFeed(writer http.ResponseWriter, request *http.Request) {
 	if err := request.ParseForm(); err != nil {
-		a.renderHome(writer, request, "Could not read form.", http.StatusBadRequest)
+		h.renderHome(writer, request, "Could not read form.", http.StatusBadRequest)
 		return
 	}
-
-	name := strings.TrimSpace(request.FormValue("name"))
-	sourceURL := strings.TrimSpace(request.FormValue("source_url"))
-	keyword := strings.TrimSpace(request.FormValue("keyword"))
-	if name == "" || sourceURL == "" || keyword == "" {
-		a.renderHome(writer, request, "Name, source URL, and keyword are required.", http.StatusBadRequest)
-		return
-	}
-	if len(name) > 120 || len(sourceURL) > 2048 || len(keyword) > 200 {
-		a.renderHome(writer, request, "One or more fields are too long.", http.StatusBadRequest)
-		return
-	}
-	if err := validateSourceURL(sourceURL); err != nil {
-		a.renderHome(writer, request, err.Error(), http.StatusBadRequest)
-		return
-	}
-
-	feed, err := a.store.create(name, sourceURL, keyword)
+	_, err := h.service.CreateFeed(request.Context(), request.FormValue("name"), request.FormValue("source_url"), request.FormValue("keyword"))
 	if err != nil {
-		log.Printf("create feed: %v", err)
-		a.renderHome(writer, request, "Could not save feed.", http.StatusInternalServerError)
-		return
-	}
-	if err := a.refreshFeed(request.Context(), feed, true); err != nil {
-		log.Printf("precompute %s: %v", feed.Slug, err)
-		if deleteErr := a.store.delete(feed.Slug); deleteErr != nil {
-			log.Printf("roll back %s: %v", feed.Slug, deleteErr)
+		switch {
+		case errors.Is(err, application.ErrInvalidFeed):
+			h.renderHome(writer, request, err.Error(), http.StatusBadRequest)
+		case errors.Is(err, application.ErrSourceUnavailable):
+			h.renderHome(writer, request, "Source feed could not be fetched or processed.", http.StatusBadGateway)
+		default:
+			log.Printf("create feed: %v", err)
+			h.renderHome(writer, request, "Could not save feed.", http.StatusInternalServerError)
 		}
-		a.removeCachedFeed(feed.Slug)
-		a.renderHome(writer, request, "Source feed could not be fetched or processed.", http.StatusBadGateway)
 		return
 	}
 	http.Redirect(writer, request, "/", http.StatusSeeOther)
 }
 
-func (a *app) serveFeed(writer http.ResponseWriter, request *http.Request) {
+func (h *Handler) serveFeed(writer http.ResponseWriter, request *http.Request) {
 	file := request.PathValue("file")
 	if !strings.HasSuffix(file, ".xml") {
 		http.NotFound(writer, request)
 		return
 	}
-	slug := strings.TrimSuffix(file, ".xml")
-	feed, found := a.store.get(slug)
-	if !found {
-		http.NotFound(writer, request)
-		return
-	}
-
-	filtered, err := os.ReadFile(a.feedCachePath(feed.Slug))
+	data, err := h.service.CachedFeed(request.Context(), strings.TrimSuffix(file, ".xml"))
 	if err != nil {
-		log.Printf("read cached feed %s: %v", feed.Slug, err)
-		a.triggerRefresh(feed)
-		http.Error(writer, "Feed cache is not ready yet.", http.StatusServiceUnavailable)
+		switch {
+		case errors.Is(err, application.ErrFeedNotFound):
+			http.NotFound(writer, request)
+		case errors.Is(err, application.ErrCacheNotReady):
+			http.Error(writer, "Feed cache is not ready yet.", http.StatusServiceUnavailable)
+		default:
+			log.Printf("serve feed: %v", err)
+			http.Error(writer, "Could not read feed.", http.StatusInternalServerError)
+		}
 		return
 	}
-
 	writer.Header().Set("Content-Type", "application/rss+xml; charset=utf-8")
 	writer.Header().Set("Cache-Control", "public, max-age=300")
-	writer.Write(filtered)
-	a.triggerRefresh(feed)
+	writer.Write(data)
 }
 
-func (a *app) deleteFeed(writer http.ResponseWriter, request *http.Request) {
-	if err := a.store.delete(request.PathValue("slug")); err != nil {
-		if errors.Is(err, os.ErrNotExist) {
+func (h *Handler) deleteFeed(writer http.ResponseWriter, request *http.Request) {
+	if err := h.service.DeleteFeed(request.PathValue("slug")); err != nil {
+		if errors.Is(err, application.ErrFeedNotFound) {
 			http.NotFound(writer, request)
 			return
 		}
+		log.Printf("delete feed: %v", err)
 		http.Error(writer, "Could not delete feed.", http.StatusInternalServerError)
 		return
 	}
-	a.removeCachedFeed(request.PathValue("slug"))
 	http.Redirect(writer, request, "/", http.StatusSeeOther)
 }
 
-func (a *app) renderHome(writer http.ResponseWriter, request *http.Request, message string, status int) {
+func (h *Handler) renderHome(writer http.ResponseWriter, request *http.Request, message string, status int) {
 	writer.Header().Set("Content-Type", "text/html; charset=utf-8")
 	writer.WriteHeader(status)
-	err := homeTemplate.Execute(writer, homePageData{
-		Feeds:   a.store.list(),
-		BaseURL: baseURL(request),
-		Error:   message,
-	})
-	if err != nil {
+	if err := homeTemplate.Execute(writer, homePageData{Feeds: h.service.ListFeeds(), BaseURL: baseURL(request), Error: message}); err != nil {
 		log.Printf("render home: %v", err)
 	}
-}
-
-func validateSourceURL(value string) error {
-	parsed, err := url.ParseRequestURI(value)
-	if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
-		return fmt.Errorf("Source URL must use http or https.")
-	}
-	return nil
 }
 
 func baseURL(request *http.Request) string {

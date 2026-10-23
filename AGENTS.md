@@ -9,12 +9,15 @@ Keep changes small. Prefer the standard library and existing project patterns.
 
 ## Files
 
-- `main.go`: process entrypoint and configuration.
-- `app.go`: HTTP routes and HTML UI.
-- `cache.go`: source refresh and generated-feed cache.
-- `filter.go`: RSS parsing and title filtering.
-- `store.go`: persisted feed definitions.
-- `compose.yaml`: local/container deployment.
+- `cmd/rss-studio/main.go`: process entrypoint and dependency wiring.
+- `internal/domain`: feed model and domain rules.
+- `internal/application`: use cases and dependency interfaces.
+- `internal/httpapi`: HTTP routes and HTML UI.
+- `internal/rss`: RSS parsing and title filtering.
+- `internal/source`: upstream HTTP client and outbound URL policy.
+- `internal/storage`: JSON feed store.
+- `internal/cache`: generated-feed file cache.
+- `compose.yaml`: generic local/container deployment.
 - `.forgejo/workflows/ci.yml`: tests, image build, and GHCR publishing.
 
 ## Verify
@@ -31,7 +34,7 @@ sources.
 
 ## Secrets and data
 
-- Never commit `.env`, Tailscale auth keys, tokens, or generated `/data` files.
+- Never commit `.env`, credentials, tokens, or generated `/data` files.
 - Keep credentials in Forgejo Actions secrets or local environment files.
 - Do not expose feed definitions or cached content in logs or error messages.
 
