@@ -50,5 +50,108 @@ jobs:
             --context=dir://${{ github.workspace }}
             --dockerfile=${{ github.workspace }}/Dockerfile
             --destination=${{ env.IMAGE }}:${{ github.sha }}
+            --label=org.opencontainers.image.revision=${{ github.sha }}
+            --no-push-cache
+
+  release:
+    runs-on: ubuntu-latest
+    needs: [test, image]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Bootstrap initial release
+        id: bootstrap
+        run: |
+          set -euo pipefail
+
+          if [[ -z "${GH_TOKEN:-}" ]]; then
+            echo "Forgejo workflow token is unavailable" >&2
+            exit 1
+          fi
+
+          git fetch --tags --force
+          if git tag --list 'v*' | grep -q .; then
+            echo "created=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          version=0.1.0
+          api_url="${GITHUB_API_URL%/}"
+          payload=$(jq -n \
+            --arg tag "v$version" \
+            --arg target "$GITHUB_SHA" \
+            --arg name "v$version" \
+            --arg body "Initial release of RSS Studio." \
+            '{tag_name: $tag, target_commitish: $target, name: $name, body: $body, draft: false, prerelease: false}')
+
+          curl -fsS \
+            -X POST \
+            -H "Authorization: token $GH_TOKEN" \
+            -H 'Content-Type: application/json' \
+            "$api_url/repos/$GITHUB_REPOSITORY/releases" \
+            --data "$payload"
+
+          echo "created=true" >> "$GITHUB_OUTPUT"
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_API_URL: ${{ github.api_url }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.14.0
+
+      - name: Run semantic release
+        if: steps.bootstrap.outputs.created != 'true'
+        run: npx --yes semantic-release@25.0.3
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_URL: ${{ github.server_url }}
+          GITHUB_API_URL: ${{ github.api_url }}
+
+      - name: Determine released version
+        id: version
+        env:
+          BOOTSTRAPPED: ${{ steps.bootstrap.outputs.created }}
+        run: |
+          set -euo pipefail
+
+          if [[ "$BOOTSTRAPPED" == true ]]; then
+            echo "version=0.1.0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          git fetch --tags --force
+          tag=$(git tag --points-at "$GITHUB_SHA" --list 'v*' | sort -V | tail -n 1)
+          if [[ -n "$tag" ]]; then
+            echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Configure release image credentials
+        if: steps.version.outputs.version != ''
+        env:
+          GHCR_USERNAME: jorge-lavin
+          GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
+        run: |
+          mkdir -p .docker
+          auth=$(printf '%s:%s' "$GHCR_USERNAME" "$GHCR_TOKEN" | base64 | tr -d '\n')
+          printf '{"auths":{"ghcr.io":{"auth":"%s"}}}\n' "$auth" > .docker/config.json
+
+      - name: Publish release image
+        if: steps.version.outputs.version != ''
+        uses: docker://docker.io/martizih/kaniko:v1.28.6@sha256:2fa20b0a4b40c7db72b479d57e55c2cf79f2178533b2d3bcbd129d6bd3c087ed
+        env:
+          DOCKER_CONFIG: ${{ github.workspace }}/.docker
+        with:
+          args: >-
+            --context=dir://${{ github.workspace }}
+            --dockerfile=${{ github.workspace }}/Dockerfile
+            --destination=${{ env.IMAGE }}:${{ steps.version.outputs.version }}
             --destination=${{ env.IMAGE }}:latest
+            --label=org.opencontainers.image.version=${{ steps.version.outputs.version }}
+            --label=org.opencontainers.image.revision=${{ github.sha }}
             --no-push-cache

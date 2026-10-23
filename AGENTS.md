@@ -41,8 +41,10 @@ sources.
 ## Images and deployment
 
 - GHCR image: `ghcr.io/jorge-lavin/rss-studio`.
-- Main-branch CI publishes both commit-SHA and `latest` tags.
-- Use commit-SHA tags for reproducible VPS deployments.
+- Main-branch CI publishes commit-SHA tags.
+- Semantic releases publish `vMAJOR.MINOR.PATCH` Git tags, matching
+  `MAJOR.MINOR.PATCH` image tags, plus `latest`.
+- Use commit-SHA or exact SemVer tags for reproducible VPS deployments.
 - Keep runtime state in the Docker volume, not in the repository.
 
 Use Conventional Commits (`feat:`, `fix:`, `ci:`, `docs:`, `chore:`).

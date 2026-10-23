@@ -34,6 +34,24 @@ development environment.
 
 Generated feeds are precomputed on disk. Requests return cached XML immediately, then check the source in the background. RSS Studio regenerates only when the source `Last-Modified` value advances.
 
+## Releases
+
+Forgejo creates releases automatically from `main` after tests pass. Commit
+messages follow [Conventional Commits](https://www.conventionalcommits.org/):
+
+- `fix:` or `perf:` creates a patch release.
+- `feat:` creates a minor release.
+- `BREAKING CHANGE:` or `!` creates a major release.
+- Documentation, CI, test, and chore commits do not create releases.
+
+Releases use `vMAJOR.MINOR.PATCH` Git tags and publish matching
+`MAJOR.MINOR.PATCH` image tags plus `latest`. Main-branch builds publish only
+their commit-SHA image tag.
+
+If no release tag exists, the first successful `main` build creates `v0.1.0`
+automatically. No manual bootstrap tag or release token is required; Forgejo's
+workflow token creates the release.
+
 ## Development
 
 Requires Go 1.23 or newer.
