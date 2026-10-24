@@ -3,6 +3,10 @@ services:
     build: .
     ports:
       - "8080:8080"
+    environment:
+      RSS_STUDIO_AUTH_USERNAME: ${RSS_STUDIO_AUTH_USERNAME:?set RSS_STUDIO_AUTH_USERNAME}
+      RSS_STUDIO_AUTH_PASSWORD: ${RSS_STUDIO_AUTH_PASSWORD:?set RSS_STUDIO_AUTH_PASSWORD}
+      RSS_STUDIO_JWT_SECRET: ${RSS_STUDIO_JWT_SECRET:?set RSS_STUDIO_JWT_SECRET}
     volumes:
       - rss-studio-data:/data
     restart: unless-stopped

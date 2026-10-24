@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"encoding/json"
 	"errors"
 	"html/template"
 	"log"
@@ -14,6 +15,7 @@ import (
 
 type Handler struct {
 	service *application.Service
+	auth    *Authenticator
 }
 
 type homePageData struct {
@@ -22,14 +24,82 @@ type homePageData struct {
 	Error   string
 }
 
-func NewHandler(service *application.Service) http.Handler {
-	handler := &Handler{service: service}
+func NewHandler(service *application.Service, authenticators ...*Authenticator) http.Handler {
+	var auth *Authenticator
+	if len(authenticators) > 0 {
+		auth = authenticators[0]
+	}
+	handler := &Handler{service: service, auth: auth}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /{$}", handler.home)
+	if auth != nil {
+		mux.HandleFunc("POST /auth/login", handler.login)
+	}
 	mux.HandleFunc("POST /feeds", handler.createFeed)
 	mux.HandleFunc("GET /feeds/{file}", handler.serveFeed)
 	mux.HandleFunc("POST /feeds/{slug}/delete", handler.deleteFeed)
-	return requestLogger(mux)
+	return requestLogger(handler.authenticate(mux))
+}
+
+func (h *Handler) login(writer http.ResponseWriter, request *http.Request) {
+	var credentials struct {
+		Username string `json:"username"`
+		Password string `json:"password"`
+	}
+	if strings.HasPrefix(request.Header.Get("Content-Type"), "application/json") {
+		if err := json.NewDecoder(request.Body).Decode(&credentials); err != nil {
+			http.Error(writer, "Invalid login request.", http.StatusBadRequest)
+			return
+		}
+	} else if err := request.ParseForm(); err != nil {
+		http.Error(writer, "Invalid login request.", http.StatusBadRequest)
+		return
+	} else {
+		credentials.Username = request.FormValue("username")
+		credentials.Password = request.FormValue("password")
+	}
+
+	token, expires, err := h.auth.IssueToken(credentials.Username, credentials.Password)
+	if err != nil {
+		http.Error(writer, "Invalid credentials.", http.StatusUnauthorized)
+		return
+	}
+	writer.Header().Set("Content-Type", "application/json; charset=utf-8")
+	writer.Header().Set("Cache-Control", "no-store")
+	json.NewEncoder(writer).Encode(struct {
+		AccessToken string `json:"access_token"`
+		TokenType   string `json:"token_type"`
+		ExpiresAt   int64  `json:"expires_at"`
+	}{
+		AccessToken: token,
+		TokenType:   "Bearer",
+		ExpiresAt:   expires.Unix(),
+	})
+}
+
+func (h *Handler) authenticate(next http.Handler) http.Handler {
+	if h.auth == nil {
+		return next
+	}
+	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if isPublicRequest(request) {
+			next.ServeHTTP(writer, request)
+			return
+		}
+		if err := h.auth.ValidateRequest(request); err != nil {
+			writer.Header().Set("WWW-Authenticate", `Bearer realm="rss-studio"`)
+			http.Error(writer, "Authentication required.", http.StatusUnauthorized)
+			return
+		}
+		next.ServeHTTP(writer, request)
+	})
+}
+
+func isPublicRequest(request *http.Request) bool {
+	if request.Method == http.MethodPost && request.URL.Path == "/auth/login" {
+		return true
+	}
+	return request.Method == http.MethodGet && strings.HasPrefix(request.URL.Path, "/feeds/") && strings.HasSuffix(request.URL.Path, ".xml")
 }
 
 func (h *Handler) home(writer http.ResponseWriter, request *http.Request) {

@@ -12,10 +12,24 @@ Host-specific deployment configuration is maintained separately in the
 The included Compose file builds and runs the application locally:
 
 ```sh
+export RSS_STUDIO_AUTH_USERNAME=admin
+export RSS_STUDIO_AUTH_PASSWORD='change-this-password'
+export RSS_STUDIO_JWT_SECRET="$(openssl rand -base64 32)"
 docker compose up -d --build
 ```
 
-Open <http://localhost:8080>. Feed definitions and generated feeds persist in
+Authenticate with the API, then send the returned bearer token for management
+requests:
+
+```sh
+token=$(curl -s http://localhost:8080/auth/login \
+  -H 'Content-Type: application/json' \
+  -d '{"username":"admin","password":"change-this-password"}' | jq -r .access_token)
+curl -H "Authorization: Bearer $token" http://localhost:8080/
+```
+
+Generated RSS URLs remain public so RSS readers can fetch them without JWT
+support. Feed definitions and generated feeds persist in
 the `rss-studio-data` Docker volume.
 
 To run the published image instead:
@@ -25,6 +39,9 @@ docker run -d \
   --name rss-studio \
   --restart unless-stopped \
   -p 8080:8080 \
+  -e RSS_STUDIO_AUTH_USERNAME=admin \
+  -e RSS_STUDIO_AUTH_PASSWORD='change-this-password' \
+  -e RSS_STUDIO_JWT_SECRET='replace-with-at-least-32-random-bytes' \
   -v rss-studio-data:/data \
   ghcr.io/jorge-lavin/rss-studio:latest
 ```
@@ -62,3 +79,5 @@ go run ./cmd/rss-studio
 ```
 
 Override storage or listen address with `RSS_STUDIO_DATA` and `RSS_STUDIO_ADDRESS`.
+`RSS_STUDIO_AUTH_USERNAME`, `RSS_STUDIO_AUTH_PASSWORD`, and
+`RSS_STUDIO_JWT_SECRET` are required. JWTs use HS256 and expire after 24 hours.

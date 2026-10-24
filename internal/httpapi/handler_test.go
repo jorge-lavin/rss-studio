@@ -2,6 +2,7 @@ package httpapi_test
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -61,5 +62,71 @@ func TestHandlerCreatesAndServesFeed(t *testing.T) {
 	}
 	if !strings.Contains(string(body), "Keep foo") || strings.Contains(string(body), "<title>Drop</title>") {
 		t.Fatalf("unexpected feed body: %s", body)
+	}
+}
+
+func TestAuthenticatedHandlerProtectsManagementAndLeavesFeedsPublic(t *testing.T) {
+	store, err := storage.NewJSONStore(filepath.Join(t.TempDir(), "feeds.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := application.NewService(store, cache.NewFileCache(t.TempDir()), sourceStub{}, rss.Filter)
+	auth, err := httpapi.NewAuthenticator(httpapi.AuthConfig{
+		Username:  "admin",
+		Password:  "password",
+		JWTSecret: strings.Repeat("x", 32),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(httpapi.NewHandler(service, auth))
+	defer server.Close()
+
+	response, err := http.Get(server.URL + "/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("expected unauthenticated management request to fail, got %d", response.StatusCode)
+	}
+
+	response, err = http.Post(server.URL+"/auth/login", "application/json", strings.NewReader(`{"username":"admin","password":"password"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var login struct {
+		AccessToken string `json:"access_token"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&login); err != nil {
+		response.Body.Close()
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusOK || login.AccessToken == "" {
+		t.Fatalf("login failed: status=%d token=%q", response.StatusCode, login.AccessToken)
+	}
+
+	request, err := http.NewRequest(http.MethodGet, server.URL+"/", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Authorization", "Bearer "+login.AccessToken)
+	response, err = http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("authenticated management request failed: %d", response.StatusCode)
+	}
+
+	response, err = http.Get(server.URL + "/feeds/missing.xml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected public missing feed to return 404, got %d", response.StatusCode)
 	}
 }

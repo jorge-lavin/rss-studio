@@ -18,6 +18,14 @@ import (
 func main() {
 	address := envOrDefault("RSS_STUDIO_ADDRESS", ":8080")
 	dataPath := envOrDefault("RSS_STUDIO_DATA", "/data/feeds.json")
+	auth, err := httpapi.NewAuthenticator(httpapi.AuthConfig{
+		Username:  os.Getenv("RSS_STUDIO_AUTH_USERNAME"),
+		Password:  os.Getenv("RSS_STUDIO_AUTH_PASSWORD"),
+		JWTSecret: os.Getenv("RSS_STUDIO_JWT_SECRET"),
+	})
+	if err != nil {
+		log.Fatalf("configure authentication: %v", err)
+	}
 
 	store, err := storage.NewJSONStore(dataPath)
 	if err != nil {
@@ -32,7 +40,7 @@ func main() {
 	)
 	server := &http.Server{
 		Addr:              address,
-		Handler:           httpapi.NewHandler(service),
+		Handler:           httpapi.NewHandler(service, auth),
 		ReadHeaderTimeout: 5 * time.Second,
 		IdleTimeout:       60 * time.Second,
 	}
