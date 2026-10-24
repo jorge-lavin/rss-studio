@@ -360,6 +360,7 @@ var loginTemplate = template.Must(template.New("login").Parse(`<!doctype html>
       </a>
       <h1 class="mt-8 text-2xl font-semibold tracking-tight">Sign in</h1>
       <p class="mt-1 text-sm text-slate-500">Sign in to manage your filtered feeds.</p>
+      <p class="mt-2 text-sm text-slate-500">Use the account configured for this RSS Studio instance. Self-registration is not available.</p>
     </div>
     {{if .Error}}<div class="mb-6 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700" role="alert">{{.Error}}</div>{{end}}
     <form method="post" action="/auth/sign-in" class="space-y-5">

@@ -18,7 +18,8 @@ export RSS_STUDIO_JWT_SECRET="$(openssl rand -base64 32)"
 docker compose up -d --build
 ```
 
-Open <http://localhost:8080> to sign in through the web UI. For API clients,
+Open <http://localhost:8080> to sign in through the web UI using the configured
+account. RSS Studio does not support self-registration. For API clients,
 authenticate first, then send the returned bearer token for management requests:
 
 ```sh

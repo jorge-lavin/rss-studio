@@ -167,8 +167,16 @@ func TestAuthenticatedHandlerSupportsBrowserLogin(t *testing.T) {
 	request.Header.Set("Accept", "text/html")
 	recorder = httptest.NewRecorder()
 	handler.ServeHTTP(recorder, request)
-	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `action="/auth/sign-in"`) || !strings.Contains(recorder.Body.String(), "Sign in") {
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `action="/auth/sign-in"`) || !strings.Contains(recorder.Body.String(), "Sign in") || !strings.Contains(recorder.Body.String(), "Self-registration is not available.") {
 		t.Fatalf("expected sign-in page to be publicly reachable, got %d", recorder.Code)
+	}
+
+	request = httptest.NewRequest(http.MethodPost, "/auth/sign-in", strings.NewReader("username=new-user&password=new-password"))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	recorder = httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusUnauthorized || !strings.Contains(recorder.Body.String(), "Invalid credentials.") {
+		t.Fatalf("expected unconfigured credentials to be rejected, got %d: %s", recorder.Code, recorder.Body.String())
 	}
 
 	request = httptest.NewRequest(http.MethodPost, "/auth/sign-in", strings.NewReader("username=admin&password=password"))
