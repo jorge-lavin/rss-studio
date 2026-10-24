@@ -8,10 +8,10 @@ import (
 )
 
 type FeedStore interface {
-	List() []domain.Feed
+	List(owner string) []domain.Feed
 	Get(slug string) (domain.Feed, bool)
-	Create(name, sourceURL, keyword string) (domain.Feed, error)
-	Delete(slug string) error
+	Create(owner, name, sourceURL, keyword string) (domain.Feed, error)
+	Delete(slug, owner string) error
 }
 
 type Source interface {

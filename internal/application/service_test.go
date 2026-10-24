@@ -2,6 +2,7 @@ package application
 
 import (
 	"context"
+	"errors"
 	"io/fs"
 	"strings"
 	"sync/atomic"
@@ -64,7 +65,7 @@ func TestServiceCreatesAndCachesFeed(t *testing.T) {
 	source := &sourceStub{}
 	service := NewService(store, &memoryCache{}, source, rss.Filter)
 
-	feed, err := service.CreateFeed(context.Background(), "Foo feed", "https://example.test/rss", "foo")
+	feed, err := service.CreateFeed(context.Background(), "alice", "Foo feed", "https://example.test/rss", "foo")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -85,7 +86,7 @@ func TestServiceKeepsCacheWhenHeadHasNoLastModified(t *testing.T) {
 	source := &sourceStub{}
 	cache := &memoryCache{}
 	service := NewService(store, cache, source, rss.Filter)
-	feed, err := store.Create("Foo feed", "https://example.test/rss", "foo")
+	feed, err := store.Create("alice", "Foo feed", "https://example.test/rss", "foo")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -99,5 +100,26 @@ func TestServiceKeepsCacheWhenHeadHasNoLastModified(t *testing.T) {
 	}
 	if source.getCount.Load() != 1 {
 		t.Fatalf("missing Last-Modified caused regeneration: GET=%d", source.getCount.Load())
+	}
+}
+
+func TestServiceIsolatesFeedsByOwner(t *testing.T) {
+	store, err := storage.NewJSONStore(t.TempDir() + "/feeds.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := NewService(store, &memoryCache{}, &sourceStub{}, rss.Filter)
+	feed, err := service.CreateFeed(context.Background(), "alice", "Alice feed", "https://example.test/rss", "foo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if feeds := service.ListFeeds("bob"); len(feeds) != 0 {
+		t.Fatalf("bob saw alice's feeds: %#v", feeds)
+	}
+	if err := service.DeleteFeed("bob", feed.Slug); !errors.Is(err, ErrFeedNotFound) {
+		t.Fatalf("expected cross-owner delete to be hidden, got %v", err)
+	}
+	if _, err := service.CachedFeed(context.Background(), feed.Slug); err != nil {
+		t.Fatalf("public feed was not readable: %v", err)
 	}
 }

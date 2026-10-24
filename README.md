@@ -32,11 +32,15 @@ curl -H "Authorization: Bearer $token" http://localhost:8080/
 ```
 
 Generated RSS URLs remain public so RSS readers can fetch them without JWT
-support. Feed definitions and generated feeds persist in
+support. Feed definitions are isolated per account; users can only view or
+delete their own definitions. Feed definitions and generated feeds persist in
 the `rss-studio-data` Docker volume. The same volume contains the SQLite
 database at `/data/rss-studio.db`; its migrations run automatically at startup.
 Accounts created through the web UI or API are stored as password hashes and
 remain available after restarts.
+
+Feed definitions created before account isolation have no owner. Their public
+RSS URLs continue to work, but they are not shown in account management pages.
 
 To run the published image instead:
 

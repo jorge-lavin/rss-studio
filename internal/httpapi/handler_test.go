@@ -155,6 +155,61 @@ func TestAuthenticatedHandlerProtectsManagementAndLeavesFeedsPublic(t *testing.T
 	}
 }
 
+func TestAuthenticatedHandlerIsolatesFeedsByUser(t *testing.T) {
+	store, err := storage.NewJSONStore(filepath.Join(t.TempDir(), "feeds.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := application.NewService(store, cache.NewFileCache(t.TempDir()), sourceStub{}, rss.Filter)
+	auth := testAuth(t)
+	if err := auth.Register("reader", "password"); err != nil {
+		t.Fatal(err)
+	}
+	adminToken, _, err := auth.IssueToken("admin", "password")
+	if err != nil {
+		t.Fatal(err)
+	}
+	readerToken, _, err := auth.IssueToken("reader", "password")
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := httpapi.NewHandler(service, auth)
+
+	request := httptest.NewRequest(http.MethodPost, "/feeds", strings.NewReader("name=Alice+feed&source_url=https%3A%2F%2Fexample.test%2Frss&keyword=foo"))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	request.Header.Set("Authorization", "Bearer "+adminToken)
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusSeeOther {
+		t.Fatalf("admin feed creation failed: %d: %s", recorder.Code, recorder.Body.String())
+	}
+
+	for name, token := range map[string]string{"admin": adminToken, "reader": readerToken} {
+		request = httptest.NewRequest(http.MethodGet, "/", nil)
+		request.Header.Set("Authorization", "Bearer "+token)
+		recorder = httptest.NewRecorder()
+		handler.ServeHTTP(recorder, request)
+		containsFeed := strings.Contains(recorder.Body.String(), "Alice feed")
+		if (name == "admin" && !containsFeed) || (name == "reader" && containsFeed) {
+			t.Fatalf("unexpected %s feed visibility: %t", name, containsFeed)
+		}
+	}
+
+	request = httptest.NewRequest(http.MethodPost, "/feeds/alice-feed/delete", nil)
+	request.Header.Set("Authorization", "Bearer "+readerToken)
+	recorder = httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusNotFound {
+		t.Fatalf("reader deleted or found another user's feed: %d", recorder.Code)
+	}
+
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/feeds/alice-feed.xml", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("public feed became inaccessible: %d", response.Code)
+	}
+}
+
 func TestAuthenticatedHandlerSupportsBrowserLogin(t *testing.T) {
 	store, err := storage.NewJSONStore(filepath.Join(t.TempDir(), "feeds.json"))
 	if err != nil {

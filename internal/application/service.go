@@ -46,11 +46,11 @@ func NewService(store FeedStore, cache FeedCache, source Source, filter Filter) 
 	}
 }
 
-func (s *Service) ListFeeds() []domain.Feed {
-	return s.store.List()
+func (s *Service) ListFeeds(owner string) []domain.Feed {
+	return s.store.List(owner)
 }
 
-func (s *Service) CreateFeed(ctx context.Context, name, sourceURL, keyword string) (domain.Feed, error) {
+func (s *Service) CreateFeed(ctx context.Context, owner, name, sourceURL, keyword string) (domain.Feed, error) {
 	name = strings.TrimSpace(name)
 	sourceURL = strings.TrimSpace(sourceURL)
 	keyword = strings.TrimSpace(keyword)
@@ -58,12 +58,12 @@ func (s *Service) CreateFeed(ctx context.Context, name, sourceURL, keyword strin
 		return domain.Feed{}, err
 	}
 
-	feed, err := s.store.Create(name, sourceURL, keyword)
+	feed, err := s.store.Create(owner, name, sourceURL, keyword)
 	if err != nil {
 		return domain.Feed{}, err
 	}
 	if err := s.refreshFeed(ctx, feed, true); err != nil {
-		if deleteErr := s.store.Delete(feed.Slug); deleteErr != nil {
+		if deleteErr := s.store.Delete(feed.Slug, owner); deleteErr != nil {
 			log.Printf("roll back %s: %v", feed.Slug, deleteErr)
 		}
 		if removeErr := s.cache.Remove(feed.Slug); removeErr != nil {
@@ -74,11 +74,12 @@ func (s *Service) CreateFeed(ctx context.Context, name, sourceURL, keyword strin
 	return feed, nil
 }
 
-func (s *Service) DeleteFeed(slug string) error {
-	if _, found := s.store.Get(slug); !found {
+func (s *Service) DeleteFeed(owner, slug string) error {
+	feed, found := s.store.Get(slug)
+	if !found || feed.Owner != owner {
 		return ErrFeedNotFound
 	}
-	if err := s.store.Delete(slug); err != nil {
+	if err := s.store.Delete(slug, owner); err != nil {
 		return err
 	}
 	return s.cache.Remove(slug)

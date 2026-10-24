@@ -7,6 +7,7 @@ import (
 )
 
 type Feed struct {
+	Owner     string
 	Name      string
 	Slug      string
 	SourceURL string

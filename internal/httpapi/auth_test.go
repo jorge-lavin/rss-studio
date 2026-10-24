@@ -72,6 +72,10 @@ func TestAuthenticatorIssuesAndValidatesToken(t *testing.T) {
 	if err := auth.ValidateRequest(request); err != nil {
 		t.Fatalf("valid request rejected: %v", err)
 	}
+	subject, err := auth.Subject(request)
+	if err != nil || subject != "admin" {
+		t.Fatalf("unexpected authenticated subject: %q, %v", subject, err)
+	}
 }
 
 func TestAuthenticatorUsesPersistentUserStore(t *testing.T) {

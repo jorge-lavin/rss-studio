@@ -20,6 +20,7 @@ type JSONStore struct {
 }
 
 type feedRecord struct {
+	Owner     string    `json:"owner,omitempty"`
 	Name      string    `json:"name"`
 	Slug      string    `json:"slug"`
 	SourceURL string    `json:"source_url"`
@@ -53,10 +54,15 @@ func NewJSONStore(path string) (*JSONStore, error) {
 	return store, nil
 }
 
-func (s *JSONStore) List() []domain.Feed {
+func (s *JSONStore) List(owner string) []domain.Feed {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	feeds := append([]domain.Feed(nil), s.feeds...)
+	feeds := make([]domain.Feed, 0, len(s.feeds))
+	for _, feed := range s.feeds {
+		if feed.Owner == owner {
+			feeds = append(feeds, feed)
+		}
+	}
 	sort.Slice(feeds, func(i, j int) bool {
 		return feeds[i].CreatedAt.After(feeds[j].CreatedAt)
 	})
@@ -74,7 +80,7 @@ func (s *JSONStore) Get(slug string) (domain.Feed, bool) {
 	return domain.Feed{}, false
 }
 
-func (s *JSONStore) Create(name, sourceURL, keyword string) (domain.Feed, error) {
+func (s *JSONStore) Create(owner, name, sourceURL, keyword string) (domain.Feed, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -88,6 +94,7 @@ func (s *JSONStore) Create(name, sourceURL, keyword string) (domain.Feed, error)
 	}
 
 	feed := domain.Feed{
+		Owner:     owner,
 		Name:      name,
 		Slug:      slug,
 		SourceURL: sourceURL,
@@ -102,12 +109,12 @@ func (s *JSONStore) Create(name, sourceURL, keyword string) (domain.Feed, error)
 	return feed, nil
 }
 
-func (s *JSONStore) Delete(slug string) error {
+func (s *JSONStore) Delete(slug, owner string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	for i, feed := range s.feeds {
-		if feed.Slug != slug {
+		if feed.Slug != slug || feed.Owner != owner {
 			continue
 		}
 		original := append([]domain.Feed(nil), s.feeds...)
@@ -151,9 +158,9 @@ func writeAtomic(path string, data []byte) error {
 }
 
 func fromRecord(record feedRecord) domain.Feed {
-	return domain.Feed{Name: record.Name, Slug: record.Slug, SourceURL: record.SourceURL, Keyword: record.Keyword, CreatedAt: record.CreatedAt}
+	return domain.Feed{Owner: record.Owner, Name: record.Name, Slug: record.Slug, SourceURL: record.SourceURL, Keyword: record.Keyword, CreatedAt: record.CreatedAt}
 }
 
 func toRecord(feed domain.Feed) feedRecord {
-	return feedRecord{Name: feed.Name, Slug: feed.Slug, SourceURL: feed.SourceURL, Keyword: feed.Keyword, CreatedAt: feed.CreatedAt}
+	return feedRecord{Owner: feed.Owner, Name: feed.Name, Slug: feed.Slug, SourceURL: feed.SourceURL, Keyword: feed.Keyword, CreatedAt: feed.CreatedAt}
 }

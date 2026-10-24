@@ -115,54 +115,64 @@ func (a *Authenticator) Register(username, password string) error {
 }
 
 func (a *Authenticator) ValidateRequest(request *http.Request) error {
+	_, err := a.Subject(request)
+	return err
+}
+
+func (a *Authenticator) Subject(request *http.Request) (string, error) {
 	if authorization := request.Header.Get("Authorization"); authorization != "" {
 		parts := strings.Fields(authorization)
 		if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") {
-			return ErrInvalidToken
+			return "", ErrInvalidToken
 		}
-		return a.ValidateToken(parts[1])
+		return a.TokenSubject(parts[1])
 	}
 
 	cookie, err := request.Cookie(authCookieName)
 	if err != nil {
-		return ErrInvalidToken
+		return "", ErrInvalidToken
 	}
-	return a.ValidateToken(cookie.Value)
+	return a.TokenSubject(cookie.Value)
 }
 
 func (a *Authenticator) ValidateToken(token string) error {
+	_, err := a.TokenSubject(token)
+	return err
+}
+
+func (a *Authenticator) TokenSubject(token string) (string, error) {
 	if len(token) > 4096 {
-		return ErrInvalidToken
+		return "", ErrInvalidToken
 	}
 	parts := strings.Split(token, ".")
 	if len(parts) != 3 || parts[0] == "" || parts[1] == "" || parts[2] == "" {
-		return ErrInvalidToken
+		return "", ErrInvalidToken
 	}
 
 	var header jwtHeader
 	headerBytes, err := decodeSegment(parts[0])
 	if err != nil || json.Unmarshal(headerBytes, &header) != nil || header.Algorithm != "HS256" || header.Type != "JWT" {
-		return ErrInvalidToken
+		return "", ErrInvalidToken
 	}
 
 	signature, err := decodeSegment(parts[2])
 	if err != nil || !hmac.Equal(signature, a.sign([]byte(parts[0]+"."+parts[1]))) {
-		return ErrInvalidToken
+		return "", ErrInvalidToken
 	}
 
 	claimsBytes, err := decodeSegment(parts[1])
 	if err != nil {
-		return ErrInvalidToken
+		return "", ErrInvalidToken
 	}
 	var claims jwtClaims
 	if err := json.Unmarshal(claimsBytes, &claims); err != nil || claims.Subject == "" || claims.Issuer != issuer {
-		return ErrInvalidToken
+		return "", ErrInvalidToken
 	}
 	now := a.now().Unix()
 	if claims.Issued <= 0 || claims.Expires <= claims.Issued || claims.Expires <= now {
-		return ErrInvalidToken
+		return "", ErrInvalidToken
 	}
-	return nil
+	return claims.Subject, nil
 }
 
 func (a *Authenticator) sign(input []byte) []byte {

@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"html/template"
@@ -38,6 +39,8 @@ type authCredentials struct {
 	Username string `json:"username"`
 	Password string `json:"password"`
 }
+
+type authenticatedUsernameContextKey struct{}
 
 func NewHandler(service *application.Service, authenticators ...*Authenticator) http.Handler {
 	var auth *Authenticator
@@ -221,7 +224,8 @@ func (h *Handler) authenticate(next http.Handler) http.Handler {
 			next.ServeHTTP(writer, request)
 			return
 		}
-		if err := h.auth.ValidateRequest(request); err != nil {
+		username, err := h.auth.Subject(request)
+		if err != nil {
 			if request.Method == http.MethodGet && acceptsHTML(request) {
 				http.Redirect(writer, request, "/auth/sign-in", http.StatusSeeOther)
 				return
@@ -230,6 +234,7 @@ func (h *Handler) authenticate(next http.Handler) http.Handler {
 			http.Error(writer, "Authentication required.", http.StatusUnauthorized)
 			return
 		}
+		request = request.WithContext(context.WithValue(request.Context(), authenticatedUsernameContextKey{}, username))
 		next.ServeHTTP(writer, request)
 	})
 }
@@ -254,7 +259,7 @@ func (h *Handler) createFeed(writer http.ResponseWriter, request *http.Request) 
 		h.renderHome(writer, request, "Could not read form.", http.StatusBadRequest)
 		return
 	}
-	_, err := h.service.CreateFeed(request.Context(), request.FormValue("name"), request.FormValue("source_url"), request.FormValue("keyword"))
+	_, err := h.service.CreateFeed(request.Context(), authenticatedUsername(request), request.FormValue("name"), request.FormValue("source_url"), request.FormValue("keyword"))
 	if err != nil {
 		switch {
 		case errors.Is(err, application.ErrInvalidFeed):
@@ -295,7 +300,7 @@ func (h *Handler) serveFeed(writer http.ResponseWriter, request *http.Request) {
 }
 
 func (h *Handler) deleteFeed(writer http.ResponseWriter, request *http.Request) {
-	if err := h.service.DeleteFeed(request.PathValue("slug")); err != nil {
+	if err := h.service.DeleteFeed(authenticatedUsername(request), request.PathValue("slug")); err != nil {
 		if errors.Is(err, application.ErrFeedNotFound) {
 			http.NotFound(writer, request)
 			return
@@ -310,9 +315,14 @@ func (h *Handler) deleteFeed(writer http.ResponseWriter, request *http.Request) 
 func (h *Handler) renderHome(writer http.ResponseWriter, request *http.Request, message string, status int) {
 	writer.Header().Set("Content-Type", "text/html; charset=utf-8")
 	writer.WriteHeader(status)
-	if err := homeTemplate.Execute(writer, homePageData{Feeds: h.service.ListFeeds(), BaseURL: baseURL(request), Version: version.Version, Error: message}); err != nil {
+	if err := homeTemplate.Execute(writer, homePageData{Feeds: h.service.ListFeeds(authenticatedUsername(request)), BaseURL: baseURL(request), Version: version.Version, Error: message}); err != nil {
 		log.Printf("render home: %v", err)
 	}
+}
+
+func authenticatedUsername(request *http.Request) string {
+	username, _ := request.Context().Value(authenticatedUsernameContextKey{}).(string)
+	return username
 }
 
 func baseURL(request *http.Request) string {
