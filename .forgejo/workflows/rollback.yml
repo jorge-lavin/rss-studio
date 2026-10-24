@@ -1,0 +1,66 @@
+name: Roll back production
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Exact existing image version, without the v prefix (for example, 0.1.0)
+        required: true
+        type: string
+
+concurrency:
+  group: production-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  rollback:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate target version
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "Unsupported rollback version: $VERSION" >&2
+            exit 1
+          fi
+
+      - name: Configure SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          test -n "$DEPLOY_SSH_KEY"
+          test -n "$DEPLOY_KNOWN_HOSTS"
+          install -m 700 -d "$HOME/.ssh"
+          printf '%s\n' "$DEPLOY_SSH_KEY" > "$HOME/.ssh/deploy_key"
+          chmod 600 "$HOME/.ssh/deploy_key"
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
+          chmod 644 "$HOME/.ssh/known_hosts"
+
+      - name: Deploy selected image
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          test -n "$DEPLOY_HOST"
+          test -n "$DEPLOY_USER"
+          if [[ ! "$VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "Unsupported rollback version: $VERSION" >&2
+            exit 1
+          fi
+
+          ssh \
+            -i "$HOME/.ssh/deploy_key" \
+            -o BatchMode=yes \
+            -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile="$HOME/.ssh/known_hosts" \
+            "$DEPLOY_USER@$DEPLOY_HOST" \
+            "set -e
+             RSS_STUDIO_TAG='$VERSION' docker compose -f /home/deploy/rss-studio/compose.yaml pull rss-studio
+             RSS_STUDIO_TAG='$VERSION' docker compose -f /home/deploy/rss-studio/compose.yaml up -d --no-build rss-studio"

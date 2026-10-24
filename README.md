@@ -93,6 +93,41 @@ The workflow does not log in or modify remote Docker credentials. It pulls and
 recreates only the `rss-studio` service, preserving its Docker data volume and
 leaving separate Caddy infrastructure untouched.
 
+## Production rollback
+
+Normal release deployment automatically restores the previously running
+immutable release image if pulling, starting, or startup verification of the
+new image fails. The deployment remains failed so it is visible in Forgejo.
+Automatic rollback requires an existing release-tagged `rss-studio` container;
+if none exists, deployment stops before changing production.
+
+For manual recovery, use an existing immutable release image. Before starting,
+confirm the target release exists in GHCR, the deployment secrets are
+configured, and no migration or other release-specific action is required.
+Do not change `RSS_STUDIO_AUTH_USERNAME`, `RSS_STUDIO_AUTH_PASSWORD`, or
+`RSS_STUDIO_JWT_SECRET`; they remain on the host and existing data stays in the
+`rss-studio-data` volume.
+
+In Forgejo, run **Roll back production** from `main`, enter an exact version such as
+`0.1.0` or `0.2.0` without the `v` prefix, and start the workflow. It rejects
+`latest`, `v0.2.0`, prerelease versions, and other input before opening SSH.
+The workflow runs `docker compose pull` followed by `up -d --no-build` for only
+the `rss-studio` service.
+
+Verify the result on the host:
+
+```sh
+cd /home/deploy/rss-studio
+docker compose ps rss-studio
+curl -sS -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8080/
+```
+
+With authentication enabled, the curl check should return `401`; also verify
+login and one known public `/feeds/*.xml` URL through the normal public host.
+If rollback is not sufficient, forward-redeploy by running the same workflow
+with the desired exact release version, or merge a fix to `main` and let the
+normal release deployment publish and deploy it.
+
 ## Development
 
 Requires Go 1.23 or newer.

@@ -208,6 +208,84 @@ jobs:
             -o StrictHostKeyChecking=yes \
             -o UserKnownHostsFile="$HOME/.ssh/known_hosts" \
             "$DEPLOY_USER@$DEPLOY_HOST" \
-            "set -e
-             RSS_STUDIO_TAG='$VERSION' docker compose -f /home/deploy/rss-studio/compose.yaml pull rss-studio
-             RSS_STUDIO_TAG='$VERSION' docker compose -f /home/deploy/rss-studio/compose.yaml up -d --no-build rss-studio"
+            "bash -s -- '$VERSION'" <<'REMOTE'
+          set -euo pipefail
+
+          version=$1
+          compose_file=/home/deploy/rss-studio/compose.yaml
+          image_prefix=ghcr.io/jorge-lavin/rss-studio
+          version_pattern='^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'
+
+          previous_container=$(docker ps -aq \
+            --filter label=com.docker.compose.service=rss-studio | sed -n '1p')
+          if [[ -z "$previous_container" ]]; then
+            echo "Cannot deploy safely: no existing rss-studio container to restore" >&2
+            exit 1
+          fi
+
+          previous_image=$(docker inspect --format '{{.Config.Image}}' "$previous_container")
+          case "$previous_image" in
+            "$image_prefix":*) previous_version=${previous_image#"$image_prefix":} ;;
+            *)
+              echo "Cannot deploy safely: current image is not a release tag: $previous_image" >&2
+              exit 1
+              ;;
+          esac
+          if [[ ! "$previous_version" =~ $version_pattern ]]; then
+            echo "Cannot deploy safely: current image has unsupported tag: $previous_version" >&2
+            exit 1
+          fi
+
+          service_container() {
+            docker ps -q --filter label=com.docker.compose.service=rss-studio | sed -n '1p'
+          }
+
+          wait_for_running() {
+            local container
+            for _ in {1..30}; do
+              container=$(service_container)
+              if [[ -n "$container" ]] && [[ "$(docker inspect --format '{{.State.Status}}' "$container")" == running ]]; then
+                return 0
+              fi
+              sleep 1
+            done
+            return 1
+          }
+
+          rollback_required=false
+          rollback() {
+            local status=$?
+            trap - EXIT
+            if [[ "$rollback_required" == true && "$status" -ne 0 ]]; then
+              echo "Deployment failed; restoring rss-studio:$previous_version" >&2
+              rollback_ok=true
+              if ! RSS_STUDIO_TAG="$previous_version" docker compose -f "$compose_file" pull rss-studio; then
+                rollback_ok=false
+              fi
+              if ! RSS_STUDIO_TAG="$previous_version" docker compose -f "$compose_file" up -d --no-build rss-studio; then
+                rollback_ok=false
+              fi
+              if ! wait_for_running; then
+                rollback_ok=false
+              fi
+              if [[ "$rollback_ok" != true ]]; then
+                echo "Automatic rollback failed" >&2
+                exit 1
+              fi
+              echo "Automatic rollback completed" >&2
+            fi
+            exit "$status"
+          }
+          trap rollback EXIT
+
+          rollback_required=true
+          RSS_STUDIO_TAG="$version" docker compose -f "$compose_file" pull rss-studio
+          RSS_STUDIO_TAG="$version" docker compose -f "$compose_file" up -d --no-build rss-studio
+          current_container=$(service_container)
+          current_image=$(docker inspect --format '{{.Config.Image}}' "$current_container")
+          [[ "$current_image" == "$image_prefix:$version" ]]
+          wait_for_running
+
+          rollback_required=false
+          trap - EXIT
+          REMOTE
