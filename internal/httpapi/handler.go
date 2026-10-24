@@ -12,6 +12,7 @@ import (
 
 	"rss-studio/internal/application"
 	"rss-studio/internal/domain"
+	"rss-studio/internal/observability"
 	"rss-studio/internal/version"
 )
 
@@ -59,7 +60,7 @@ func NewHandler(service *application.Service, authenticators ...*Authenticator) 
 	mux.HandleFunc("POST /feeds", handler.createFeed)
 	mux.HandleFunc("GET /feeds/{file}", handler.serveFeed)
 	mux.HandleFunc("POST /feeds/{slug}/delete", handler.deleteFeed)
-	return requestLogger(handler.authenticate(mux))
+	return observability.HTTPHandler(handler.authenticate(mux))
 }
 
 func (h *Handler) login(writer http.ResponseWriter, request *http.Request) {
@@ -323,14 +324,6 @@ func baseURL(request *http.Request) string {
 		}
 	}
 	return scheme + "://" + request.Host
-}
-
-func requestLogger(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		started := time.Now()
-		next.ServeHTTP(writer, request)
-		log.Printf("%s %s %s", request.Method, request.URL.Path, time.Since(started).Round(time.Millisecond))
-	})
 }
 
 var homeTemplate = template.Must(template.New("home").Parse(`<!doctype html>

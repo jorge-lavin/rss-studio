@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"log"
 	"net/http"
 	"os"
@@ -10,12 +11,23 @@ import (
 	"rss-studio/internal/application"
 	"rss-studio/internal/cache"
 	"rss-studio/internal/httpapi"
+	"rss-studio/internal/observability"
 	"rss-studio/internal/rss"
 	"rss-studio/internal/source"
 	"rss-studio/internal/storage"
 )
 
 func main() {
+	shutdownObservability, err := observability.Setup(context.Background(), "rss-studio")
+	if err != nil {
+		log.Fatalf("configure observability: %v", err)
+	}
+	defer func() {
+		if err := shutdownObservability(context.Background()); err != nil {
+			log.Printf("shutdown observability: %v", err)
+		}
+	}()
+
 	address := envOrDefault("RSS_STUDIO_ADDRESS", ":8080")
 	dataPath := envOrDefault("RSS_STUDIO_DATA", "/data/feeds.json")
 	databasePath := envOrDefault("RSS_STUDIO_DB", filepath.Join(filepath.Dir(dataPath), "rss-studio.db"))

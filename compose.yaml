@@ -5,6 +5,10 @@ services:
       - "8080:8080"
     environment:
       RSS_STUDIO_JWT_SECRET: ${RSS_STUDIO_JWT_SECRET:?set RSS_STUDIO_JWT_SECRET}
+      OTEL_SERVICE_NAME: ${OTEL_SERVICE_NAME:-rss-studio}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+      OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: ${OTEL_EXPORTER_OTLP_TRACES_ENDPOINT:-}
+      OTEL_TRACES_EXPORTER: ${OTEL_TRACES_EXPORTER:-}
     volumes:
       - rss-studio-data:/data
     restart: unless-stopped

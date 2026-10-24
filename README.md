@@ -55,6 +55,26 @@ development environment.
 
 Generated feeds are precomputed on disk. Requests return cached XML immediately, then check the source in the background. RSS Studio regenerates only when the source `Last-Modified` value advances.
 
+## Observability
+
+RSS Studio records OpenTelemetry-compatible HTTP server spans. Each span includes
+the matched route, status, and duration; feed slugs and request paths are not
+recorded. Panics become HTTP 500 responses, are logged with a stack trace, and
+are recorded as span errors. Requests taking at least one second are marked with
+a `slow request` log entry.
+
+Tracing is disabled unless an OTLP endpoint is configured. To export traces over
+OTLP/HTTP, set the standard variables before starting the container:
+
+```sh
+export OTEL_SERVICE_NAME=rss-studio
+export OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318
+docker compose up -d --build
+```
+
+`OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` can be used instead for a trace-specific
+endpoint. Set `OTEL_TRACES_EXPORTER=none` to disable exporting explicitly.
+
 ## Releases
 
 Forgejo creates releases automatically from `main` after tests pass. Commit
