@@ -138,3 +138,41 @@ func TestAuthenticatedHandlerProtectsManagementAndLeavesFeedsPublic(t *testing.T
 		t.Fatalf("expected public missing feed to return 404, got %d", response.StatusCode)
 	}
 }
+
+func TestAuthenticatedHandlerRateLimitsLoginAttempts(t *testing.T) {
+	store, err := storage.NewJSONStore(filepath.Join(t.TempDir(), "feeds.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := application.NewService(store, cache.NewFileCache(t.TempDir()), sourceStub{}, rss.Filter)
+	auth, err := httpapi.NewAuthenticator(httpapi.AuthConfig{
+		Username:  "admin",
+		Password:  "password",
+		JWTSecret: strings.Repeat("x", 32),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := httpapi.NewHandler(service, auth)
+
+	for attempt := 1; attempt <= 5; attempt++ {
+		request := httptest.NewRequest(http.MethodPost, "/auth/login", strings.NewReader(`{"username":"admin","password":"wrong"}`))
+		request.RemoteAddr = "192.0.2.1:1234"
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, request)
+		if recorder.Code != http.StatusUnauthorized {
+			t.Fatalf("attempt %d: expected 401, got %d", attempt, recorder.Code)
+		}
+	}
+
+	request := httptest.NewRequest(http.MethodPost, "/auth/login", strings.NewReader(`{"username":"admin","password":"wrong"}`))
+	request.RemoteAddr = "192.0.2.1:5678"
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusTooManyRequests {
+		t.Fatalf("expected rate-limited login to return 429, got %d", recorder.Code)
+	}
+	if recorder.Header().Get("Retry-After") == "" {
+		t.Fatal("expected rate-limited login to include Retry-After")
+	}
+}

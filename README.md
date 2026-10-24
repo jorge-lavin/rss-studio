@@ -140,3 +140,5 @@ go run ./cmd/rss-studio
 Override storage or listen address with `RSS_STUDIO_DATA` and `RSS_STUDIO_ADDRESS`.
 `RSS_STUDIO_AUTH_USERNAME`, `RSS_STUDIO_AUTH_PASSWORD`, and
 `RSS_STUDIO_JWT_SECRET` are required. JWTs use HS256 and expire after 24 hours.
+Login attempts are limited to five per client IP per minute; excess attempts
+return HTTP 429 with a `Retry-After` header.

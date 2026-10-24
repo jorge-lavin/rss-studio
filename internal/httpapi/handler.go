@@ -6,6 +6,7 @@ import (
 	"html/template"
 	"log"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -15,8 +16,9 @@ import (
 )
 
 type Handler struct {
-	service *application.Service
-	auth    *Authenticator
+	service      *application.Service
+	auth         *Authenticator
+	loginLimiter *loginRateLimiter
 }
 
 type homePageData struct {
@@ -31,7 +33,7 @@ func NewHandler(service *application.Service, authenticators ...*Authenticator) 
 	if len(authenticators) > 0 {
 		auth = authenticators[0]
 	}
-	handler := &Handler{service: service, auth: auth}
+	handler := &Handler{service: service, auth: auth, loginLimiter: newLoginRateLimiter()}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /{$}", handler.home)
 	if auth != nil {
@@ -44,6 +46,13 @@ func NewHandler(service *application.Service, authenticators ...*Authenticator) 
 }
 
 func (h *Handler) login(writer http.ResponseWriter, request *http.Request) {
+	if allowed, retryAfter := h.loginLimiter.allow(requestClient(request)); !allowed {
+		seconds := int((retryAfter + time.Second - 1) / time.Second)
+		writer.Header().Set("Retry-After", strconv.Itoa(seconds))
+		http.Error(writer, "Too many login attempts. Try again later.", http.StatusTooManyRequests)
+		return
+	}
+
 	var credentials struct {
 		Username string `json:"username"`
 		Password string `json:"password"`
