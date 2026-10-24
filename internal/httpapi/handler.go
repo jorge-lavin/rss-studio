@@ -153,8 +153,8 @@ func acceptsHTML(request *http.Request) bool {
 }
 
 func isPublicRequest(request *http.Request) bool {
-	if request.Method == http.MethodPost && request.URL.Path == "/auth/login" {
-		return true
+	if request.URL.Path == "/auth/login" {
+		return request.Method == http.MethodGet || request.Method == http.MethodPost
 	}
 	return request.Method == http.MethodGet && strings.HasPrefix(request.URL.Path, "/feeds/") && strings.HasSuffix(request.URL.Path, ".xml")
 }

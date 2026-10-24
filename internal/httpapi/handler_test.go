@@ -163,6 +163,14 @@ func TestAuthenticatedHandlerSupportsBrowserLogin(t *testing.T) {
 		t.Fatalf("expected browser request to redirect to login, got %d and %q", recorder.Code, recorder.Header().Get("Location"))
 	}
 
+	request = httptest.NewRequest(http.MethodGet, "/auth/login", nil)
+	request.Header.Set("Accept", "text/html")
+	recorder = httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), "Sign in") {
+		t.Fatalf("expected login page to be publicly reachable, got %d", recorder.Code)
+	}
+
 	request = httptest.NewRequest(http.MethodPost, "/auth/login", strings.NewReader("username=admin&password=password"))
 	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	recorder = httptest.NewRecorder()
