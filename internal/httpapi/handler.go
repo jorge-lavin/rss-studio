@@ -327,14 +327,15 @@ func baseURL(request *http.Request) string {
 }
 
 var homeTemplate = template.Must(template.New("home").Parse(`<!doctype html>
-<html lang="en" class="h-full bg-slate-100">
+<html lang="en" class="h-full bg-slate-100 dark:bg-slate-950">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
   <title>RSS Studio</title>
   <script src="https://cdn.tailwindcss.com"></script>
 </head>
-<body class="min-h-full bg-slate-100 text-slate-950 antialiased">
+<body class="min-h-full bg-slate-100 text-slate-950 antialiased dark:bg-slate-950 dark:text-slate-100">
 <div class="min-h-screen">
   <header class="bg-slate-950 text-white">
     <div class="mx-auto max-w-6xl px-5 sm:px-8">
@@ -349,27 +350,27 @@ var homeTemplate = template.Must(template.New("home").Parse(`<!doctype html>
   </header>
 
   <main class="mx-auto max-w-6xl px-5 pb-16 sm:px-8">
-    <section class="mt-10 rounded-2xl bg-white p-6 shadow-xl shadow-slate-900/5 ring-1 ring-slate-200 sm:p-8">
+    <section class="mt-10 rounded-2xl bg-white p-6 shadow-xl shadow-slate-900/5 ring-1 ring-slate-200 dark:bg-slate-900 dark:ring-slate-800 sm:p-8">
       <div class="mb-7 flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
         <div>
           <h2 class="text-xl font-semibold tracking-tight">Create a filtered feed</h2>
-          <p class="mt-1 text-sm text-slate-500">One keyword. Less noise.</p>
+          <p class="mt-1 text-sm text-slate-500 dark:text-slate-400">One keyword. Less noise.</p>
         </div>
         <span class="text-xs font-medium uppercase tracking-wider text-slate-400">New feed</span>
       </div>
-      {{if .Error}}<div class="mb-6 flex items-start gap-3 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700" role="alert"><span class="mt-0.5 font-bold">!</span><p>{{.Error}}</p></div>{{end}}
+      {{if .Error}}<div class="mb-6 flex items-start gap-3 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700 dark:border-rose-800 dark:bg-rose-950/50 dark:text-rose-300" role="alert"><span class="mt-0.5 font-bold">!</span><p>{{.Error}}</p></div>{{end}}
       <form method="post" action="/feeds" class="grid gap-5 lg:grid-cols-[1fr_1.4fr_0.8fr_auto] lg:items-end">
         <div>
-          <label for="name" class="mb-2 block text-sm font-medium text-slate-700">Feed name</label>
-          <input id="name" name="name" maxlength="120" placeholder="My tech episodes" required class="block w-full rounded-lg border border-slate-300 bg-white px-3.5 py-3 text-sm text-slate-900 shadow-sm outline-none transition placeholder:text-slate-400 focus:border-violet-600 focus:ring-4 focus:ring-violet-600/10">
+          <label for="name" class="mb-2 block text-sm font-medium text-slate-700 dark:text-slate-300">Feed name</label>
+          <input id="name" name="name" maxlength="120" placeholder="My tech episodes" required class="block w-full rounded-lg border border-slate-300 bg-white px-3.5 py-3 text-sm text-slate-900 shadow-sm outline-none transition placeholder:text-slate-400 focus:border-violet-600 focus:ring-4 focus:ring-violet-600/10 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 dark:placeholder:text-slate-500">
         </div>
         <div>
-          <label for="source_url" class="mb-2 block text-sm font-medium text-slate-700">Source RSS URL</label>
-          <input id="source_url" name="source_url" type="url" maxlength="2048" placeholder="https://example.com/feed.xml" required class="block w-full rounded-lg border border-slate-300 bg-white px-3.5 py-3 text-sm text-slate-900 shadow-sm outline-none transition placeholder:text-slate-400 focus:border-violet-600 focus:ring-4 focus:ring-violet-600/10">
+          <label for="source_url" class="mb-2 block text-sm font-medium text-slate-700 dark:text-slate-300">Source RSS URL</label>
+          <input id="source_url" name="source_url" type="url" maxlength="2048" placeholder="https://example.com/feed.xml" required class="block w-full rounded-lg border border-slate-300 bg-white px-3.5 py-3 text-sm text-slate-900 shadow-sm outline-none transition placeholder:text-slate-400 focus:border-violet-600 focus:ring-4 focus:ring-violet-600/10 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 dark:placeholder:text-slate-500">
         </div>
         <div>
-          <label for="keyword" class="mb-2 block text-sm font-medium text-slate-700">Match title</label>
-          <input id="keyword" name="keyword" maxlength="200" placeholder="e.g. AI" required class="block w-full rounded-lg border border-slate-300 bg-white px-3.5 py-3 text-sm text-slate-900 shadow-sm outline-none transition placeholder:text-slate-400 focus:border-violet-600 focus:ring-4 focus:ring-violet-600/10">
+          <label for="keyword" class="mb-2 block text-sm font-medium text-slate-700 dark:text-slate-300">Match title</label>
+          <input id="keyword" name="keyword" maxlength="200" placeholder="e.g. AI" required class="block w-full rounded-lg border border-slate-300 bg-white px-3.5 py-3 text-sm text-slate-900 shadow-sm outline-none transition placeholder:text-slate-400 focus:border-violet-600 focus:ring-4 focus:ring-violet-600/10 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 dark:placeholder:text-slate-500">
         </div>
         <button type="submit" class="inline-flex min-h-[46px] items-center justify-center gap-2 rounded-lg bg-violet-600 px-5 py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-violet-700 focus:outline-none focus:ring-4 focus:ring-violet-600/20 lg:mb-0">Publish feed <span aria-hidden="true">→</span></button>
       </form>
@@ -379,32 +380,32 @@ var homeTemplate = template.Must(template.New("home").Parse(`<!doctype html>
       <div class="mb-5 flex items-center justify-between gap-4">
         <div>
           <h2 class="text-xl font-semibold tracking-tight">Published feeds</h2>
-          <p class="mt-1 text-sm text-slate-500">Ready to add to any RSS reader.</p>
+          <p class="mt-1 text-sm text-slate-500 dark:text-slate-400">Ready to add to any RSS reader.</p>
         </div>
-        <span class="rounded-full bg-slate-200 px-3 py-1 text-sm font-medium text-slate-600">{{len .Feeds}}</span>
+        <span class="rounded-full bg-slate-200 px-3 py-1 text-sm font-medium text-slate-600 dark:bg-slate-800 dark:text-slate-300">{{len .Feeds}}</span>
       </div>
       {{if not .Feeds}}
-      <div class="rounded-2xl border border-dashed border-slate-300 bg-white px-6 py-14 text-center">
-        <div class="mx-auto flex h-11 w-11 items-center justify-center rounded-full bg-violet-50 text-xl text-violet-600">＋</div>
-        <h3 class="mt-4 text-sm font-semibold text-slate-900">No filtered feeds yet</h3>
-        <p class="mt-1 text-sm text-slate-500">Create your first one above.</p>
+      <div class="rounded-2xl border border-dashed border-slate-300 bg-white px-6 py-14 text-center dark:border-slate-700 dark:bg-slate-900">
+        <div class="mx-auto flex h-11 w-11 items-center justify-center rounded-full bg-violet-50 text-xl text-violet-600 dark:bg-violet-950 dark:text-violet-300">＋</div>
+        <h3 class="mt-4 text-sm font-semibold text-slate-900 dark:text-slate-100">No filtered feeds yet</h3>
+        <p class="mt-1 text-sm text-slate-500 dark:text-slate-400">Create your first one above.</p>
       </div>
       {{else}}
       <div class="space-y-3">
         {{range .Feeds}}
-        <article class="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
+        <article class="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900 sm:p-6">
           <div class="flex flex-col gap-5 lg:flex-row lg:items-center lg:justify-between">
             <div class="min-w-0">
               <div class="flex flex-wrap items-center gap-3">
-                <h3 class="text-base font-semibold text-slate-900">{{.Name}}</h3>
-                <span class="rounded-full bg-violet-50 px-2.5 py-1 text-xs font-medium text-violet-700">Contains “{{.Keyword}}”</span>
+                <h3 class="text-base font-semibold text-slate-900 dark:text-slate-100">{{.Name}}</h3>
+                <span class="rounded-full bg-violet-50 px-2.5 py-1 text-xs font-medium text-violet-700 dark:bg-violet-950 dark:text-violet-300">Contains “{{.Keyword}}”</span>
               </div>
-              <p class="mt-2 truncate text-sm text-slate-500" title="{{.SourceURL}}">Source: {{.SourceURL}}</p>
-              <a href="/feeds/{{.Slug}}.xml" class="mt-3 block truncate text-sm font-medium text-violet-600 hover:text-violet-700 hover:underline" title="{{$.BaseURL}}/feeds/{{.Slug}}.xml">{{$.BaseURL}}/feeds/{{.Slug}}.xml</a>
+              <p class="mt-2 truncate text-sm text-slate-500 dark:text-slate-400" title="{{.SourceURL}}">Source: {{.SourceURL}}</p>
+              <a href="/feeds/{{.Slug}}.xml" class="mt-3 block truncate text-sm font-medium text-violet-600 hover:text-violet-700 hover:underline dark:text-violet-400 dark:hover:text-violet-300" title="{{$.BaseURL}}/feeds/{{.Slug}}.xml">{{$.BaseURL}}/feeds/{{.Slug}}.xml</a>
             </div>
-            <div class="flex shrink-0 items-center gap-4 border-t border-slate-100 pt-4 lg:border-0 lg:pt-0">
-              <a href="/feeds/{{.Slug}}.xml" class="text-sm font-semibold text-slate-700 hover:text-slate-950">Open feed <span aria-hidden="true">↗</span></a>
-              <form method="post" action="/feeds/{{.Slug}}/delete"><button class="text-sm font-medium text-rose-600 hover:text-rose-700" type="submit">Delete</button></form>
+            <div class="flex shrink-0 items-center gap-4 border-t border-slate-100 pt-4 dark:border-slate-800 lg:border-0 lg:pt-0">
+              <a href="/feeds/{{.Slug}}.xml" class="text-sm font-semibold text-slate-700 hover:text-slate-950 dark:text-slate-300 dark:hover:text-slate-100">Open feed <span aria-hidden="true">↗</span></a>
+              <form method="post" action="/feeds/{{.Slug}}/delete"><button class="text-sm font-medium text-rose-600 hover:text-rose-700 dark:text-rose-400 dark:hover:text-rose-300" type="submit">Delete</button></form>
             </div>
           </div>
         </article>
@@ -420,36 +421,37 @@ var homeTemplate = template.Must(template.New("home").Parse(`<!doctype html>
 </html>`))
 
 var authTemplate = template.Must(template.New("auth").Parse(`<!doctype html>
-<html lang="en" class="h-full bg-slate-100">
+<html lang="en" class="h-full bg-slate-100 dark:bg-slate-950">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
   <title>{{if .Registration}}Create account{{else}}Sign in{{end}} · RSS Studio</title>
   <script src="https://cdn.tailwindcss.com"></script>
 </head>
-<body class="flex min-h-full items-center justify-center bg-slate-100 px-5 py-12 text-slate-950 antialiased">
-  <main class="w-full max-w-md rounded-2xl bg-white p-6 shadow-xl shadow-slate-900/5 ring-1 ring-slate-200 sm:p-8">
+<body class="flex min-h-full items-center justify-center bg-slate-100 px-5 py-12 text-slate-950 antialiased dark:bg-slate-950 dark:text-slate-100">
+  <main class="w-full max-w-md rounded-2xl bg-white p-6 shadow-xl shadow-slate-900/5 ring-1 ring-slate-200 dark:bg-slate-900 dark:ring-slate-800 sm:p-8">
     <div class="mb-8">
       <a href="/" class="flex items-center gap-2 text-base font-semibold tracking-tight">
         <span class="flex h-8 w-8 items-center justify-center rounded-lg bg-violet-600 text-sm font-black text-white">R</span>
         RSS Studio
       </a>
       <h1 class="mt-8 text-2xl font-semibold tracking-tight">{{if .Registration}}Create account{{else}}Sign in{{end}}</h1>
-      <p class="mt-1 text-sm text-slate-500">{{if .Registration}}Create an account to manage your filtered feeds.{{else}}Sign in to manage your filtered feeds.{{end}}</p>
+      <p class="mt-1 text-sm text-slate-500 dark:text-slate-400">{{if .Registration}}Create an account to manage your filtered feeds.{{else}}Sign in to manage your filtered feeds.{{end}}</p>
     </div>
-    {{if .Error}}<div class="mb-6 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700" role="alert">{{.Error}}</div>{{end}}
+    {{if .Error}}<div class="mb-6 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700 dark:border-rose-800 dark:bg-rose-950/50 dark:text-rose-300" role="alert">{{.Error}}</div>{{end}}
     <form method="post" action="{{if .Registration}}/auth/sign-up{{else}}/auth/sign-in{{end}}" class="space-y-5">
       <div>
-        <label for="username" class="mb-2 block text-sm font-medium text-slate-700">Username</label>
-        <input id="username" name="username" autocomplete="username" required autofocus class="block w-full rounded-lg border border-slate-300 bg-white px-3.5 py-3 text-sm text-slate-900 shadow-sm outline-none transition focus:border-violet-600 focus:ring-4 focus:ring-violet-600/10">
+        <label for="username" class="mb-2 block text-sm font-medium text-slate-700 dark:text-slate-300">Username</label>
+        <input id="username" name="username" autocomplete="username" required autofocus class="block w-full rounded-lg border border-slate-300 bg-white px-3.5 py-3 text-sm text-slate-900 shadow-sm outline-none transition focus:border-violet-600 focus:ring-4 focus:ring-violet-600/10 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100">
       </div>
       <div>
-        <label for="password" class="mb-2 block text-sm font-medium text-slate-700">Password</label>
-        <input id="password" name="password" type="password" autocomplete="{{if .Registration}}new-password{{else}}current-password{{end}}" required class="block w-full rounded-lg border border-slate-300 bg-white px-3.5 py-3 text-sm text-slate-900 shadow-sm outline-none transition focus:border-violet-600 focus:ring-4 focus:ring-violet-600/10">
+        <label for="password" class="mb-2 block text-sm font-medium text-slate-700 dark:text-slate-300">Password</label>
+        <input id="password" name="password" type="password" autocomplete="{{if .Registration}}new-password{{else}}current-password{{end}}" required class="block w-full rounded-lg border border-slate-300 bg-white px-3.5 py-3 text-sm text-slate-900 shadow-sm outline-none transition focus:border-violet-600 focus:ring-4 focus:ring-violet-600/10 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100">
       </div>
       <button type="submit" class="inline-flex min-h-[46px] w-full items-center justify-center rounded-lg bg-violet-600 px-5 py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-violet-700 focus:outline-none focus:ring-4 focus:ring-violet-600/20">{{if .Registration}}Create account{{else}}Sign in{{end}}</button>
     </form>
-    <p class="mt-6 text-center text-sm text-slate-500">{{if .Registration}}Already have an account? <a class="font-semibold text-violet-600 hover:text-violet-700" href="/auth/sign-in">Sign in</a>{{else}}Need an account? <a class="font-semibold text-violet-600 hover:text-violet-700" href="/auth/sign-up">Create one</a>{{end}}</p>
+    <p class="mt-6 text-center text-sm text-slate-500 dark:text-slate-400">{{if .Registration}}Already have an account? <a class="font-semibold text-violet-600 hover:text-violet-700 dark:text-violet-400 dark:hover:text-violet-300" href="/auth/sign-in">Sign in</a>{{else}}Need an account? <a class="font-semibold text-violet-600 hover:text-violet-700 dark:text-violet-400 dark:hover:text-violet-300" href="/auth/sign-up">Create one</a>{{end}}</p>
   </main>
 </body>
 </html>`))
