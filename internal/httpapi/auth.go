@@ -11,6 +11,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"rss-studio/internal/domain"
 )
 
 const (
@@ -30,14 +32,20 @@ type AuthConfig struct {
 	Password  string
 	JWTSecret string
 	TokenTTL  time.Duration
+	UserStore UserStore
+}
+
+type UserStore interface {
+	Authenticate(username, password string) (domain.User, error)
 }
 
 type Authenticator struct {
-	username string
-	password string
-	secret   []byte
-	ttl      time.Duration
-	now      func() time.Time
+	username  string
+	password  string
+	secret    []byte
+	ttl       time.Duration
+	now       func() time.Time
+	userStore UserStore
 }
 
 type jwtHeader struct {
@@ -63,16 +71,24 @@ func NewAuthenticator(config AuthConfig) (*Authenticator, error) {
 		config.TokenTTL = defaultTokenTTL
 	}
 	return &Authenticator{
-		username: config.Username,
-		password: config.Password,
-		secret:   []byte(config.JWTSecret),
-		ttl:      config.TokenTTL,
-		now:      time.Now,
+		username:  config.Username,
+		password:  config.Password,
+		secret:    []byte(config.JWTSecret),
+		ttl:       config.TokenTTL,
+		now:       time.Now,
+		userStore: config.UserStore,
 	}, nil
 }
 
 func (a *Authenticator) IssueToken(username, password string) (string, time.Time, error) {
-	if subtle.ConstantTimeCompare([]byte(username), []byte(a.username)) != 1 ||
+	subject := a.username
+	if a.userStore != nil {
+		user, err := a.userStore.Authenticate(username, password)
+		if err != nil {
+			return "", time.Time{}, ErrInvalidCredentials
+		}
+		subject = user.Username
+	} else if subtle.ConstantTimeCompare([]byte(username), []byte(a.username)) != 1 ||
 		subtle.ConstantTimeCompare([]byte(password), []byte(a.password)) != 1 {
 		return "", time.Time{}, ErrInvalidCredentials
 	}
@@ -84,7 +100,7 @@ func (a *Authenticator) IssueToken(username, password string) (string, time.Time
 		return "", time.Time{}, err
 	}
 	claims, err := json.Marshal(jwtClaims{
-		Subject: a.username,
+		Subject: subject,
 		Issuer:  issuer,
 		Issued:  now.Unix(),
 		Expires: expires.Unix(),
@@ -138,7 +154,7 @@ func (a *Authenticator) ValidateToken(token string) error {
 		return ErrInvalidToken
 	}
 	var claims jwtClaims
-	if err := json.Unmarshal(claimsBytes, &claims); err != nil || claims.Subject != a.username || claims.Issuer != issuer {
+	if err := json.Unmarshal(claimsBytes, &claims); err != nil || claims.Subject == "" || (a.userStore == nil && claims.Subject != a.username) || claims.Issuer != issuer {
 		return ErrInvalidToken
 	}
 	now := a.now().Unix()

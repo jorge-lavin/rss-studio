@@ -31,7 +31,10 @@ curl -H "Authorization: Bearer $token" http://localhost:8080/
 
 Generated RSS URLs remain public so RSS readers can fetch them without JWT
 support. Feed definitions and generated feeds persist in
-the `rss-studio-data` Docker volume.
+the `rss-studio-data` Docker volume. The same volume contains the SQLite
+database at `/data/rss-studio.db`; its migrations run automatically at startup.
+On first startup, the configured authentication account is stored as a password
+hash. Existing accounts are not overwritten by later environment changes.
 
 To run the published image instead:
 
@@ -139,7 +142,8 @@ go run ./cmd/rss-studio
 ```
 
 Override storage or listen address with `RSS_STUDIO_DATA` and `RSS_STUDIO_ADDRESS`.
-`RSS_STUDIO_AUTH_USERNAME`, `RSS_STUDIO_AUTH_PASSWORD`, and
-`RSS_STUDIO_JWT_SECRET` are required. JWTs use HS256 and expire after 24 hours.
+Override the SQLite path with `RSS_STUDIO_DB`. `RSS_STUDIO_AUTH_USERNAME`,
+`RSS_STUDIO_AUTH_PASSWORD`, and `RSS_STUDIO_JWT_SECRET` are required. JWTs use
+HS256 and expire after 24 hours.
 Login attempts are limited to five per client IP per minute; excess attempts
 return HTTP 429 with a `Retry-After` header.

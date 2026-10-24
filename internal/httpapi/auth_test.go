@@ -3,9 +3,12 @@ package httpapi
 import (
 	"errors"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"rss-studio/internal/storage"
 )
 
 func testAuthenticator(t *testing.T) *Authenticator {
@@ -55,6 +58,38 @@ func TestAuthenticatorIssuesAndValidatesToken(t *testing.T) {
 	request.Header.Set("Authorization", "Bearer "+token)
 	if err := auth.ValidateRequest(request); err != nil {
 		t.Fatalf("valid request rejected: %v", err)
+	}
+}
+
+func TestAuthenticatorUsesPersistentUserStore(t *testing.T) {
+	store, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "rss-studio.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.BootstrapUser("admin", "database-password"); err != nil {
+		t.Fatal(err)
+	}
+
+	auth, err := NewAuthenticator(AuthConfig{
+		Username:  "admin",
+		Password:  "environment-password",
+		JWTSecret: strings.Repeat("x", 32),
+		UserStore: store,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	auth.now = func() time.Time { return time.Unix(1000, 0) }
+	if _, _, err := auth.IssueToken("admin", "environment-password"); !errors.Is(err, ErrInvalidCredentials) {
+		t.Fatalf("expected environment password to be ignored, got %v", err)
+	}
+	token, _, err := auth.IssueToken("admin", "database-password")
+	if err != nil {
+		t.Fatalf("persistent credentials rejected: %v", err)
+	}
+	if err := auth.ValidateToken(token); err != nil {
+		t.Fatalf("persistent user token rejected: %v", err)
 	}
 }
 

@@ -18,10 +18,22 @@ import (
 func main() {
 	address := envOrDefault("RSS_STUDIO_ADDRESS", ":8080")
 	dataPath := envOrDefault("RSS_STUDIO_DATA", "/data/feeds.json")
+	databasePath := envOrDefault("RSS_STUDIO_DB", filepath.Join(filepath.Dir(dataPath), "rss-studio.db"))
+	database, err := storage.NewSQLiteStore(databasePath)
+	if err != nil {
+		log.Fatalf("open database: %v", err)
+	}
+	defer database.Close()
+	username := os.Getenv("RSS_STUDIO_AUTH_USERNAME")
+	password := os.Getenv("RSS_STUDIO_AUTH_PASSWORD")
+	if err := database.BootstrapUser(username, password); err != nil {
+		log.Fatalf("bootstrap authentication: %v", err)
+	}
 	auth, err := httpapi.NewAuthenticator(httpapi.AuthConfig{
-		Username:  os.Getenv("RSS_STUDIO_AUTH_USERNAME"),
-		Password:  os.Getenv("RSS_STUDIO_AUTH_PASSWORD"),
+		Username:  username,
+		Password:  password,
 		JWTSecret: os.Getenv("RSS_STUDIO_JWT_SECRET"),
+		UserStore: database,
 	})
 	if err != nil {
 		log.Fatalf("configure authentication: %v", err)
