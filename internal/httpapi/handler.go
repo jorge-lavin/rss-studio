@@ -332,6 +332,20 @@ var homeTemplate = template.Must(template.New("home").Parse(`<!doctype html>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light dark">
+  <script>
+    (() => {
+      try {
+        const preference = localStorage.getItem("rss-studio-theme");
+        const dark = preference === "dark" || (preference !== "light" && window.matchMedia("(prefers-color-scheme: dark)").matches);
+        document.documentElement.classList.toggle("dark", dark);
+        document.documentElement.style.colorScheme = dark ? "dark" : "light";
+      } catch {}
+    })();
+  </script>
+  <script>
+    window.tailwind = window.tailwind || {};
+    window.tailwind.config = { darkMode: "class" };
+  </script>
   <title>RSS Studio</title>
   <script src="https://cdn.tailwindcss.com"></script>
 </head>
@@ -344,7 +358,12 @@ var homeTemplate = template.Must(template.New("home").Parse(`<!doctype html>
           <span class="flex h-8 w-8 items-center justify-center rounded-lg bg-violet-600 text-sm font-black text-white">R</span>
           RSS Studio
         </a>
-        <span class="hidden text-sm text-slate-400 sm:block">Podcast feed filter</span>
+        <div class="flex items-center gap-4">
+          <span class="hidden text-sm text-slate-400 sm:block">Podcast feed filter</span>
+          <button id="theme-toggle" type="button" aria-pressed="false" aria-label="Switch to dark mode" class="inline-flex items-center gap-2 rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-xs font-medium text-slate-300 transition hover:bg-white/10 focus:outline-none focus:ring-4 focus:ring-violet-400/30">
+            <span data-theme-icon aria-hidden="true">☾</span><span data-theme-label>Dark mode</span>
+          </button>
+        </div>
       </nav>
     </div>
   </header>
@@ -417,6 +436,32 @@ var homeTemplate = template.Must(template.New("home").Parse(`<!doctype html>
 
   <footer class="mx-auto max-w-6xl px-5 pb-8 text-xs text-slate-400 sm:px-8">RSS Studio · Version {{.Version}} · Filter the feed, not your attention.</footer>
 </div>
+<script>
+  (() => {
+    const root = document.documentElement;
+    const toggle = document.getElementById("theme-toggle");
+    if (!toggle) return;
+    const icon = toggle.querySelector("[data-theme-icon]");
+    const label = toggle.querySelector("[data-theme-label]");
+    const update = () => {
+      const dark = root.classList.contains("dark");
+      root.style.colorScheme = dark ? "dark" : "light";
+      toggle.setAttribute("aria-pressed", String(dark));
+      toggle.setAttribute("aria-label", dark ? "Switch to light mode" : "Switch to dark mode");
+      icon.textContent = dark ? "☀" : "☾";
+      label.textContent = dark ? "Light mode" : "Dark mode";
+    };
+    toggle.addEventListener("click", () => {
+      const dark = !root.classList.contains("dark");
+      root.classList.toggle("dark", dark);
+      try {
+        localStorage.setItem("rss-studio-theme", dark ? "dark" : "light");
+      } catch {}
+      update();
+    });
+    update();
+  })();
+</script>
 </body>
 </html>`))
 
@@ -426,16 +471,35 @@ var authTemplate = template.Must(template.New("auth").Parse(`<!doctype html>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light dark">
+  <script>
+    (() => {
+      try {
+        const preference = localStorage.getItem("rss-studio-theme");
+        const dark = preference === "dark" || (preference !== "light" && window.matchMedia("(prefers-color-scheme: dark)").matches);
+        document.documentElement.classList.toggle("dark", dark);
+        document.documentElement.style.colorScheme = dark ? "dark" : "light";
+      } catch {}
+    })();
+  </script>
+  <script>
+    window.tailwind = window.tailwind || {};
+    window.tailwind.config = { darkMode: "class" };
+  </script>
   <title>{{if .Registration}}Create account{{else}}Sign in{{end}} · RSS Studio</title>
   <script src="https://cdn.tailwindcss.com"></script>
 </head>
 <body class="flex min-h-full items-center justify-center bg-slate-100 px-5 py-12 text-slate-950 antialiased dark:bg-slate-950 dark:text-slate-100">
   <main class="w-full max-w-md rounded-2xl bg-white p-6 shadow-xl shadow-slate-900/5 ring-1 ring-slate-200 dark:bg-slate-900 dark:ring-slate-800 sm:p-8">
     <div class="mb-8">
-      <a href="/" class="flex items-center gap-2 text-base font-semibold tracking-tight">
-        <span class="flex h-8 w-8 items-center justify-center rounded-lg bg-violet-600 text-sm font-black text-white">R</span>
-        RSS Studio
-      </a>
+      <div class="flex items-start justify-between gap-4">
+        <a href="/" class="flex items-center gap-2 text-base font-semibold tracking-tight">
+          <span class="flex h-8 w-8 items-center justify-center rounded-lg bg-violet-600 text-sm font-black text-white">R</span>
+          RSS Studio
+        </a>
+        <button id="theme-toggle" type="button" aria-pressed="false" aria-label="Switch to dark mode" class="inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-medium text-slate-600 transition hover:bg-slate-100 focus:outline-none focus:ring-4 focus:ring-violet-600/10 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700">
+          <span data-theme-icon aria-hidden="true">☾</span><span data-theme-label>Dark mode</span>
+        </button>
+      </div>
       <h1 class="mt-8 text-2xl font-semibold tracking-tight">{{if .Registration}}Create account{{else}}Sign in{{end}}</h1>
       <p class="mt-1 text-sm text-slate-500 dark:text-slate-400">{{if .Registration}}Create an account to manage your filtered feeds.{{else}}Sign in to manage your filtered feeds.{{end}}</p>
     </div>
@@ -450,8 +514,34 @@ var authTemplate = template.Must(template.New("auth").Parse(`<!doctype html>
         <input id="password" name="password" type="password" autocomplete="{{if .Registration}}new-password{{else}}current-password{{end}}" required class="block w-full rounded-lg border border-slate-300 bg-white px-3.5 py-3 text-sm text-slate-900 shadow-sm outline-none transition focus:border-violet-600 focus:ring-4 focus:ring-violet-600/10 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100">
       </div>
       <button type="submit" class="inline-flex min-h-[46px] w-full items-center justify-center rounded-lg bg-violet-600 px-5 py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-violet-700 focus:outline-none focus:ring-4 focus:ring-violet-600/20">{{if .Registration}}Create account{{else}}Sign in{{end}}</button>
-    </form>
+</form>
     <p class="mt-6 text-center text-sm text-slate-500 dark:text-slate-400">{{if .Registration}}Already have an account? <a class="font-semibold text-violet-600 hover:text-violet-700 dark:text-violet-400 dark:hover:text-violet-300" href="/auth/sign-in">Sign in</a>{{else}}Need an account? <a class="font-semibold text-violet-600 hover:text-violet-700 dark:text-violet-400 dark:hover:text-violet-300" href="/auth/sign-up">Create one</a>{{end}}</p>
   </main>
+<script>
+  (() => {
+    const root = document.documentElement;
+    const toggle = document.getElementById("theme-toggle");
+    if (!toggle) return;
+    const icon = toggle.querySelector("[data-theme-icon]");
+    const label = toggle.querySelector("[data-theme-label]");
+    const update = () => {
+      const dark = root.classList.contains("dark");
+      root.style.colorScheme = dark ? "dark" : "light";
+      toggle.setAttribute("aria-pressed", String(dark));
+      toggle.setAttribute("aria-label", dark ? "Switch to light mode" : "Switch to dark mode");
+      icon.textContent = dark ? "☀" : "☾";
+      label.textContent = dark ? "Light mode" : "Dark mode";
+    };
+    toggle.addEventListener("click", () => {
+      const dark = !root.classList.contains("dark");
+      root.classList.toggle("dark", dark);
+      try {
+        localStorage.setItem("rss-studio-theme", dark ? "dark" : "light");
+      } catch {}
+      update();
+    });
+    update();
+  })();
+</script>
 </body>
 </html>`))

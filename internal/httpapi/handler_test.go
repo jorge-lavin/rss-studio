@@ -75,8 +75,8 @@ func TestHandlerCreatesAndServesFeed(t *testing.T) {
 	if !strings.Contains(string(homeBody), "RSS Studio · Version "+version.Version) {
 		t.Fatalf("home page does not show version %q: %s", version.Version, homeBody)
 	}
-	if !strings.Contains(string(homeBody), `name="color-scheme" content="light dark"`) || !strings.Contains(string(homeBody), "dark:bg-slate-950") {
-		t.Fatalf("home page does not include system dark-mode styling: %s", homeBody)
+	if !strings.Contains(string(homeBody), `id="theme-toggle"`) || !strings.Contains(string(homeBody), `darkMode: "class"`) || !strings.Contains(string(homeBody), `rss-studio-theme`) {
+		t.Fatalf("home page does not include dark-mode toggle: %s", homeBody)
 	}
 
 	response, err = http.Get(server.URL + "/feeds/foo-feed.xml")
@@ -179,8 +179,8 @@ func TestAuthenticatedHandlerSupportsBrowserLogin(t *testing.T) {
 	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `action="/auth/sign-in"`) || !strings.Contains(recorder.Body.String(), "Sign in") || !strings.Contains(recorder.Body.String(), `href="/auth/sign-up"`) || strings.Contains(recorder.Body.String(), "Self-registration is not available.") {
 		t.Fatalf("expected sign-in page to be publicly reachable, got %d", recorder.Code)
 	}
-	if !strings.Contains(recorder.Body.String(), `name="color-scheme" content="light dark"`) || !strings.Contains(recorder.Body.String(), "dark:bg-slate-950") {
-		t.Fatalf("sign-in page does not include system dark-mode styling: %s", recorder.Body.String())
+	if !strings.Contains(recorder.Body.String(), `id="theme-toggle"`) || !strings.Contains(recorder.Body.String(), `darkMode: "class"`) || !strings.Contains(recorder.Body.String(), `rss-studio-theme`) {
+		t.Fatalf("sign-in page does not include dark-mode toggle: %s", recorder.Body.String())
 	}
 
 	request = httptest.NewRequest(http.MethodGet, "/auth/sign-up", nil)
