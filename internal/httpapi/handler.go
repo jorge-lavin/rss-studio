@@ -37,7 +37,9 @@ func NewHandler(service *application.Service, authenticators ...*Authenticator) 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /{$}", handler.home)
 	if auth != nil {
+		mux.HandleFunc("GET /auth/sign-in", handler.loginPage)
 		mux.HandleFunc("GET /auth/login", handler.loginPage)
+		mux.HandleFunc("POST /auth/sign-in", handler.login)
 		mux.HandleFunc("POST /auth/login", handler.login)
 	}
 	mux.HandleFunc("POST /feeds", handler.createFeed)
@@ -137,7 +139,7 @@ func (h *Handler) authenticate(next http.Handler) http.Handler {
 		}
 		if err := h.auth.ValidateRequest(request); err != nil {
 			if request.Method == http.MethodGet && acceptsHTML(request) {
-				http.Redirect(writer, request, "/auth/login", http.StatusSeeOther)
+				http.Redirect(writer, request, "/auth/sign-in", http.StatusSeeOther)
 				return
 			}
 			writer.Header().Set("WWW-Authenticate", `Bearer realm="rss-studio"`)
@@ -153,7 +155,7 @@ func acceptsHTML(request *http.Request) bool {
 }
 
 func isPublicRequest(request *http.Request) bool {
-	if request.URL.Path == "/auth/login" {
+	if request.URL.Path == "/auth/login" || request.URL.Path == "/auth/sign-in" {
 		return request.Method == http.MethodGet || request.Method == http.MethodPost
 	}
 	return request.Method == http.MethodGet && strings.HasPrefix(request.URL.Path, "/feeds/") && strings.HasSuffix(request.URL.Path, ".xml")
@@ -360,7 +362,7 @@ var loginTemplate = template.Must(template.New("login").Parse(`<!doctype html>
       <p class="mt-1 text-sm text-slate-500">Sign in to manage your filtered feeds.</p>
     </div>
     {{if .Error}}<div class="mb-6 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700" role="alert">{{.Error}}</div>{{end}}
-    <form method="post" action="/auth/login" class="space-y-5">
+    <form method="post" action="/auth/sign-in" class="space-y-5">
       <div>
         <label for="username" class="mb-2 block text-sm font-medium text-slate-700">Username</label>
         <input id="username" name="username" autocomplete="username" required autofocus class="block w-full rounded-lg border border-slate-300 bg-white px-3.5 py-3 text-sm text-slate-900 shadow-sm outline-none transition focus:border-violet-600 focus:ring-4 focus:ring-violet-600/10">
