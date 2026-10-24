@@ -16,6 +16,7 @@ import (
 const (
 	defaultTokenTTL = 24 * time.Hour
 	issuer          = "rss-studio"
+	authCookieName  = "rss_studio_token"
 )
 
 var (
@@ -97,11 +98,19 @@ func (a *Authenticator) IssueToken(username, password string) (string, time.Time
 }
 
 func (a *Authenticator) ValidateRequest(request *http.Request) error {
-	parts := strings.Fields(request.Header.Get("Authorization"))
-	if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") {
+	if authorization := request.Header.Get("Authorization"); authorization != "" {
+		parts := strings.Fields(authorization)
+		if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") {
+			return ErrInvalidToken
+		}
+		return a.ValidateToken(parts[1])
+	}
+
+	cookie, err := request.Cookie(authCookieName)
+	if err != nil {
 		return ErrInvalidToken
 	}
-	return a.ValidateToken(parts[1])
+	return a.ValidateToken(cookie.Value)
 }
 
 func (a *Authenticator) ValidateToken(token string) error {

@@ -37,6 +37,7 @@ func NewHandler(service *application.Service, authenticators ...*Authenticator) 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /{$}", handler.home)
 	if auth != nil {
+		mux.HandleFunc("GET /auth/login", handler.loginPage)
 		mux.HandleFunc("POST /auth/login", handler.login)
 	}
 	mux.HandleFunc("POST /feeds", handler.createFeed)
@@ -49,6 +50,10 @@ func (h *Handler) login(writer http.ResponseWriter, request *http.Request) {
 	if allowed, retryAfter := h.loginLimiter.allow(requestClient(request)); !allowed {
 		seconds := int((retryAfter + time.Second - 1) / time.Second)
 		writer.Header().Set("Retry-After", strconv.Itoa(seconds))
+		if !isJSONRequest(request) {
+			h.renderLogin(writer, "Too many login attempts. Try again later.", http.StatusTooManyRequests)
+			return
+		}
 		http.Error(writer, "Too many login attempts. Try again later.", http.StatusTooManyRequests)
 		return
 	}
@@ -57,7 +62,7 @@ func (h *Handler) login(writer http.ResponseWriter, request *http.Request) {
 		Username string `json:"username"`
 		Password string `json:"password"`
 	}
-	if strings.HasPrefix(request.Header.Get("Content-Type"), "application/json") {
+	if isJSONRequest(request) {
 		if err := json.NewDecoder(request.Body).Decode(&credentials); err != nil {
 			http.Error(writer, "Invalid login request.", http.StatusBadRequest)
 			return
@@ -72,7 +77,24 @@ func (h *Handler) login(writer http.ResponseWriter, request *http.Request) {
 
 	token, expires, err := h.auth.IssueToken(credentials.Username, credentials.Password)
 	if err != nil {
+		if !isJSONRequest(request) {
+			h.renderLogin(writer, "Invalid credentials.", http.StatusUnauthorized)
+			return
+		}
 		http.Error(writer, "Invalid credentials.", http.StatusUnauthorized)
+		return
+	}
+	if !isJSONRequest(request) {
+		http.SetCookie(writer, &http.Cookie{
+			Name:     authCookieName,
+			Value:    token,
+			Path:     "/",
+			Expires:  expires,
+			HttpOnly: true,
+			Secure:   request.TLS != nil || strings.EqualFold(request.Header.Get("X-Forwarded-Proto"), "https"),
+			SameSite: http.SameSiteLaxMode,
+		})
+		http.Redirect(writer, request, "/", http.StatusSeeOther)
 		return
 	}
 	writer.Header().Set("Content-Type", "application/json; charset=utf-8")
@@ -88,6 +110,22 @@ func (h *Handler) login(writer http.ResponseWriter, request *http.Request) {
 	})
 }
 
+func (h *Handler) loginPage(writer http.ResponseWriter, request *http.Request) {
+	h.renderLogin(writer, "", http.StatusOK)
+}
+
+func (h *Handler) renderLogin(writer http.ResponseWriter, message string, status int) {
+	writer.Header().Set("Content-Type", "text/html; charset=utf-8")
+	writer.WriteHeader(status)
+	if err := loginTemplate.Execute(writer, struct{ Error string }{Error: message}); err != nil {
+		log.Printf("render login: %v", err)
+	}
+}
+
+func isJSONRequest(request *http.Request) bool {
+	return strings.HasPrefix(request.Header.Get("Content-Type"), "application/json")
+}
+
 func (h *Handler) authenticate(next http.Handler) http.Handler {
 	if h.auth == nil {
 		return next
@@ -98,12 +136,20 @@ func (h *Handler) authenticate(next http.Handler) http.Handler {
 			return
 		}
 		if err := h.auth.ValidateRequest(request); err != nil {
+			if request.Method == http.MethodGet && acceptsHTML(request) {
+				http.Redirect(writer, request, "/auth/login", http.StatusSeeOther)
+				return
+			}
 			writer.Header().Set("WWW-Authenticate", `Bearer realm="rss-studio"`)
 			http.Error(writer, "Authentication required.", http.StatusUnauthorized)
 			return
 		}
 		next.ServeHTTP(writer, request)
 	})
+}
+
+func acceptsHTML(request *http.Request) bool {
+	return strings.Contains(strings.ToLower(request.Header.Get("Accept")), "text/html")
 }
 
 func isPublicRequest(request *http.Request) bool {
@@ -292,5 +338,39 @@ var homeTemplate = template.Must(template.New("home").Parse(`<!doctype html>
 
   <footer class="mx-auto max-w-6xl px-5 pb-8 text-xs text-slate-400 sm:px-8">RSS Studio · Version {{.Version}} · Filter the feed, not your attention.</footer>
 </div>
+</body>
+</html>`))
+
+var loginTemplate = template.Must(template.New("login").Parse(`<!doctype html>
+<html lang="en" class="h-full bg-slate-100">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sign in · RSS Studio</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="flex min-h-full items-center justify-center bg-slate-100 px-5 py-12 text-slate-950 antialiased">
+  <main class="w-full max-w-md rounded-2xl bg-white p-6 shadow-xl shadow-slate-900/5 ring-1 ring-slate-200 sm:p-8">
+    <div class="mb-8">
+      <a href="/" class="flex items-center gap-2 text-base font-semibold tracking-tight">
+        <span class="flex h-8 w-8 items-center justify-center rounded-lg bg-violet-600 text-sm font-black text-white">R</span>
+        RSS Studio
+      </a>
+      <h1 class="mt-8 text-2xl font-semibold tracking-tight">Sign in</h1>
+      <p class="mt-1 text-sm text-slate-500">Sign in to manage your filtered feeds.</p>
+    </div>
+    {{if .Error}}<div class="mb-6 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700" role="alert">{{.Error}}</div>{{end}}
+    <form method="post" action="/auth/login" class="space-y-5">
+      <div>
+        <label for="username" class="mb-2 block text-sm font-medium text-slate-700">Username</label>
+        <input id="username" name="username" autocomplete="username" required autofocus class="block w-full rounded-lg border border-slate-300 bg-white px-3.5 py-3 text-sm text-slate-900 shadow-sm outline-none transition focus:border-violet-600 focus:ring-4 focus:ring-violet-600/10">
+      </div>
+      <div>
+        <label for="password" class="mb-2 block text-sm font-medium text-slate-700">Password</label>
+        <input id="password" name="password" type="password" autocomplete="current-password" required class="block w-full rounded-lg border border-slate-300 bg-white px-3.5 py-3 text-sm text-slate-900 shadow-sm outline-none transition focus:border-violet-600 focus:ring-4 focus:ring-violet-600/10">
+      </div>
+      <button type="submit" class="inline-flex min-h-[46px] w-full items-center justify-center rounded-lg bg-violet-600 px-5 py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-violet-700 focus:outline-none focus:ring-4 focus:ring-violet-600/20">Sign in</button>
+    </form>
+  </main>
 </body>
 </html>`))

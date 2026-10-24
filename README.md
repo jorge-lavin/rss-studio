@@ -18,8 +18,8 @@ export RSS_STUDIO_JWT_SECRET="$(openssl rand -base64 32)"
 docker compose up -d --build
 ```
 
-Authenticate with the API, then send the returned bearer token for management
-requests:
+Open <http://localhost:8080> to sign in through the web UI. For API clients,
+authenticate first, then send the returned bearer token for management requests:
 
 ```sh
 token=$(curl -s http://localhost:8080/auth/login \

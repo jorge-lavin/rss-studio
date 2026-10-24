@@ -139,6 +139,51 @@ func TestAuthenticatedHandlerProtectsManagementAndLeavesFeedsPublic(t *testing.T
 	}
 }
 
+func TestAuthenticatedHandlerSupportsBrowserLogin(t *testing.T) {
+	store, err := storage.NewJSONStore(filepath.Join(t.TempDir(), "feeds.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := application.NewService(store, cache.NewFileCache(t.TempDir()), sourceStub{}, rss.Filter)
+	auth, err := httpapi.NewAuthenticator(httpapi.AuthConfig{
+		Username:  "admin",
+		Password:  "password",
+		JWTSecret: strings.Repeat("x", 32),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := httpapi.NewHandler(service, auth)
+
+	request := httptest.NewRequest(http.MethodGet, "/", nil)
+	request.Header.Set("Accept", "text/html")
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusSeeOther || recorder.Header().Get("Location") != "/auth/login" {
+		t.Fatalf("expected browser request to redirect to login, got %d and %q", recorder.Code, recorder.Header().Get("Location"))
+	}
+
+	request = httptest.NewRequest(http.MethodPost, "/auth/login", strings.NewReader("username=admin&password=password"))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	recorder = httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusSeeOther || recorder.Header().Get("Location") != "/" {
+		t.Fatalf("expected form login to redirect home, got %d and %q", recorder.Code, recorder.Header().Get("Location"))
+	}
+	cookies := recorder.Result().Cookies()
+	if len(cookies) != 1 || cookies[0].Name != "rss_studio_token" || !cookies[0].HttpOnly {
+		t.Fatalf("expected HttpOnly auth cookie, got %#v", cookies)
+	}
+
+	request = httptest.NewRequest(http.MethodGet, "/", nil)
+	request.AddCookie(cookies[0])
+	recorder = httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected cookie-authenticated home request to succeed, got %d", recorder.Code)
+	}
+}
+
 func TestAuthenticatedHandlerRateLimitsLoginAttempts(t *testing.T) {
 	store, err := storage.NewJSONStore(filepath.Join(t.TempDir(), "feeds.json"))
 	if err != nil {
