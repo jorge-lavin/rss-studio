@@ -28,6 +28,16 @@ type homePageData struct {
 	Error   string
 }
 
+type authPageData struct {
+	Error        string
+	Registration bool
+}
+
+type authCredentials struct {
+	Username string `json:"username"`
+	Password string `json:"password"`
+}
+
 func NewHandler(service *application.Service, authenticators ...*Authenticator) http.Handler {
 	var auth *Authenticator
 	if len(authenticators) > 0 {
@@ -41,6 +51,10 @@ func NewHandler(service *application.Service, authenticators ...*Authenticator) 
 		mux.HandleFunc("GET /auth/login", handler.loginPage)
 		mux.HandleFunc("POST /auth/sign-in", handler.login)
 		mux.HandleFunc("POST /auth/login", handler.login)
+		mux.HandleFunc("GET /auth/sign-up", handler.registerPage)
+		mux.HandleFunc("GET /auth/register", handler.registerPage)
+		mux.HandleFunc("POST /auth/sign-up", handler.register)
+		mux.HandleFunc("POST /auth/register", handler.register)
 	}
 	mux.HandleFunc("POST /feeds", handler.createFeed)
 	mux.HandleFunc("GET /feeds/{file}", handler.serveFeed)
@@ -60,21 +74,10 @@ func (h *Handler) login(writer http.ResponseWriter, request *http.Request) {
 		return
 	}
 
-	var credentials struct {
-		Username string `json:"username"`
-		Password string `json:"password"`
-	}
-	if isJSONRequest(request) {
-		if err := json.NewDecoder(request.Body).Decode(&credentials); err != nil {
-			http.Error(writer, "Invalid login request.", http.StatusBadRequest)
-			return
-		}
-	} else if err := request.ParseForm(); err != nil {
+	credentials, err := parseCredentials(request)
+	if err != nil {
 		http.Error(writer, "Invalid login request.", http.StatusBadRequest)
 		return
-	} else {
-		credentials.Username = request.FormValue("username")
-		credentials.Password = request.FormValue("password")
 	}
 
 	token, expires, err := h.auth.IssueToken(credentials.Username, credentials.Password)
@@ -112,14 +115,94 @@ func (h *Handler) login(writer http.ResponseWriter, request *http.Request) {
 	})
 }
 
+func (h *Handler) register(writer http.ResponseWriter, request *http.Request) {
+	if allowed, retryAfter := h.loginLimiter.allow(requestClient(request)); !allowed {
+		seconds := int((retryAfter + time.Second - 1) / time.Second)
+		writer.Header().Set("Retry-After", strconv.Itoa(seconds))
+		if !isJSONRequest(request) {
+			h.renderRegister(writer, "Too many registration attempts. Try again later.", http.StatusTooManyRequests)
+			return
+		}
+		http.Error(writer, "Too many registration attempts. Try again later.", http.StatusTooManyRequests)
+		return
+	}
+
+	credentials, err := parseCredentials(request)
+	if err != nil {
+		http.Error(writer, "Invalid registration request.", http.StatusBadRequest)
+		return
+	}
+	if err := h.auth.Register(credentials.Username, credentials.Password); err != nil {
+		status := http.StatusInternalServerError
+		message := "Could not create account."
+		switch {
+		case errors.Is(err, domain.ErrInvalidUser):
+			status = http.StatusBadRequest
+			message = "Username and password are required."
+		case errors.Is(err, domain.ErrUsernameTaken):
+			status = http.StatusConflict
+			message = "Username already exists."
+		case errors.Is(err, ErrRegistrationUnavailable):
+			status = http.StatusNotImplemented
+		default:
+			log.Printf("register user: %v", err)
+		}
+		if !isJSONRequest(request) {
+			h.renderRegister(writer, message, status)
+			return
+		}
+		http.Error(writer, message, status)
+		return
+	}
+
+	if isJSONRequest(request) {
+		writer.Header().Set("Content-Type", "application/json; charset=utf-8")
+		writer.Header().Set("Cache-Control", "no-store")
+		writer.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(writer).Encode(struct {
+			Username string `json:"username"`
+		}{Username: strings.TrimSpace(credentials.Username)})
+		return
+	}
+	http.Redirect(writer, request, "/auth/sign-in", http.StatusSeeOther)
+}
+
+func parseCredentials(request *http.Request) (authCredentials, error) {
+	var credentials authCredentials
+	if isJSONRequest(request) {
+		if err := json.NewDecoder(request.Body).Decode(&credentials); err != nil {
+			return authCredentials{}, err
+		}
+		return credentials, nil
+	}
+	if err := request.ParseForm(); err != nil {
+		return authCredentials{}, err
+	}
+	credentials.Username = request.FormValue("username")
+	credentials.Password = request.FormValue("password")
+	return credentials, nil
+}
+
 func (h *Handler) loginPage(writer http.ResponseWriter, request *http.Request) {
 	h.renderLogin(writer, "", http.StatusOK)
+}
+
+func (h *Handler) registerPage(writer http.ResponseWriter, request *http.Request) {
+	h.renderRegister(writer, "", http.StatusOK)
 }
 
 func (h *Handler) renderLogin(writer http.ResponseWriter, message string, status int) {
 	writer.Header().Set("Content-Type", "text/html; charset=utf-8")
 	writer.WriteHeader(status)
-	if err := loginTemplate.Execute(writer, struct{ Error string }{Error: message}); err != nil {
+	if err := authTemplate.Execute(writer, authPageData{Error: message}); err != nil {
+		log.Printf("render login: %v", err)
+	}
+}
+
+func (h *Handler) renderRegister(writer http.ResponseWriter, message string, status int) {
+	writer.Header().Set("Content-Type", "text/html; charset=utf-8")
+	writer.WriteHeader(status)
+	if err := authTemplate.Execute(writer, authPageData{Error: message, Registration: true}); err != nil {
 		log.Printf("render login: %v", err)
 	}
 }
@@ -155,7 +238,7 @@ func acceptsHTML(request *http.Request) bool {
 }
 
 func isPublicRequest(request *http.Request) bool {
-	if request.URL.Path == "/auth/login" || request.URL.Path == "/auth/sign-in" {
+	if request.URL.Path == "/auth/login" || request.URL.Path == "/auth/sign-in" || request.URL.Path == "/auth/register" || request.URL.Path == "/auth/sign-up" {
 		return request.Method == http.MethodGet || request.Method == http.MethodPost
 	}
 	return request.Method == http.MethodGet && strings.HasPrefix(request.URL.Path, "/feeds/") && strings.HasSuffix(request.URL.Path, ".xml")
@@ -343,12 +426,12 @@ var homeTemplate = template.Must(template.New("home").Parse(`<!doctype html>
 </body>
 </html>`))
 
-var loginTemplate = template.Must(template.New("login").Parse(`<!doctype html>
+var authTemplate = template.Must(template.New("auth").Parse(`<!doctype html>
 <html lang="en" class="h-full bg-slate-100">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Sign in · RSS Studio</title>
+  <title>{{if .Registration}}Create account{{else}}Sign in{{end}} · RSS Studio</title>
   <script src="https://cdn.tailwindcss.com"></script>
 </head>
 <body class="flex min-h-full items-center justify-center bg-slate-100 px-5 py-12 text-slate-950 antialiased">
@@ -358,22 +441,22 @@ var loginTemplate = template.Must(template.New("login").Parse(`<!doctype html>
         <span class="flex h-8 w-8 items-center justify-center rounded-lg bg-violet-600 text-sm font-black text-white">R</span>
         RSS Studio
       </a>
-      <h1 class="mt-8 text-2xl font-semibold tracking-tight">Sign in</h1>
-      <p class="mt-1 text-sm text-slate-500">Sign in to manage your filtered feeds.</p>
-      <p class="mt-2 text-sm text-slate-500">Use the account configured for this RSS Studio instance. Self-registration is not available.</p>
+      <h1 class="mt-8 text-2xl font-semibold tracking-tight">{{if .Registration}}Create account{{else}}Sign in{{end}}</h1>
+      <p class="mt-1 text-sm text-slate-500">{{if .Registration}}Create an account to manage your filtered feeds.{{else}}Sign in to manage your filtered feeds.{{end}}</p>
     </div>
     {{if .Error}}<div class="mb-6 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700" role="alert">{{.Error}}</div>{{end}}
-    <form method="post" action="/auth/sign-in" class="space-y-5">
+    <form method="post" action="{{if .Registration}}/auth/sign-up{{else}}/auth/sign-in{{end}}" class="space-y-5">
       <div>
         <label for="username" class="mb-2 block text-sm font-medium text-slate-700">Username</label>
         <input id="username" name="username" autocomplete="username" required autofocus class="block w-full rounded-lg border border-slate-300 bg-white px-3.5 py-3 text-sm text-slate-900 shadow-sm outline-none transition focus:border-violet-600 focus:ring-4 focus:ring-violet-600/10">
       </div>
       <div>
         <label for="password" class="mb-2 block text-sm font-medium text-slate-700">Password</label>
-        <input id="password" name="password" type="password" autocomplete="current-password" required class="block w-full rounded-lg border border-slate-300 bg-white px-3.5 py-3 text-sm text-slate-900 shadow-sm outline-none transition focus:border-violet-600 focus:ring-4 focus:ring-violet-600/10">
+        <input id="password" name="password" type="password" autocomplete="{{if .Registration}}new-password{{else}}current-password{{end}}" required class="block w-full rounded-lg border border-slate-300 bg-white px-3.5 py-3 text-sm text-slate-900 shadow-sm outline-none transition focus:border-violet-600 focus:ring-4 focus:ring-violet-600/10">
       </div>
-      <button type="submit" class="inline-flex min-h-[46px] w-full items-center justify-center rounded-lg bg-violet-600 px-5 py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-violet-700 focus:outline-none focus:ring-4 focus:ring-violet-600/20">Sign in</button>
+      <button type="submit" class="inline-flex min-h-[46px] w-full items-center justify-center rounded-lg bg-violet-600 px-5 py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-violet-700 focus:outline-none focus:ring-4 focus:ring-violet-600/20">{{if .Registration}}Create account{{else}}Sign in{{end}}</button>
     </form>
+    <p class="mt-6 text-center text-sm text-slate-500">{{if .Registration}}Already have an account? <a class="font-semibold text-violet-600 hover:text-violet-700" href="/auth/sign-in">Sign in</a>{{else}}Need an account? <a class="font-semibold text-violet-600 hover:text-violet-700" href="/auth/sign-up">Create one</a>{{end}}</p>
   </main>
 </body>
 </html>`))

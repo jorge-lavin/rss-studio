@@ -3,7 +3,6 @@ package httpapi
 import (
 	"crypto/hmac"
 	"crypto/sha256"
-	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -22,14 +21,13 @@ const (
 )
 
 var (
-	ErrInvalidAuthConfig  = errors.New("invalid authentication configuration")
-	ErrInvalidCredentials = errors.New("invalid credentials")
-	ErrInvalidToken       = errors.New("invalid token")
+	ErrInvalidAuthConfig       = errors.New("invalid authentication configuration")
+	ErrInvalidCredentials      = errors.New("invalid credentials")
+	ErrInvalidToken            = errors.New("invalid token")
+	ErrRegistrationUnavailable = errors.New("registration unavailable")
 )
 
 type AuthConfig struct {
-	Username  string
-	Password  string
 	JWTSecret string
 	TokenTTL  time.Duration
 	UserStore UserStore
@@ -39,9 +37,11 @@ type UserStore interface {
 	Authenticate(username, password string) (domain.User, error)
 }
 
+type UserRegistrar interface {
+	CreateUser(username, password string) (domain.User, error)
+}
+
 type Authenticator struct {
-	username  string
-	password  string
 	secret    []byte
 	ttl       time.Duration
 	now       func() time.Time
@@ -61,8 +61,8 @@ type jwtClaims struct {
 }
 
 func NewAuthenticator(config AuthConfig) (*Authenticator, error) {
-	if config.Username == "" || config.Password == "" || config.JWTSecret == "" {
-		return nil, fmt.Errorf("%w: username, password, and JWT secret are required", ErrInvalidAuthConfig)
+	if config.UserStore == nil || config.JWTSecret == "" {
+		return nil, fmt.Errorf("%w: user store and JWT secret are required", ErrInvalidAuthConfig)
 	}
 	if len([]byte(config.JWTSecret)) < 32 {
 		return nil, fmt.Errorf("%w: JWT secret must be at least 32 bytes", ErrInvalidAuthConfig)
@@ -71,8 +71,6 @@ func NewAuthenticator(config AuthConfig) (*Authenticator, error) {
 		config.TokenTTL = defaultTokenTTL
 	}
 	return &Authenticator{
-		username:  config.Username,
-		password:  config.Password,
 		secret:    []byte(config.JWTSecret),
 		ttl:       config.TokenTTL,
 		now:       time.Now,
@@ -81,17 +79,11 @@ func NewAuthenticator(config AuthConfig) (*Authenticator, error) {
 }
 
 func (a *Authenticator) IssueToken(username, password string) (string, time.Time, error) {
-	subject := a.username
-	if a.userStore != nil {
-		user, err := a.userStore.Authenticate(username, password)
-		if err != nil {
-			return "", time.Time{}, ErrInvalidCredentials
-		}
-		subject = user.Username
-	} else if subtle.ConstantTimeCompare([]byte(username), []byte(a.username)) != 1 ||
-		subtle.ConstantTimeCompare([]byte(password), []byte(a.password)) != 1 {
+	user, err := a.userStore.Authenticate(username, password)
+	if err != nil {
 		return "", time.Time{}, ErrInvalidCredentials
 	}
+	subject := user.Username
 
 	now := a.now().UTC().Truncate(time.Second)
 	expires := now.Add(a.ttl)
@@ -111,6 +103,15 @@ func (a *Authenticator) IssueToken(username, password string) (string, time.Time
 
 	signingInput := encodeSegment(header) + "." + encodeSegment(claims)
 	return signingInput + "." + encodeSegment(a.sign([]byte(signingInput))), expires, nil
+}
+
+func (a *Authenticator) Register(username, password string) error {
+	registrar, ok := a.userStore.(UserRegistrar)
+	if !ok {
+		return ErrRegistrationUnavailable
+	}
+	_, err := registrar.CreateUser(username, password)
+	return err
 }
 
 func (a *Authenticator) ValidateRequest(request *http.Request) error {
@@ -154,7 +155,7 @@ func (a *Authenticator) ValidateToken(token string) error {
 		return ErrInvalidToken
 	}
 	var claims jwtClaims
-	if err := json.Unmarshal(claimsBytes, &claims); err != nil || claims.Subject == "" || (a.userStore == nil && claims.Subject != a.username) || claims.Issuer != issuer {
+	if err := json.Unmarshal(claimsBytes, &claims); err != nil || claims.Subject == "" || claims.Issuer != issuer {
 		return ErrInvalidToken
 	}
 	now := a.now().Unix()

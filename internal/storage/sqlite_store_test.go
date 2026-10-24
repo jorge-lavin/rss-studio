@@ -5,9 +5,11 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"rss-studio/internal/domain"
 )
 
-func TestSQLiteStoreMigratesAndBootstrapsUser(t *testing.T) {
+func TestSQLiteStoreMigratesAndPersistsMultipleUsers(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "rss-studio.db")
 	store, err := NewSQLiteStore(path)
 	if err != nil {
@@ -24,11 +26,18 @@ func TestSQLiteStoreMigratesAndBootstrapsUser(t *testing.T) {
 	if err := store.Migrate(); err != nil {
 		t.Fatalf("rerunning migrations: %v", err)
 	}
-	if err := store.BootstrapUser("admin", "correct horse"); err != nil {
+	admin, err := store.CreateUser(" admin ", "correct horse")
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.BootstrapUser("admin", "new password"); err != nil {
+	if admin.Username != "admin" || admin.PasswordHash == "correct horse" {
+		t.Fatalf("user credentials were not normalized and hashed: %#v", admin)
+	}
+	if _, err := store.CreateUser("reader", "reader password"); err != nil {
 		t.Fatal(err)
+	}
+	if _, err := store.CreateUser("admin", "new password"); !errors.Is(err, domain.ErrUsernameTaken) {
+		t.Fatalf("expected duplicate username to be rejected, got %v", err)
 	}
 	if _, err := store.Authenticate("admin", "correct horse"); err != nil {
 		t.Fatalf("original bootstrap password rejected: %v", err)
@@ -38,6 +47,9 @@ func TestSQLiteStoreMigratesAndBootstrapsUser(t *testing.T) {
 	}
 	if _, err := store.Authenticate("missing", "password"); !errors.Is(err, ErrInvalidCredential) {
 		t.Fatalf("expected missing user to be rejected, got %v", err)
+	}
+	if _, err := store.CreateUser("", "password"); !errors.Is(err, domain.ErrInvalidUser) {
+		t.Fatalf("expected empty username to be rejected, got %v", err)
 	}
 	if err := store.Close(); err != nil {
 		t.Fatal(err)
@@ -58,5 +70,8 @@ func TestSQLiteStoreMigratesAndBootstrapsUser(t *testing.T) {
 	defer second.Close()
 	if _, err := second.Authenticate("admin", "correct horse"); err != nil {
 		t.Fatalf("persisted user rejected: %v", err)
+	}
+	if _, err := second.Authenticate("reader", "reader password"); err != nil {
+		t.Fatalf("second persisted user rejected: %v", err)
 	}
 }

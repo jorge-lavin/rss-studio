@@ -146,33 +146,40 @@ func (s *SQLiteStore) SchemaVersion() (int, error) {
 	return version, nil
 }
 
-func (s *SQLiteStore) BootstrapUser(username, password string) error {
+func (s *SQLiteStore) CreateUser(username, password string) (domain.User, error) {
+	username = strings.TrimSpace(username)
 	if username == "" || password == "" {
-		return errors.New("username and password are required to bootstrap user")
-	}
-	var exists bool
-	if err := s.db.QueryRow("SELECT EXISTS(SELECT 1 FROM users WHERE username = ?)", username).Scan(&exists); err != nil {
-		return fmt.Errorf("check bootstrap user: %w", err)
-	}
-	if exists {
-		return nil
+		return domain.User{}, fmt.Errorf("%w: username and password are required", domain.ErrInvalidUser)
 	}
 	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
 	if err != nil {
-		return fmt.Errorf("hash bootstrap password: %w", err)
+		return domain.User{}, fmt.Errorf("%w: password cannot be stored", domain.ErrInvalidUser)
 	}
-	_, err = s.db.Exec(`
+	createdAt := time.Now().UTC()
+	result, err := s.db.Exec(`
 		INSERT INTO users (username, password_hash, created_at)
 		VALUES (?, ?, ?)
 		ON CONFLICT(username) DO NOTHING
-	`, username, string(hash), time.Now().UTC().Format(time.RFC3339Nano))
+	`, username, string(hash), createdAt.Format(time.RFC3339Nano))
 	if err != nil {
-		return fmt.Errorf("bootstrap user: %w", err)
+		return domain.User{}, fmt.Errorf("create user: %w", err)
 	}
-	return nil
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return domain.User{}, fmt.Errorf("check created user: %w", err)
+	}
+	if rows == 0 {
+		return domain.User{}, domain.ErrUsernameTaken
+	}
+	id, err := result.LastInsertId()
+	if err != nil {
+		return domain.User{}, fmt.Errorf("read created user: %w", err)
+	}
+	return domain.User{ID: id, Username: username, PasswordHash: string(hash), CreatedAt: createdAt}, nil
 }
 
 func (s *SQLiteStore) User(username string) (domain.User, error) {
+	username = strings.TrimSpace(username)
 	var user domain.User
 	var createdAt string
 	if err := s.db.QueryRow(

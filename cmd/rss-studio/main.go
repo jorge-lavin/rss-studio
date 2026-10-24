@@ -24,14 +24,7 @@ func main() {
 		log.Fatalf("open database: %v", err)
 	}
 	defer database.Close()
-	username := os.Getenv("RSS_STUDIO_AUTH_USERNAME")
-	password := os.Getenv("RSS_STUDIO_AUTH_PASSWORD")
-	if err := database.BootstrapUser(username, password); err != nil {
-		log.Fatalf("bootstrap authentication: %v", err)
-	}
 	auth, err := httpapi.NewAuthenticator(httpapi.AuthConfig{
-		Username:  username,
-		Password:  password,
 		JWTSecret: os.Getenv("RSS_STUDIO_JWT_SECRET"),
 		UserStore: database,
 	})

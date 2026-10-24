@@ -8,16 +8,24 @@ import (
 	"testing"
 	"time"
 
+	"rss-studio/internal/domain"
 	"rss-studio/internal/storage"
 )
 
 func testAuthenticator(t *testing.T) *Authenticator {
 	t.Helper()
+	store, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "rss-studio.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	if _, err := store.CreateUser("admin", "password"); err != nil {
+		t.Fatal(err)
+	}
 	auth, err := NewAuthenticator(AuthConfig{
-		Username:  "admin",
-		Password:  "password",
 		JWTSecret: strings.Repeat("x", 32),
 		TokenTTL:  time.Hour,
+		UserStore: store,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -27,10 +35,9 @@ func testAuthenticator(t *testing.T) *Authenticator {
 
 func TestNewAuthenticatorRequiresStrongConfiguration(t *testing.T) {
 	for name, config := range map[string]AuthConfig{
-		"missing username": {Password: "password", JWTSecret: strings.Repeat("x", 32)},
-		"missing password": {Username: "admin", JWTSecret: strings.Repeat("x", 32)},
-		"missing secret":   {Username: "admin", Password: "password"},
-		"short secret":     {Username: "admin", Password: "password", JWTSecret: "too-short"},
+		"missing user store": {JWTSecret: strings.Repeat("x", 32)},
+		"missing secret":     {UserStore: authStoreStub{}},
+		"short secret":       {UserStore: authStoreStub{}, JWTSecret: "too-short"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			if _, err := NewAuthenticator(config); !errors.Is(err, ErrInvalidAuthConfig) {
@@ -38,6 +45,12 @@ func TestNewAuthenticatorRequiresStrongConfiguration(t *testing.T) {
 			}
 		})
 	}
+}
+
+type authStoreStub struct{}
+
+func (authStoreStub) Authenticate(username, password string) (domain.User, error) {
+	return domain.User{Username: username}, nil
 }
 
 func TestAuthenticatorIssuesAndValidatesToken(t *testing.T) {
@@ -67,13 +80,11 @@ func TestAuthenticatorUsesPersistentUserStore(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer store.Close()
-	if err := store.BootstrapUser("admin", "database-password"); err != nil {
+	if _, err := store.CreateUser("admin", "database-password"); err != nil {
 		t.Fatal(err)
 	}
 
 	auth, err := NewAuthenticator(AuthConfig{
-		Username:  "admin",
-		Password:  "environment-password",
 		JWTSecret: strings.Repeat("x", 32),
 		UserStore: store,
 	})
@@ -81,15 +92,30 @@ func TestAuthenticatorUsesPersistentUserStore(t *testing.T) {
 		t.Fatal(err)
 	}
 	auth.now = func() time.Time { return time.Unix(1000, 0) }
-	if _, _, err := auth.IssueToken("admin", "environment-password"); !errors.Is(err, ErrInvalidCredentials) {
-		t.Fatalf("expected environment password to be ignored, got %v", err)
-	}
 	token, _, err := auth.IssueToken("admin", "database-password")
 	if err != nil {
 		t.Fatalf("persistent credentials rejected: %v", err)
 	}
 	if err := auth.ValidateToken(token); err != nil {
 		t.Fatalf("persistent user token rejected: %v", err)
+	}
+}
+
+func TestAuthenticatorRegistersUsersInPersistentStore(t *testing.T) {
+	store, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "rss-studio.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	auth, err := NewAuthenticator(AuthConfig{JWTSecret: strings.Repeat("x", 32), UserStore: store})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := auth.Register("new-user", "new-password"); err != nil {
+		t.Fatalf("register user: %v", err)
+	}
+	if _, _, err := auth.IssueToken("new-user", "new-password"); err != nil {
+		t.Fatalf("registered credentials rejected: %v", err)
 	}
 }
 

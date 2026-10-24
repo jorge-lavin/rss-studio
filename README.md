@@ -12,20 +12,22 @@ Host-specific deployment configuration is maintained separately in the
 The included Compose file builds and runs the application locally:
 
 ```sh
-export RSS_STUDIO_AUTH_USERNAME=admin
-export RSS_STUDIO_AUTH_PASSWORD='change-this-password'
 export RSS_STUDIO_JWT_SECRET="$(openssl rand -base64 32)"
 docker compose up -d --build
 ```
 
-Open <http://localhost:8080> to sign in through the web UI using the configured
-account. RSS Studio does not support self-registration. For API clients,
-authenticate first, then send the returned bearer token for management requests:
+Open <http://localhost:8080> to create an account and sign in through the web
+UI. Accounts and bcrypt password hashes persist in the SQLite database. For API
+clients, register and then authenticate before sending the returned bearer token
+for management requests:
 
 ```sh
+curl -i http://localhost:8080/auth/register \
+  -H 'Content-Type: application/json' \
+  -d '{"username":"alice","password":"change-this-password"}'
 token=$(curl -s http://localhost:8080/auth/login \
   -H 'Content-Type: application/json' \
-  -d '{"username":"admin","password":"change-this-password"}' | jq -r .access_token)
+  -d '{"username":"alice","password":"change-this-password"}' | jq -r .access_token)
 curl -H "Authorization: Bearer $token" http://localhost:8080/
 ```
 
@@ -33,8 +35,8 @@ Generated RSS URLs remain public so RSS readers can fetch them without JWT
 support. Feed definitions and generated feeds persist in
 the `rss-studio-data` Docker volume. The same volume contains the SQLite
 database at `/data/rss-studio.db`; its migrations run automatically at startup.
-On first startup, the configured authentication account is stored as a password
-hash. Existing accounts are not overwritten by later environment changes.
+Accounts created through the web UI or API are stored as password hashes and
+remain available after restarts.
 
 To run the published image instead:
 
@@ -43,8 +45,6 @@ docker run -d \
   --name rss-studio \
   --restart unless-stopped \
   -p 8080:8080 \
-  -e RSS_STUDIO_AUTH_USERNAME=admin \
-  -e RSS_STUDIO_AUTH_PASSWORD='change-this-password' \
   -e RSS_STUDIO_JWT_SECRET='replace-with-at-least-32-random-bytes' \
   -v rss-studio-data:/data \
   ghcr.io/jorge-lavin/rss-studio:latest
@@ -108,9 +108,8 @@ if none exists, deployment stops before changing production.
 For manual recovery, use an existing immutable release image. Before starting,
 confirm the target release exists in GHCR, the deployment secrets are
 configured, and no migration or other release-specific action is required.
-Do not change `RSS_STUDIO_AUTH_USERNAME`, `RSS_STUDIO_AUTH_PASSWORD`, or
-`RSS_STUDIO_JWT_SECRET`; they remain on the host and existing data stays in the
-`rss-studio-data` volume.
+Do not change `RSS_STUDIO_JWT_SECRET`; it remains on the host and existing data
+stays in the `rss-studio-data` volume.
 
 In Forgejo, run **Roll back production** from `main`, enter an exact version such as
 `0.1.0` or `0.2.0` without the `v` prefix, and start the workflow. It rejects
@@ -142,8 +141,7 @@ go run ./cmd/rss-studio
 ```
 
 Override storage or listen address with `RSS_STUDIO_DATA` and `RSS_STUDIO_ADDRESS`.
-Override the SQLite path with `RSS_STUDIO_DB`. `RSS_STUDIO_AUTH_USERNAME`,
-`RSS_STUDIO_AUTH_PASSWORD`, and `RSS_STUDIO_JWT_SECRET` are required. JWTs use
-HS256 and expire after 24 hours.
+Override the SQLite path with `RSS_STUDIO_DB`. `RSS_STUDIO_JWT_SECRET` is
+required. JWTs use HS256 and expire after 24 hours.
 Login attempts are limited to five per client IP per minute; excess attempts
 return HTTP 429 with a `Retry-After` header.

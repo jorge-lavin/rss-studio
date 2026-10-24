@@ -27,6 +27,26 @@ func (sourceStub) Get(context.Context, string) ([]byte, time.Time, error) {
 	return []byte(`<rss version="2.0"><channel><title>Source</title><item><title>Keep foo</title><guid>1</guid></item><item><title>Drop</title><guid>2</guid></item></channel></rss>`), time.Time{}, nil
 }
 
+func testAuth(t *testing.T) *httpapi.Authenticator {
+	t.Helper()
+	store, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "rss-studio.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	if _, err := store.CreateUser("admin", "password"); err != nil {
+		t.Fatal(err)
+	}
+	auth, err := httpapi.NewAuthenticator(httpapi.AuthConfig{
+		JWTSecret: strings.Repeat("x", 32),
+		UserStore: store,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return auth
+}
+
 func TestHandlerCreatesAndServesFeed(t *testing.T) {
 	store, err := storage.NewJSONStore(filepath.Join(t.TempDir(), "feeds.json"))
 	if err != nil {
@@ -79,14 +99,7 @@ func TestAuthenticatedHandlerProtectsManagementAndLeavesFeedsPublic(t *testing.T
 		t.Fatal(err)
 	}
 	service := application.NewService(store, cache.NewFileCache(t.TempDir()), sourceStub{}, rss.Filter)
-	auth, err := httpapi.NewAuthenticator(httpapi.AuthConfig{
-		Username:  "admin",
-		Password:  "password",
-		JWTSecret: strings.Repeat("x", 32),
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	auth := testAuth(t)
 	server := httptest.NewServer(httpapi.NewHandler(service, auth))
 	defer server.Close()
 
@@ -145,14 +158,7 @@ func TestAuthenticatedHandlerSupportsBrowserLogin(t *testing.T) {
 		t.Fatal(err)
 	}
 	service := application.NewService(store, cache.NewFileCache(t.TempDir()), sourceStub{}, rss.Filter)
-	auth, err := httpapi.NewAuthenticator(httpapi.AuthConfig{
-		Username:  "admin",
-		Password:  "password",
-		JWTSecret: strings.Repeat("x", 32),
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	auth := testAuth(t)
 	handler := httpapi.NewHandler(service, auth)
 
 	request := httptest.NewRequest(http.MethodGet, "/", nil)
@@ -167,19 +173,35 @@ func TestAuthenticatedHandlerSupportsBrowserLogin(t *testing.T) {
 	request.Header.Set("Accept", "text/html")
 	recorder = httptest.NewRecorder()
 	handler.ServeHTTP(recorder, request)
-	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `action="/auth/sign-in"`) || !strings.Contains(recorder.Body.String(), "Sign in") || !strings.Contains(recorder.Body.String(), "Self-registration is not available.") {
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `action="/auth/sign-in"`) || !strings.Contains(recorder.Body.String(), "Sign in") || !strings.Contains(recorder.Body.String(), `href="/auth/sign-up"`) || strings.Contains(recorder.Body.String(), "Self-registration is not available.") {
 		t.Fatalf("expected sign-in page to be publicly reachable, got %d", recorder.Code)
 	}
 
-	request = httptest.NewRequest(http.MethodPost, "/auth/sign-in", strings.NewReader("username=new-user&password=new-password"))
+	request = httptest.NewRequest(http.MethodGet, "/auth/sign-up", nil)
+	request.Header.Set("Accept", "text/html")
+	recorder = httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `action="/auth/sign-up"`) || !strings.Contains(recorder.Body.String(), "Create account") {
+		t.Fatalf("expected sign-up page to be publicly reachable, got %d", recorder.Code)
+	}
+
+	request = httptest.NewRequest(http.MethodPost, "/auth/sign-up", strings.NewReader("username=new-user&password=new-password"))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	recorder = httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusSeeOther || recorder.Header().Get("Location") != "/auth/sign-in" {
+		t.Fatalf("expected registration to redirect to sign-in, got %d and %q", recorder.Code, recorder.Header().Get("Location"))
+	}
+
+	request = httptest.NewRequest(http.MethodPost, "/auth/sign-in", strings.NewReader("username=unknown&password=wrong"))
 	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	recorder = httptest.NewRecorder()
 	handler.ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusUnauthorized || !strings.Contains(recorder.Body.String(), "Invalid credentials.") {
-		t.Fatalf("expected unconfigured credentials to be rejected, got %d: %s", recorder.Code, recorder.Body.String())
+		t.Fatalf("expected unknown credentials to be rejected, got %d: %s", recorder.Code, recorder.Body.String())
 	}
 
-	request = httptest.NewRequest(http.MethodPost, "/auth/sign-in", strings.NewReader("username=admin&password=password"))
+	request = httptest.NewRequest(http.MethodPost, "/auth/sign-in", strings.NewReader("username=new-user&password=new-password"))
 	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	recorder = httptest.NewRecorder()
 	handler.ServeHTTP(recorder, request)
@@ -206,14 +228,7 @@ func TestAuthenticatedHandlerRateLimitsLoginAttempts(t *testing.T) {
 		t.Fatal(err)
 	}
 	service := application.NewService(store, cache.NewFileCache(t.TempDir()), sourceStub{}, rss.Filter)
-	auth, err := httpapi.NewAuthenticator(httpapi.AuthConfig{
-		Username:  "admin",
-		Password:  "password",
-		JWTSecret: strings.Repeat("x", 32),
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	auth := testAuth(t)
 	handler := httpapi.NewHandler(service, auth)
 
 	for attempt := 1; attempt <= 5; attempt++ {
