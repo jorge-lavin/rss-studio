@@ -69,6 +69,30 @@ If no release tag exists, the first successful `main` build creates `v0.1.0`
 automatically. No manual bootstrap tag or release token is required; Forgejo's
 workflow token creates the release.
 
+Successful releases deploy the matching SemVer image to the existing VPS over
+SSH. Configure these Forgejo repository secrets:
+
+- `GHCR_TOKEN`: package write token used by CI to publish the image; not used by deployment.
+- `DEPLOY_SSH_KEY`: private key authorized for the deployment user.
+- `DEPLOY_KNOWN_HOSTS`: pinned `known_hosts` entry for the deployment host.
+- `DEPLOY_HOST`: VPS hostname or address.
+- `DEPLOY_USER`: VPS SSH user.
+
+SSH uses default port 22; no `DEPLOY_PORT` secret is needed. The remote host
+must already be logged into GHCR with a read-only package token. Its
+`/home/deploy/rss-studio/compose.yaml` must require the deployment tag instead
+of providing a `latest` fallback:
+
+```yaml
+services:
+  rss-studio:
+    image: ghcr.io/jorge-lavin/rss-studio:${RSS_STUDIO_TAG:?RSS_STUDIO_TAG is required}
+```
+
+The workflow does not log in or modify remote Docker credentials. It pulls and
+recreates only the `rss-studio` service, preserving its Docker data volume and
+leaving separate Caddy infrastructure untouched.
+
 ## Development
 
 Requires Go 1.23 or newer.

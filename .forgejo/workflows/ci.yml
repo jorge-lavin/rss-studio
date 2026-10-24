@@ -5,6 +5,10 @@ on:
     branches: [main]
   pull_request:
 
+concurrency:
+  group: production-${{ github.ref }}
+  cancel-in-progress: false
+
 env:
   IMAGE: ghcr.io/jorge-lavin/rss-studio
 
@@ -60,6 +64,8 @@ jobs:
     runs-on: ubuntu-latest
     needs: [test, image]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    outputs:
+      version: ${{ steps.version.outputs.version }}
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -129,7 +135,12 @@ jobs:
           git fetch --tags --force
           tag=$(git tag --points-at "$GITHUB_SHA" --list 'v*' | sort -V | tail -n 1)
           if [[ -n "$tag" ]]; then
-            echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
+            version=${tag#v}
+            if [[ ! "$version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+              echo "Unsupported release tag: $tag" >&2
+              exit 1
+            fi
+            echo "version=$version" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Configure release image credentials
@@ -156,3 +167,46 @@ jobs:
             --label=org.opencontainers.image.version=${{ steps.version.outputs.version }}
             --label=org.opencontainers.image.revision=${{ github.sha }}
             --no-push-cache
+
+  deploy:
+    runs-on: ubuntu-latest
+    needs: release
+    if: needs.release.result == 'success' && needs.release.outputs.version != ''
+    steps:
+      - name: Configure SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          test -n "$DEPLOY_SSH_KEY"
+          test -n "$DEPLOY_KNOWN_HOSTS"
+          install -m 700 -d "$HOME/.ssh"
+          printf '%s\n' "$DEPLOY_SSH_KEY" > "$HOME/.ssh/deploy_key"
+          chmod 600 "$HOME/.ssh/deploy_key"
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
+          chmod 644 "$HOME/.ssh/known_hosts"
+
+      - name: Deploy release image
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          VERSION: ${{ needs.release.outputs.version }}
+        run: |
+          set -euo pipefail
+          test -n "$DEPLOY_HOST"
+          test -n "$DEPLOY_USER"
+          if [[ ! "$VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "Unsupported deployment version: $VERSION" >&2
+            exit 1
+          fi
+
+          ssh \
+            -i "$HOME/.ssh/deploy_key" \
+            -o BatchMode=yes \
+            -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile="$HOME/.ssh/known_hosts" \
+            "$DEPLOY_USER@$DEPLOY_HOST" \
+            "set -e
+             RSS_STUDIO_TAG='$VERSION' docker compose -f /home/deploy/rss-studio/compose.yaml pull rss-studio
+             RSS_STUDIO_TAG='$VERSION' docker compose -f /home/deploy/rss-studio/compose.yaml up -d --no-build rss-studio"
