@@ -16,6 +16,7 @@ import (
 	"rss-studio/internal/httpapi"
 	"rss-studio/internal/rss"
 	"rss-studio/internal/storage"
+	"rss-studio/internal/version"
 )
 
 type sourceStub struct{}
@@ -43,9 +44,16 @@ func TestHandlerCreatesAndServesFeed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	homeBody, err := io.ReadAll(response.Body)
 	response.Body.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
 	if response.StatusCode != http.StatusOK {
 		t.Fatalf("expected redirect followed by home page, got %d", response.StatusCode)
+	}
+	if !strings.Contains(string(homeBody), "RSS Studio · Version "+version.Version) {
+		t.Fatalf("home page does not show version %q: %s", version.Version, homeBody)
 	}
 
 	response, err = http.Get(server.URL + "/feeds/foo-feed.xml")

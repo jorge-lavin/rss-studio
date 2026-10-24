@@ -11,6 +11,7 @@ import (
 
 	"rss-studio/internal/application"
 	"rss-studio/internal/domain"
+	"rss-studio/internal/version"
 )
 
 type Handler struct {
@@ -21,6 +22,7 @@ type Handler struct {
 type homePageData struct {
 	Feeds   []domain.Feed
 	BaseURL string
+	Version string
 	Error   string
 }
 
@@ -167,7 +169,7 @@ func (h *Handler) deleteFeed(writer http.ResponseWriter, request *http.Request) 
 func (h *Handler) renderHome(writer http.ResponseWriter, request *http.Request, message string, status int) {
 	writer.Header().Set("Content-Type", "text/html; charset=utf-8")
 	writer.WriteHeader(status)
-	if err := homeTemplate.Execute(writer, homePageData{Feeds: h.service.ListFeeds(), BaseURL: baseURL(request), Error: message}); err != nil {
+	if err := homeTemplate.Execute(writer, homePageData{Feeds: h.service.ListFeeds(), BaseURL: baseURL(request), Version: version.Version, Error: message}); err != nil {
 		log.Printf("render home: %v", err)
 	}
 }
@@ -279,7 +281,7 @@ var homeTemplate = template.Must(template.New("home").Parse(`<!doctype html>
     </section>
   </main>
 
-  <footer class="mx-auto max-w-6xl px-5 pb-8 text-xs text-slate-400 sm:px-8">RSS Studio · Filter the feed, not your attention.</footer>
+  <footer class="mx-auto max-w-6xl px-5 pb-8 text-xs text-slate-400 sm:px-8">RSS Studio · Version {{.Version}} · Filter the feed, not your attention.</footer>
 </div>
 </body>
 </html>`))
