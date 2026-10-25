@@ -550,7 +550,6 @@ var homeTemplate = template.Must(template.New("home").Parse(`<!doctype html>
           RSS Studio
         </a>
         <div class="flex items-center gap-4">
-          <span class="hidden text-sm text-slate-400 sm:block">Podcast feed filter</span>
           {{if .Authenticated}}<form method="post" action="/auth/logout"><button type="submit" class="inline-flex items-center gap-2 rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-xs font-medium text-slate-300 transition hover:bg-white/10 focus:outline-none focus:ring-4 focus:ring-violet-400/30">Logout</button></form>{{end}}
           <button id="theme-toggle" type="button" aria-pressed="false" aria-label="Switch to dark mode" class="inline-flex items-center gap-2 rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-xs font-medium text-slate-300 transition hover:bg-white/10 focus:outline-none focus:ring-4 focus:ring-violet-400/30">
             <span data-theme-icon aria-hidden="true">☾</span><span data-theme-label>Dark mode</span>
@@ -565,7 +564,6 @@ var homeTemplate = template.Must(template.New("home").Parse(`<!doctype html>
       <div class="mb-7 flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
         <div>
           <h2 class="text-xl font-semibold tracking-tight">Create a filtered feed</h2>
-          <p class="mt-1 text-sm text-slate-500 dark:text-slate-400">One keyword. Less noise.</p>
         </div>
         <span class="text-xs font-medium uppercase tracking-wider text-slate-400">New feed</span>
       </div>
@@ -706,7 +704,7 @@ var homeTemplate = template.Must(template.New("home").Parse(`<!doctype html>
     </section>
   </main>
 
-  <footer class="mx-auto max-w-6xl px-5 pb-8 text-xs text-slate-400 sm:px-8">RSS Studio · Version {{.Version}} · Filter the feed, not your attention.</footer>
+  <footer class="mx-auto max-w-6xl px-5 pb-8 text-xs text-slate-400 sm:px-8">RSS Studio · Version {{.Version}}</footer>
 </div>
 <script>
   (() => {
