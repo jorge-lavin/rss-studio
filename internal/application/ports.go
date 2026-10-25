@@ -8,10 +8,10 @@ import (
 )
 
 type FeedStore interface {
-	List(owner string) []domain.Feed
-	Get(slug string) (domain.Feed, bool)
-	Create(owner, name, sourceURL, keyword string) (domain.Feed, error)
-	Delete(slug, owner string) error
+	List(owner domain.User) ([]domain.Feed, error)
+	Get(path string) (domain.Feed, bool, error)
+	Create(owner domain.User, name, sourceURL, keyword string) (domain.Feed, error)
+	Delete(owner domain.User, path string) error
 }
 
 type Source interface {
@@ -24,10 +24,10 @@ type CacheMetadata struct {
 }
 
 type FeedCache interface {
-	Read(slug string) ([]byte, error)
-	ReadMetadata(slug string) (CacheMetadata, error)
-	Write(slug string, data []byte, lastModified time.Time) error
-	Remove(slug string) error
+	Read(feed domain.Feed) ([]byte, error)
+	ReadMetadata(feed domain.Feed) (CacheMetadata, error)
+	Write(feed domain.Feed, data []byte, lastModified time.Time) error
+	Remove(feed domain.Feed) error
 }
 
 type Filter func(source []byte, keyword, outputTitle string) ([]byte, int, error)

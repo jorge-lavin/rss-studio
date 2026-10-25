@@ -7,9 +7,11 @@ import (
 )
 
 type Feed struct {
-	Owner     string
+	ID        int64
+	TenantID  int64
 	Name      string
 	Slug      string
+	Path      string
 	SourceURL string
 	Keyword   string
 	CreatedAt time.Time

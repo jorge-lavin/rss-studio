@@ -103,6 +103,15 @@ func TestAuthenticatorUsesPersistentUserStore(t *testing.T) {
 	if err := auth.ValidateToken(token); err != nil {
 		t.Fatalf("persistent user token rejected: %v", err)
 	}
+	request := httptest.NewRequest("GET", "/", nil)
+	request.Header.Set("Authorization", "Bearer "+token)
+	user, err := auth.UserFromRequest(request)
+	if err != nil {
+		t.Fatalf("persistent user identity rejected: %v", err)
+	}
+	if user.ID == 0 || user.Username != "admin" {
+		t.Fatalf("unexpected persistent user identity: %#v", user)
+	}
 }
 
 func TestAuthenticatorRegistersUsersInPersistentStore(t *testing.T) {

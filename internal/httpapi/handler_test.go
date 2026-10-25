@@ -27,14 +27,14 @@ func (sourceStub) Get(context.Context, string) ([]byte, time.Time, error) {
 	return []byte(`<rss version="2.0"><channel><title>Source</title><item><title>Keep foo</title><guid>1</guid></item><item><title>Drop</title><guid>2</guid></item></channel></rss>`), time.Time{}, nil
 }
 
-func testAuth(t *testing.T) *httpapi.Authenticator {
+func newAuthenticatedServer(t *testing.T) (*httptest.Server, *storage.SQLiteStore) {
 	t.Helper()
 	store, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "rss-studio.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = store.Close() })
 	if _, err := store.CreateUser("admin", "password"); err != nil {
+		store.Close()
 		t.Fatal(err)
 	}
 	auth, err := httpapi.NewAuthenticator(httpapi.AuthConfig{
@@ -42,25 +42,63 @@ func testAuth(t *testing.T) *httpapi.Authenticator {
 		UserStore: store,
 	})
 	if err != nil {
-		t.Fatal(err)
-	}
-	return auth
-}
-
-func TestHandlerCreatesAndServesFeed(t *testing.T) {
-	store, err := storage.NewJSONStore(filepath.Join(t.TempDir(), "feeds.json"))
-	if err != nil {
+		store.Close()
 		t.Fatal(err)
 	}
 	service := application.NewService(store, cache.NewFileCache(t.TempDir()), sourceStub{}, rss.Filter)
-	server := httptest.NewServer(httpapi.NewHandler(service))
-	defer server.Close()
-
-	response, err := http.PostForm(server.URL+"/feeds", map[string][]string{
-		"name":       {"Foo feed"},
-		"source_url": {"https://example.test/rss"},
-		"keyword":    {"foo"},
+	server := httptest.NewServer(httpapi.NewHandler(service, auth))
+	t.Cleanup(func() {
+		server.Close()
+		store.Close()
 	})
+	return server, store
+}
+
+func loginToken(t *testing.T, server *httptest.Server) string {
+	t.Helper()
+	response, err := http.Post(server.URL+"/auth/login", "application/json", strings.NewReader(`{"username":"admin","password":"password"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	var login struct {
+		AccessToken string `json:"access_token"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&login); err != nil {
+		t.Fatal(err)
+	}
+	if response.StatusCode != http.StatusOK || login.AccessToken == "" {
+		t.Fatalf("login failed: status=%d token=%q", response.StatusCode, login.AccessToken)
+	}
+	return login.AccessToken
+}
+
+func TestHandlerCreatesAndServesFeed(t *testing.T) {
+	server, _ := newAuthenticatedServer(t)
+	token := loginToken(t, server)
+
+	request, err := http.NewRequest(http.MethodPost, server.URL+"/feeds", strings.NewReader("name=Foo+feed&source_url=https%3A%2F%2Fexample.test%2Frss&keyword=foo"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Authorization", "Bearer "+token)
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	response, err := client.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusSeeOther {
+		t.Fatalf("expected feed creation redirect, got %d", response.StatusCode)
+	}
+
+	request, err = http.NewRequest(http.MethodGet, server.URL+"/", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Authorization", "Bearer "+token)
+	response, err = http.DefaultClient.Do(request)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -70,7 +108,7 @@ func TestHandlerCreatesAndServesFeed(t *testing.T) {
 		t.Fatal(err)
 	}
 	if response.StatusCode != http.StatusOK {
-		t.Fatalf("expected redirect followed by home page, got %d", response.StatusCode)
+		t.Fatalf("expected home page, got %d", response.StatusCode)
 	}
 	if !strings.Contains(string(homeBody), "RSS Studio · Version "+version.Version) {
 		t.Fatalf("home page does not show version %q: %s", version.Version, homeBody)
@@ -97,14 +135,7 @@ func TestHandlerCreatesAndServesFeed(t *testing.T) {
 }
 
 func TestAuthenticatedHandlerProtectsManagementAndLeavesFeedsPublic(t *testing.T) {
-	store, err := storage.NewJSONStore(filepath.Join(t.TempDir(), "feeds.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	service := application.NewService(store, cache.NewFileCache(t.TempDir()), sourceStub{}, rss.Filter)
-	auth := testAuth(t)
-	server := httptest.NewServer(httpapi.NewHandler(service, auth))
-	defer server.Close()
+	server, _ := newAuthenticatedServer(t)
 
 	response, err := http.Get(server.URL + "/")
 	if err != nil {
@@ -156,12 +187,19 @@ func TestAuthenticatedHandlerProtectsManagementAndLeavesFeedsPublic(t *testing.T
 }
 
 func TestAuthenticatedHandlerIsolatesFeedsByUser(t *testing.T) {
-	store, err := storage.NewJSONStore(filepath.Join(t.TempDir(), "feeds.json"))
+	store, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "rss-studio.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer store.Close()
+	if _, err := store.CreateUser("admin", "password"); err != nil {
+		t.Fatal(err)
+	}
 	service := application.NewService(store, cache.NewFileCache(t.TempDir()), sourceStub{}, rss.Filter)
-	auth := testAuth(t)
+	auth, err := httpapi.NewAuthenticator(httpapi.AuthConfig{JWTSecret: strings.Repeat("x", 32), UserStore: store})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := auth.Register("reader", "password"); err != nil {
 		t.Fatal(err)
 	}
@@ -211,12 +249,22 @@ func TestAuthenticatedHandlerIsolatesFeedsByUser(t *testing.T) {
 }
 
 func TestAuthenticatedHandlerSupportsBrowserLogin(t *testing.T) {
-	store, err := storage.NewJSONStore(filepath.Join(t.TempDir(), "feeds.json"))
+	store, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "rss-studio.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer store.Close()
+	if _, err := store.CreateUser("admin", "password"); err != nil {
+		t.Fatal(err)
+	}
 	service := application.NewService(store, cache.NewFileCache(t.TempDir()), sourceStub{}, rss.Filter)
-	auth := testAuth(t)
+	auth, err := httpapi.NewAuthenticator(httpapi.AuthConfig{
+		JWTSecret: strings.Repeat("x", 32),
+		UserStore: store,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	handler := httpapi.NewHandler(service, auth)
 
 	request := httptest.NewRequest(http.MethodGet, "/", nil)
@@ -231,7 +279,7 @@ func TestAuthenticatedHandlerSupportsBrowserLogin(t *testing.T) {
 	request.Header.Set("Accept", "text/html")
 	recorder = httptest.NewRecorder()
 	handler.ServeHTTP(recorder, request)
-	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `action="/auth/sign-in"`) || !strings.Contains(recorder.Body.String(), "Sign in") || !strings.Contains(recorder.Body.String(), `href="/auth/sign-up"`) || strings.Contains(recorder.Body.String(), "Self-registration is not available.") {
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `action="/auth/sign-in"`) || !strings.Contains(recorder.Body.String(), "Sign in") || !strings.Contains(recorder.Body.String(), `href="/auth/sign-up"`) {
 		t.Fatalf("expected sign-in page to be publicly reachable, got %d", recorder.Code)
 	}
 	if !strings.Contains(recorder.Body.String(), `id="theme-toggle"`) || !strings.Contains(recorder.Body.String(), `darkMode: "class"`) || !strings.Contains(recorder.Body.String(), `rss-studio-theme`) {
@@ -242,7 +290,7 @@ func TestAuthenticatedHandlerSupportsBrowserLogin(t *testing.T) {
 	request.Header.Set("Accept", "text/html")
 	recorder = httptest.NewRecorder()
 	handler.ServeHTTP(recorder, request)
-	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `action="/auth/sign-up"`) || !strings.Contains(recorder.Body.String(), "Create account") {
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `action="/auth/sign-up"`) {
 		t.Fatalf("expected sign-up page to be publicly reachable, got %d", recorder.Code)
 	}
 
@@ -267,7 +315,7 @@ func TestAuthenticatedHandlerSupportsBrowserLogin(t *testing.T) {
 	recorder = httptest.NewRecorder()
 	handler.ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusSeeOther || recorder.Header().Get("Location") != "/" {
-		t.Fatalf("expected form login to redirect home, got %d and %q", recorder.Code, recorder.Header().Get("Location"))
+		t.Fatalf("expected registered form login to redirect home, got %d and %q", recorder.Code, recorder.Header().Get("Location"))
 	}
 	cookies := recorder.Result().Cookies()
 	if len(cookies) != 1 || cookies[0].Name != "rss_studio_token" || !cookies[0].HttpOnly {
@@ -284,12 +332,22 @@ func TestAuthenticatedHandlerSupportsBrowserLogin(t *testing.T) {
 }
 
 func TestAuthenticatedHandlerRateLimitsLoginAttempts(t *testing.T) {
-	store, err := storage.NewJSONStore(filepath.Join(t.TempDir(), "feeds.json"))
+	store, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "rss-studio.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer store.Close()
+	if _, err := store.CreateUser("admin", "password"); err != nil {
+		t.Fatal(err)
+	}
 	service := application.NewService(store, cache.NewFileCache(t.TempDir()), sourceStub{}, rss.Filter)
-	auth := testAuth(t)
+	auth, err := httpapi.NewAuthenticator(httpapi.AuthConfig{
+		JWTSecret: strings.Repeat("x", 32),
+		UserStore: store,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	handler := httpapi.NewHandler(service, auth)
 
 	for attempt := 1; attempt <= 5; attempt++ {

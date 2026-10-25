@@ -46,11 +46,11 @@ func NewService(store FeedStore, cache FeedCache, source Source, filter Filter) 
 	}
 }
 
-func (s *Service) ListFeeds(owner string) []domain.Feed {
+func (s *Service) ListFeeds(owner domain.User) ([]domain.Feed, error) {
 	return s.store.List(owner)
 }
 
-func (s *Service) CreateFeed(ctx context.Context, owner, name, sourceURL, keyword string) (domain.Feed, error) {
+func (s *Service) CreateFeed(ctx context.Context, owner domain.User, name, sourceURL, keyword string) (domain.Feed, error) {
 	name = strings.TrimSpace(name)
 	sourceURL = strings.TrimSpace(sourceURL)
 	keyword = strings.TrimSpace(keyword)
@@ -63,35 +63,44 @@ func (s *Service) CreateFeed(ctx context.Context, owner, name, sourceURL, keywor
 		return domain.Feed{}, err
 	}
 	if err := s.refreshFeed(ctx, feed, true); err != nil {
-		if deleteErr := s.store.Delete(feed.Slug, owner); deleteErr != nil {
-			log.Printf("roll back %s: %v", feed.Slug, deleteErr)
+		if deleteErr := s.store.Delete(owner, feed.Path); deleteErr != nil {
+			log.Printf("roll back %s: %v", feed.Path, deleteErr)
 		}
-		if removeErr := s.cache.Remove(feed.Slug); removeErr != nil {
-			log.Printf("remove rolled-back cache %s: %v", feed.Slug, removeErr)
+		if removeErr := s.cache.Remove(feed); removeErr != nil {
+			log.Printf("remove rolled-back cache %s: %v", feed.Path, removeErr)
 		}
 		return domain.Feed{}, fmt.Errorf("%w: %v", ErrSourceUnavailable, err)
 	}
 	return feed, nil
 }
 
-func (s *Service) DeleteFeed(owner, slug string) error {
-	feed, found := s.store.Get(slug)
-	if !found || feed.Owner != owner {
-		return ErrFeedNotFound
-	}
-	if err := s.store.Delete(slug, owner); err != nil {
+func (s *Service) DeleteFeed(owner domain.User, path string) error {
+	feed, found, err := s.store.Get(path)
+	if err != nil {
 		return err
 	}
-	return s.cache.Remove(slug)
+	if !found {
+		return ErrFeedNotFound
+	}
+	if err := s.store.Delete(owner, path); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return ErrFeedNotFound
+		}
+		return err
+	}
+	return s.cache.Remove(feed)
 }
 
-func (s *Service) CachedFeed(ctx context.Context, slug string) ([]byte, error) {
-	feed, found := s.store.Get(slug)
+func (s *Service) CachedFeed(ctx context.Context, path string) ([]byte, error) {
+	feed, found, err := s.store.Get(path)
+	if err != nil {
+		return nil, err
+	}
 	if !found {
 		return nil, ErrFeedNotFound
 	}
 
-	data, err := s.cache.Read(slug)
+	data, err := s.cache.Read(feed)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			s.triggerRefresh(feed)
@@ -125,21 +134,21 @@ func (s *Service) refreshFeed(ctx context.Context, feed domain.Feed, force bool)
 	if err != nil {
 		return err
 	}
-	if err := s.cache.Write(feed.Slug, filtered, lastModified); err != nil {
+	if err := s.cache.Write(feed, filtered, lastModified); err != nil {
 		return err
 	}
-	log.Printf("generated %s with %d matching episodes", feed.Slug, matched)
+	log.Printf("generated %s with %d matching episodes", feed.Path, matched)
 	return nil
 }
 
 func (s *Service) cacheIsFresh(ctx context.Context, feed domain.Feed) (bool, error) {
-	if _, err := s.cache.Read(feed.Slug); err != nil {
+	if _, err := s.cache.Read(feed); err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return false, nil
 		}
 		return false, err
 	}
-	metadata, err := s.cache.ReadMetadata(feed.Slug)
+	metadata, err := s.cache.ReadMetadata(feed)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return false, nil
@@ -167,22 +176,22 @@ func (s *Service) cacheIsFresh(ctx context.Context, feed domain.Feed) (bool, err
 
 func (s *Service) triggerRefresh(feed domain.Feed) {
 	s.stateMu.Lock()
-	if s.refreshing[feed.Slug] || time.Since(s.checkedAt[feed.Slug]) < refreshCheckInterval {
+	if s.refreshing[feed.Path] || time.Since(s.checkedAt[feed.Path]) < refreshCheckInterval {
 		s.stateMu.Unlock()
 		return
 	}
-	s.refreshing[feed.Slug] = true
-	s.checkedAt[feed.Slug] = time.Now()
+	s.refreshing[feed.Path] = true
+	s.checkedAt[feed.Path] = time.Now()
 	s.stateMu.Unlock()
 
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 		if err := s.refreshFeed(ctx, feed, false); err != nil {
-			log.Printf("refresh %s: %v", feed.Slug, err)
+			log.Printf("refresh %s: %v", feed.Path, err)
 		}
 		s.stateMu.Lock()
-		delete(s.refreshing, feed.Slug)
+		delete(s.refreshing, feed.Path)
 		s.stateMu.Unlock()
 	}()
 }

@@ -1,7 +1,6 @@
 package httpapi
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"html/template"
@@ -40,8 +39,6 @@ type authCredentials struct {
 	Password string `json:"password"`
 }
 
-type authenticatedUsernameContextKey struct{}
-
 func NewHandler(service *application.Service, authenticators ...*Authenticator) http.Handler {
 	var auth *Authenticator
 	if len(authenticators) > 0 {
@@ -61,8 +58,8 @@ func NewHandler(service *application.Service, authenticators ...*Authenticator) 
 		mux.HandleFunc("POST /auth/register", handler.register)
 	}
 	mux.HandleFunc("POST /feeds", handler.createFeed)
-	mux.HandleFunc("GET /feeds/{file}", handler.serveFeed)
-	mux.HandleFunc("POST /feeds/{slug}/delete", handler.deleteFeed)
+	mux.HandleFunc("GET /feeds/{path}", handler.serveFeed)
+	mux.HandleFunc("POST /feeds/{path}/delete", handler.deleteFeed)
 	return observability.HTTPHandler(handler.authenticate(mux))
 }
 
@@ -224,7 +221,7 @@ func (h *Handler) authenticate(next http.Handler) http.Handler {
 			next.ServeHTTP(writer, request)
 			return
 		}
-		username, err := h.auth.Subject(request)
+		user, err := h.auth.UserFromRequest(request)
 		if err != nil {
 			if request.Method == http.MethodGet && acceptsHTML(request) {
 				http.Redirect(writer, request, "/auth/sign-in", http.StatusSeeOther)
@@ -234,7 +231,7 @@ func (h *Handler) authenticate(next http.Handler) http.Handler {
 			http.Error(writer, "Authentication required.", http.StatusUnauthorized)
 			return
 		}
-		request = request.WithContext(context.WithValue(request.Context(), authenticatedUsernameContextKey{}, username))
+		request = request.WithContext(withUser(request.Context(), user))
 		next.ServeHTTP(writer, request)
 	})
 }
@@ -259,7 +256,7 @@ func (h *Handler) createFeed(writer http.ResponseWriter, request *http.Request) 
 		h.renderHome(writer, request, "Could not read form.", http.StatusBadRequest)
 		return
 	}
-	_, err := h.service.CreateFeed(request.Context(), authenticatedUsername(request), request.FormValue("name"), request.FormValue("source_url"), request.FormValue("keyword"))
+	_, err := h.service.CreateFeed(request.Context(), h.requestUser(request), request.FormValue("name"), request.FormValue("source_url"), request.FormValue("keyword"))
 	if err != nil {
 		switch {
 		case errors.Is(err, application.ErrInvalidFeed):
@@ -276,7 +273,7 @@ func (h *Handler) createFeed(writer http.ResponseWriter, request *http.Request) 
 }
 
 func (h *Handler) serveFeed(writer http.ResponseWriter, request *http.Request) {
-	file := request.PathValue("file")
+	file := request.PathValue("path")
 	if !strings.HasSuffix(file, ".xml") {
 		http.NotFound(writer, request)
 		return
@@ -300,7 +297,7 @@ func (h *Handler) serveFeed(writer http.ResponseWriter, request *http.Request) {
 }
 
 func (h *Handler) deleteFeed(writer http.ResponseWriter, request *http.Request) {
-	if err := h.service.DeleteFeed(authenticatedUsername(request), request.PathValue("slug")); err != nil {
+	if err := h.service.DeleteFeed(h.requestUser(request), request.PathValue("path")); err != nil {
 		if errors.Is(err, application.ErrFeedNotFound) {
 			http.NotFound(writer, request)
 			return
@@ -313,16 +310,28 @@ func (h *Handler) deleteFeed(writer http.ResponseWriter, request *http.Request) 
 }
 
 func (h *Handler) renderHome(writer http.ResponseWriter, request *http.Request, message string, status int) {
+	feeds, err := h.service.ListFeeds(h.requestUser(request))
+	if err != nil {
+		log.Printf("list feeds: %v", err)
+		if message == "" {
+			message = "Could not read feeds."
+		}
+		if status == http.StatusOK {
+			status = http.StatusInternalServerError
+		}
+	}
 	writer.Header().Set("Content-Type", "text/html; charset=utf-8")
 	writer.WriteHeader(status)
-	if err := homeTemplate.Execute(writer, homePageData{Feeds: h.service.ListFeeds(authenticatedUsername(request)), BaseURL: baseURL(request), Version: version.Version, Error: message}); err != nil {
+	if err := homeTemplate.Execute(writer, homePageData{Feeds: feeds, BaseURL: baseURL(request), Version: version.Version, Error: message}); err != nil {
 		log.Printf("render home: %v", err)
 	}
 }
 
-func authenticatedUsername(request *http.Request) string {
-	username, _ := request.Context().Value(authenticatedUsernameContextKey{}).(string)
-	return username
+func (h *Handler) requestUser(request *http.Request) domain.User {
+	if user, ok := userFromContext(request.Context()); ok {
+		return user
+	}
+	return domain.User{Username: "anonymous"}
 }
 
 func baseURL(request *http.Request) string {
@@ -430,11 +439,11 @@ var homeTemplate = template.Must(template.New("home").Parse(`<!doctype html>
                 <span class="rounded-full bg-violet-50 px-2.5 py-1 text-xs font-medium text-violet-700 dark:bg-violet-950 dark:text-violet-300">Contains “{{.Keyword}}”</span>
               </div>
               <p class="mt-2 truncate text-sm text-slate-500 dark:text-slate-400" title="{{.SourceURL}}">Source: {{.SourceURL}}</p>
-              <a href="/feeds/{{.Slug}}.xml" class="mt-3 block truncate text-sm font-medium text-violet-600 hover:text-violet-700 hover:underline dark:text-violet-400 dark:hover:text-violet-300" title="{{$.BaseURL}}/feeds/{{.Slug}}.xml">{{$.BaseURL}}/feeds/{{.Slug}}.xml</a>
+              <a href="/feeds/{{.Path}}.xml" class="mt-3 block truncate text-sm font-medium text-violet-600 hover:text-violet-700 hover:underline dark:text-violet-400 dark:hover:text-violet-300" title="{{$.BaseURL}}/feeds/{{.Path}}.xml">{{$.BaseURL}}/feeds/{{.Path}}.xml</a>
             </div>
             <div class="flex shrink-0 items-center gap-4 border-t border-slate-100 pt-4 dark:border-slate-800 lg:border-0 lg:pt-0">
-              <a href="/feeds/{{.Slug}}.xml" class="text-sm font-semibold text-slate-700 hover:text-slate-950 dark:text-slate-300 dark:hover:text-slate-100">Open feed <span aria-hidden="true">↗</span></a>
-              <form method="post" action="/feeds/{{.Slug}}/delete"><button class="text-sm font-medium text-rose-600 hover:text-rose-700 dark:text-rose-400 dark:hover:text-rose-300" type="submit">Delete</button></form>
+              <a href="/feeds/{{.Path}}.xml" class="text-sm font-semibold text-slate-700 hover:text-slate-950 dark:text-slate-300 dark:hover:text-slate-100">Open feed <span aria-hidden="true">↗</span></a>
+              <form method="post" action="/feeds/{{.Path}}/delete"><button class="text-sm font-medium text-rose-600 hover:text-rose-700 dark:text-rose-400 dark:hover:text-rose-300" type="submit">Delete</button></form>
             </div>
           </div>
         </article>
@@ -493,7 +502,7 @@ var authTemplate = template.Must(template.New("auth").Parse(`<!doctype html>
   </script>
   <script>
     window.tailwind = window.tailwind || {};
-    window.tailwind.config = { darkMode: "class" };
+  window.tailwind.config = { darkMode: "class" };
   </script>
   <title>{{if .Registration}}Create account{{else}}Sign in{{end}} · RSS Studio</title>
   <script src="https://cdn.tailwindcss.com"></script>
@@ -524,7 +533,7 @@ var authTemplate = template.Must(template.New("auth").Parse(`<!doctype html>
         <input id="password" name="password" type="password" autocomplete="{{if .Registration}}new-password{{else}}current-password{{end}}" required class="block w-full rounded-lg border border-slate-300 bg-white px-3.5 py-3 text-sm text-slate-900 shadow-sm outline-none transition focus:border-violet-600 focus:ring-4 focus:ring-violet-600/10 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100">
       </div>
       <button type="submit" class="inline-flex min-h-[46px] w-full items-center justify-center rounded-lg bg-violet-600 px-5 py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-violet-700 focus:outline-none focus:ring-4 focus:ring-violet-600/20">{{if .Registration}}Create account{{else}}Sign in{{end}}</button>
-</form>
+    </form>
     <p class="mt-6 text-center text-sm text-slate-500 dark:text-slate-400">{{if .Registration}}Already have an account? <a class="font-semibold text-violet-600 hover:text-violet-700 dark:text-violet-400 dark:hover:text-violet-300" href="/auth/sign-in">Sign in</a>{{else}}Need an account? <a class="font-semibold text-violet-600 hover:text-violet-700 dark:text-violet-400 dark:hover:text-violet-300" href="/auth/sign-up">Create one</a>{{end}}</p>
   </main>
 <script>

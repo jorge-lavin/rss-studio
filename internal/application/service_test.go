@@ -2,13 +2,14 @@ package application
 
 import (
 	"context"
-	"errors"
 	"io/fs"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"rss-studio/internal/domain"
 	"rss-studio/internal/rss"
 	"rss-studio/internal/storage"
 )
@@ -32,44 +33,40 @@ type memoryCache struct {
 	metadata CacheMetadata
 }
 
-func (c *memoryCache) Read(string) ([]byte, error) {
+func (c *memoryCache) Read(domain.Feed) ([]byte, error) {
 	if c.data == nil {
 		return nil, fs.ErrNotExist
 	}
 	return c.data, nil
 }
 
-func (c *memoryCache) ReadMetadata(string) (CacheMetadata, error) {
+func (c *memoryCache) ReadMetadata(domain.Feed) (CacheMetadata, error) {
 	if c.data == nil {
 		return CacheMetadata{}, fs.ErrNotExist
 	}
 	return c.metadata, nil
 }
 
-func (c *memoryCache) Write(_ string, data []byte, lastModified time.Time) error {
+func (c *memoryCache) Write(_ domain.Feed, data []byte, lastModified time.Time) error {
 	c.data = append([]byte(nil), data...)
 	c.metadata.LastModified = lastModified
 	return nil
 }
 
-func (c *memoryCache) Remove(string) error {
+func (c *memoryCache) Remove(domain.Feed) error {
 	c.data = nil
 	return nil
 }
 
 func TestServiceCreatesAndCachesFeed(t *testing.T) {
-	store, err := storage.NewJSONStore(t.TempDir() + "/feeds.json")
-	if err != nil {
-		t.Fatal(err)
-	}
+	store, owner := testSQLiteStore(t)
 	source := &sourceStub{}
 	service := NewService(store, &memoryCache{}, source, rss.Filter)
-
-	feed, err := service.CreateFeed(context.Background(), "alice", "Foo feed", "https://example.test/rss", "foo")
+	feed, err := service.CreateFeed(context.Background(), owner, "Foo feed", "https://example.test/rss", "foo")
 	if err != nil {
 		t.Fatal(err)
 	}
-	data, err := service.CachedFeed(context.Background(), feed.Slug)
+	data, err := service.CachedFeed(context.Background(), feed.Path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -79,14 +76,11 @@ func TestServiceCreatesAndCachesFeed(t *testing.T) {
 }
 
 func TestServiceKeepsCacheWhenHeadHasNoLastModified(t *testing.T) {
-	store, err := storage.NewJSONStore(t.TempDir() + "/feeds.json")
-	if err != nil {
-		t.Fatal(err)
-	}
+	store, owner := testSQLiteStore(t)
 	source := &sourceStub{}
 	cache := &memoryCache{}
 	service := NewService(store, cache, source, rss.Filter)
-	feed, err := store.Create("alice", "Foo feed", "https://example.test/rss", "foo")
+	feed, err := store.Create(owner, "Foo feed", "https://example.test/rss", "foo")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -103,23 +97,19 @@ func TestServiceKeepsCacheWhenHeadHasNoLastModified(t *testing.T) {
 	}
 }
 
-func TestServiceIsolatesFeedsByOwner(t *testing.T) {
-	store, err := storage.NewJSONStore(t.TempDir() + "/feeds.json")
+func testSQLiteStore(t *testing.T) (*storage.SQLiteStore, domain.User) {
+	t.Helper()
+	store, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "rss-studio.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	service := NewService(store, &memoryCache{}, &sourceStub{}, rss.Filter)
-	feed, err := service.CreateFeed(context.Background(), "alice", "Alice feed", "https://example.test/rss", "foo")
+	t.Cleanup(func() { store.Close() })
+	if _, err := store.CreateUser("admin", "password"); err != nil {
+		t.Fatal(err)
+	}
+	owner, err := store.User("admin")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if feeds := service.ListFeeds("bob"); len(feeds) != 0 {
-		t.Fatalf("bob saw alice's feeds: %#v", feeds)
-	}
-	if err := service.DeleteFeed("bob", feed.Slug); !errors.Is(err, ErrFeedNotFound) {
-		t.Fatalf("expected cross-owner delete to be hidden, got %v", err)
-	}
-	if _, err := service.CachedFeed(context.Background(), feed.Slug); err != nil {
-		t.Fatalf("public feed was not readable: %v", err)
-	}
+	return store, owner
 }

@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/base64"
@@ -47,6 +48,8 @@ type Authenticator struct {
 	now       func() time.Time
 	userStore UserStore
 }
+
+type userContextKey struct{}
 
 type jwtHeader struct {
 	Algorithm string `json:"alg"`
@@ -119,20 +122,53 @@ func (a *Authenticator) ValidateRequest(request *http.Request) error {
 	return err
 }
 
-func (a *Authenticator) Subject(request *http.Request) (string, error) {
+func (a *Authenticator) UserFromRequest(request *http.Request) (domain.User, error) {
+	subject, err := a.Subject(request)
+	if err != nil {
+		return domain.User{}, err
+	}
+	if lookup, ok := a.userStore.(interface {
+		User(string) (domain.User, error)
+	}); ok {
+		user, err := lookup.User(subject)
+		if err != nil {
+			return domain.User{}, ErrInvalidToken
+		}
+		return user, nil
+	}
+	return domain.User{Username: subject}, nil
+}
+
+func requestToken(request *http.Request) (string, error) {
 	if authorization := request.Header.Get("Authorization"); authorization != "" {
 		parts := strings.Fields(authorization)
 		if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") {
 			return "", ErrInvalidToken
 		}
-		return a.TokenSubject(parts[1])
+		return parts[1], nil
 	}
-
 	cookie, err := request.Cookie(authCookieName)
 	if err != nil {
 		return "", ErrInvalidToken
 	}
-	return a.TokenSubject(cookie.Value)
+	return cookie.Value, nil
+}
+
+func withUser(ctx context.Context, user domain.User) context.Context {
+	return context.WithValue(ctx, userContextKey{}, user)
+}
+
+func userFromContext(ctx context.Context) (domain.User, bool) {
+	user, ok := ctx.Value(userContextKey{}).(domain.User)
+	return user, ok
+}
+
+func (a *Authenticator) Subject(request *http.Request) (string, error) {
+	token, err := requestToken(request)
+	if err != nil {
+		return "", err
+	}
+	return a.TokenSubject(token)
 }
 
 func (a *Authenticator) ValidateToken(token string) error {

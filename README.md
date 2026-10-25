@@ -32,15 +32,15 @@ curl -H "Authorization: Bearer $token" http://localhost:8080/
 ```
 
 Generated RSS URLs remain public so RSS readers can fetch them without JWT
-support. Feed definitions are isolated per account; users can only view or
-delete their own definitions. Feed definitions and generated feeds persist in
-the `rss-studio-data` Docker volume. The same volume contains the SQLite
-database at `/data/rss-studio.db`; its migrations run automatically at startup.
+support. Feed definitions persist in SQLite and are isolated per account, while
+generated feeds persist in tenant-scoped cache folders in the `rss-studio-data`
+Docker volume. The same volume contains the SQLite database at
+`/data/rss-studio.db`; its migrations run automatically at startup.
 Accounts created through the web UI or API are stored as password hashes and
 remain available after restarts.
-
-Feed definitions created before account isolation have no owner. Their public
-RSS URLs continue to work, but they are not shown in account management pages.
+If an older deployment has `/data/feeds.json` and an existing account, startup
+imports its feeds into the first account and removes the legacy file after a
+successful import.
 
 To run the published image instead:
 
@@ -164,7 +164,8 @@ go test ./...
 go run ./cmd/rss-studio
 ```
 
-Override storage or listen address with `RSS_STUDIO_DATA` and `RSS_STUDIO_ADDRESS`.
+Override data directory or listen address with `RSS_STUDIO_DATA` and
+`RSS_STUDIO_ADDRESS`.
 Override the SQLite path with `RSS_STUDIO_DB`. `RSS_STUDIO_JWT_SECRET` is
 required. JWTs use HS256 and expire after 24 hours.
 Login attempts are limited to five per client IP per minute; excess attempts

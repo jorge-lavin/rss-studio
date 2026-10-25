@@ -2,10 +2,12 @@ package main
 
 import (
 	"context"
+	"errors"
 	"log"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"rss-studio/internal/application"
@@ -29,13 +31,27 @@ func main() {
 	}()
 
 	address := envOrDefault("RSS_STUDIO_ADDRESS", ":8080")
-	dataPath := envOrDefault("RSS_STUDIO_DATA", "/data/feeds.json")
-	databasePath := envOrDefault("RSS_STUDIO_DB", filepath.Join(filepath.Dir(dataPath), "rss-studio.db"))
+	configuredData := envOrDefault("RSS_STUDIO_DATA", "/data")
+	dataDirectory := configuredData
+	legacyFeedPath := filepath.Join(dataDirectory, "feeds.json")
+	if strings.HasSuffix(configuredData, ".json") {
+		dataDirectory = filepath.Dir(configuredData)
+		legacyFeedPath = configuredData
+	}
+	databasePath := envOrDefault("RSS_STUDIO_DB", filepath.Join(dataDirectory, "rss-studio.db"))
 	database, err := storage.NewSQLiteStore(databasePath)
 	if err != nil {
 		log.Fatalf("open database: %v", err)
 	}
 	defer database.Close()
+	owner, err := database.FirstUser()
+	if err == nil {
+		if err := database.ImportLegacyFeeds(legacyFeedPath, owner); err != nil {
+			log.Fatalf("migrate legacy feeds: %v", err)
+		}
+	} else if !errors.Is(err, storage.ErrUserNotFound) {
+		log.Fatalf("read feed owner: %v", err)
+	}
 	auth, err := httpapi.NewAuthenticator(httpapi.AuthConfig{
 		JWTSecret: os.Getenv("RSS_STUDIO_JWT_SECRET"),
 		UserStore: database,
@@ -44,14 +60,9 @@ func main() {
 		log.Fatalf("configure authentication: %v", err)
 	}
 
-	store, err := storage.NewJSONStore(dataPath)
-	if err != nil {
-		log.Fatalf("open store: %v", err)
-	}
-
 	service := application.NewService(
-		store,
-		cache.NewFileCache(filepath.Join(filepath.Dir(dataPath), "cache")),
+		database,
+		cache.NewFileCache(filepath.Join(dataDirectory, "cache")),
 		source.NewHTTPSource(&http.Client{Timeout: 20 * time.Second}),
 		rss.Filter,
 	)
