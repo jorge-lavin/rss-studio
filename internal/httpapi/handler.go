@@ -265,6 +265,16 @@ func (h *Handler) apiRegister(writer http.ResponseWriter, request *http.Request)
 }
 
 func (h *Handler) apiCreateServiceToken(writer http.ResponseWriter, request *http.Request) {
+	started := time.Now()
+	result := "error"
+	defer func() {
+		observability.Record(request.Context(), observability.Event{
+			Event:      observability.EventMutation,
+			Operation:  policy.OperationTokensCreate,
+			Result:     result,
+			DurationMS: time.Since(started).Milliseconds(),
+		})
+	}()
 	request.Body = http.MaxBytesReader(writer, request.Body, maxAuthJSONRequestBody)
 	var input serviceTokenCreateRequest
 	if inputErr := parseAPIJSON(request, &input); inputErr != nil {
@@ -308,6 +318,7 @@ func (h *Handler) apiCreateServiceToken(writer http.ResponseWriter, request *htt
 		serviceTokenResponse: serviceTokenResponseFor(token),
 		Token:                raw,
 	})
+	result = "success"
 }
 
 func (h *Handler) apiListServiceTokens(writer http.ResponseWriter, request *http.Request) {
@@ -331,6 +342,16 @@ func (h *Handler) apiListServiceTokens(writer http.ResponseWriter, request *http
 }
 
 func (h *Handler) apiRevokeServiceToken(writer http.ResponseWriter, request *http.Request) {
+	started := time.Now()
+	result := "error"
+	defer func() {
+		observability.Record(request.Context(), observability.Event{
+			Event:      observability.EventMutation,
+			Operation:  policy.OperationTokensRevoke,
+			Result:     result,
+			DurationMS: time.Since(started).Milliseconds(),
+		})
+	}()
 	id, err := strconv.ParseInt(request.PathValue("id"), 10, 64)
 	if err != nil || id <= 0 {
 		writeAPIError(writer, request, http.StatusBadRequest, "validation_error", "Token ID is invalid.")
@@ -353,6 +374,7 @@ func (h *Handler) apiRevokeServiceToken(writer http.ResponseWriter, request *htt
 		Revoked bool  `json:"revoked"`
 		ID      int64 `json:"id"`
 	}{Revoked: true, ID: id})
+	result = "success"
 }
 
 func serviceTokenResponseFor(token domain.ServiceToken) serviceTokenResponse {
@@ -797,13 +819,39 @@ func (h *Handler) authenticate(next http.Handler) http.Handler {
 		}
 		request = request.WithContext(withIdentity(request.Context(), identity))
 		if isAPIRequest(request) {
+			operation, hasOperation := operationNameForRequest(request)
+			if hasOperation {
+				observability.SetOperationAttributes(request.Context(), operation, identity.User.ID, identity.TokenID)
+			}
+			policyStarted := time.Now()
 			if err := authorizeAPIRequest(identity, request); err != nil {
+				if !hasOperation {
+					operation = "api.request"
+				}
+				observability.Record(request.Context(), observability.Event{
+					Event:      observability.EventPolicy,
+					Operation:  operation,
+					Result:     "denied",
+					DurationMS: time.Since(policyStarted).Milliseconds(),
+				})
 				writeAPIPolicyError(writer, request, err)
 				return
 			}
-			if operation, ok := operationNameForRequest(request); ok {
+			if hasOperation {
+				observability.Record(request.Context(), observability.Event{
+					Event:      observability.EventPolicy,
+					Operation:  operation,
+					Result:     "allowed",
+					DurationMS: time.Since(policyStarted).Milliseconds(),
+				})
 				decision, err := h.apiLimiter.allow(identity, operation)
 				if err != nil {
+					observability.Record(request.Context(), observability.Event{
+						Event:      observability.EventRateLimit,
+						Operation:  operation,
+						Result:     "unavailable",
+						DurationMS: time.Since(policyStarted).Milliseconds(),
+					})
 					log.Printf("rate limit check: %v", err)
 					writeAPIError(writer, request, http.StatusServiceUnavailable, "rate_limit_unavailable", "Rate limiting is temporarily unavailable.")
 					return
@@ -812,6 +860,13 @@ func (h *Handler) authenticate(next http.Handler) http.Handler {
 					setRateLimitHeaders(writer, decision)
 				}
 				if !decision.Allowed {
+					observability.Record(request.Context(), observability.Event{
+						Event:        observability.EventRateLimit,
+						Operation:    operation,
+						Result:       "rejected",
+						DurationMS:   time.Since(policyStarted).Milliseconds(),
+						RateRejected: true,
+					})
 					rateLimitError(writer, request, decision)
 					return
 				}
@@ -1040,7 +1095,7 @@ func (h *Handler) serveFeed(writer http.ResponseWriter, request *http.Request) {
 		case errors.Is(err, application.ErrCacheNotReady):
 			http.Error(writer, "Feed cache is not ready yet.", http.StatusServiceUnavailable)
 		default:
-			log.Printf("serve feed: %v", err)
+			log.Printf("serve feed: %T", err)
 			http.Error(writer, "Could not read feed.", http.StatusInternalServerError)
 		}
 		return
@@ -1051,7 +1106,7 @@ func (h *Handler) serveFeed(writer http.ResponseWriter, request *http.Request) {
 }
 
 func (h *Handler) deleteFeed(writer http.ResponseWriter, request *http.Request) {
-	if err := h.service.DeleteFeed(h.requestUser(request), request.PathValue("path")); err != nil {
+	if err := h.service.DeleteFeedContext(request.Context(), h.requestUser(request), request.PathValue("path")); err != nil {
 		if errors.Is(err, application.ErrFeedNotFound) {
 			http.NotFound(writer, request)
 			return
@@ -1065,7 +1120,7 @@ func (h *Handler) deleteFeed(writer http.ResponseWriter, request *http.Request) 
 
 func (h *Handler) apiDeleteFeed(writer http.ResponseWriter, request *http.Request) {
 	path := feedPath(request.PathValue("path"))
-	if err := h.service.DeleteFeed(h.requestUser(request), path); err != nil {
+	if err := h.service.DeleteFeedContext(request.Context(), h.requestUser(request), path); err != nil {
 		h.writeAPIFeedError(writer, request, err, "Could not delete feed.")
 		return
 	}

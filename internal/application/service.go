@@ -16,6 +16,7 @@ import (
 
 	"rss-studio/internal/domain"
 	"rss-studio/internal/idempotency"
+	"rss-studio/internal/observability"
 	"rss-studio/internal/policy"
 	"rss-studio/internal/rss"
 )
@@ -207,6 +208,19 @@ func (e *QuotaError) Error() string { return "quota exceeded" }
 
 func (e *QuotaError) Unwrap() error { return ErrQuotaExceeded }
 
+func auditResult(err error) string {
+	switch {
+	case err == nil:
+		return "success"
+	case errors.Is(err, ErrQuotaExceeded):
+		return "quota_rejected"
+	case errors.Is(err, ErrSourceUnavailable):
+		return "upstream_failure"
+	default:
+		return "error"
+	}
+}
+
 type quotaLease struct {
 	store       policy.QuotaStore
 	reservation policy.QuotaReservation
@@ -273,7 +287,19 @@ func (s *Service) PreviewForOwner(ctx context.Context, owner domain.User, source
 	return s.preview(ctx, owner, sourceURL, rules)
 }
 
-func (s *Service) preview(ctx context.Context, owner domain.User, sourceURL string, rules []PreviewRule) ([]PreviewResult, error) {
+func (s *Service) preview(ctx context.Context, owner domain.User, sourceURL string, rules []PreviewRule) (previews []PreviewResult, err error) {
+	started := time.Now()
+	defer func() {
+		observability.Record(ctx, observability.Event{
+			Event:           observability.EventOperation,
+			Operation:       policy.OperationFeedsPreview,
+			ActorID:         owner.ID,
+			Result:          auditResult(err),
+			DurationMS:      time.Since(started).Milliseconds(),
+			QuotaRejected:   errors.Is(err, ErrQuotaExceeded),
+			UpstreamFailure: errors.Is(err, ErrSourceUnavailable),
+		})
+	}()
 	sourceURL = strings.TrimSpace(sourceURL)
 	if err := validateSourceURL(sourceURL); err != nil {
 		return nil, err
@@ -315,7 +341,7 @@ func (s *Service) preview(ctx context.Context, owner domain.User, sourceURL stri
 		return nil, fmt.Errorf("%w: %v", ErrSourceUnavailable, err)
 	}
 
-	previews := make([]PreviewResult, len(filtered))
+	previews = make([]PreviewResult, len(filtered))
 	for i, result := range filtered {
 		previews[i] = PreviewResult{
 			Name:     result.Name,
@@ -333,7 +359,19 @@ func (s *Service) CreateFeed(ctx context.Context, owner domain.User, name, sourc
 	return s.CreateFeedWithOperator(ctx, owner, name, sourceURL, domain.FilterContains, keyword)
 }
 
-func (s *Service) CreateFeedWithOperator(ctx context.Context, owner domain.User, name, sourceURL string, operator domain.FilterOperator, keyword string) (domain.Feed, error) {
+func (s *Service) CreateFeedWithOperator(ctx context.Context, owner domain.User, name, sourceURL string, operator domain.FilterOperator, keyword string) (feed domain.Feed, err error) {
+	started := time.Now()
+	defer func() {
+		observability.Record(ctx, observability.Event{
+			Event:           observability.EventMutation,
+			Operation:       policy.OperationFeedsCreate,
+			ActorID:         owner.ID,
+			Result:          auditResult(err),
+			DurationMS:      time.Since(started).Milliseconds(),
+			QuotaRejected:   errors.Is(err, ErrQuotaExceeded),
+			UpstreamFailure: errors.Is(err, ErrSourceUnavailable),
+		})
+	}()
 	name = strings.TrimSpace(name)
 	sourceURL = strings.TrimSpace(sourceURL)
 	operator = domain.FilterOperator(strings.TrimSpace(string(operator)))
@@ -355,7 +393,6 @@ func (s *Service) CreateFeedWithOperator(ctx context.Context, owner domain.User,
 	succeeded := false
 	defer func() { s.quotaFinished(lease, succeeded) }()
 
-	var feed domain.Feed
 	if hasOperatorStore {
 		feed, err = operatorStore.CreateWithOperator(owner, name, sourceURL, operator, keyword)
 	} else if operator == domain.FilterContains {
@@ -369,10 +406,10 @@ func (s *Service) CreateFeedWithOperator(ctx context.Context, owner domain.User,
 	}
 	if err := s.refreshFeed(ctx, feed, true); err != nil {
 		if deleteErr := s.store.Delete(owner, feed.Path); deleteErr != nil {
-			log.Printf("roll back %s: %v", feed.Path, deleteErr)
+			log.Printf("roll back feed: %T", deleteErr)
 		}
 		if removeErr := s.cache.Remove(feed); removeErr != nil {
-			log.Printf("remove rolled-back cache %s: %v", feed.Path, removeErr)
+			log.Printf("remove rolled-back cache: %T", removeErr)
 		}
 		return domain.Feed{}, fmt.Errorf("%w: %v", ErrSourceUnavailable, err)
 	}
@@ -381,7 +418,19 @@ func (s *Service) CreateFeedWithOperator(ctx context.Context, owner domain.User,
 }
 
 // CreateSplitFeeds publishes one filtered feed for each output using one source fetch.
-func (s *Service) CreateSplitFeeds(ctx context.Context, owner domain.User, sourceURL string, rules []PreviewRule) ([]domain.Feed, error) {
+func (s *Service) CreateSplitFeeds(ctx context.Context, owner domain.User, sourceURL string, rules []PreviewRule) (feeds []domain.Feed, err error) {
+	started := time.Now()
+	defer func() {
+		observability.Record(ctx, observability.Event{
+			Event:           observability.EventMutation,
+			Operation:       policy.OperationFeedsSplit,
+			ActorID:         owner.ID,
+			Result:          auditResult(err),
+			DurationMS:      time.Since(started).Milliseconds(),
+			QuotaRejected:   errors.Is(err, ErrQuotaExceeded),
+			UpstreamFailure: errors.Is(err, ErrSourceUnavailable),
+		})
+	}()
 	sourceURL = strings.TrimSpace(sourceURL)
 	if err := validateSourceURL(sourceURL); err != nil {
 		return nil, err
@@ -445,7 +494,7 @@ func (s *Service) CreateSplitFeeds(ctx context.Context, owner domain.User, sourc
 		generatedSize += len(result.Feed)
 	}
 
-	feeds := make([]domain.Feed, 0, len(filtered))
+	feeds = make([]domain.Feed, 0, len(filtered))
 	for i, result := range filtered {
 		var feed domain.Feed
 		if hasOperatorStore {
@@ -473,10 +522,10 @@ func (s *Service) rollbackSplit(owner domain.User, feeds []domain.Feed) error {
 	for i := len(feeds) - 1; i >= 0; i-- {
 		feed := feeds[i]
 		if err := s.cache.Remove(feed); err != nil {
-			rollbackErr = errors.Join(rollbackErr, fmt.Errorf("remove cache for %s: %w", feed.Path, err))
+			rollbackErr = errors.Join(rollbackErr, fmt.Errorf("remove feed cache: %w", err))
 		}
 		if err := s.store.Delete(owner, feed.Path); err != nil {
-			rollbackErr = errors.Join(rollbackErr, fmt.Errorf("delete feed %s: %w", feed.Path, err))
+			rollbackErr = errors.Join(rollbackErr, fmt.Errorf("delete feed: %w", err))
 		}
 	}
 	return rollbackErr
@@ -490,6 +539,22 @@ func withRollbackError(operationErr, rollbackErr error) error {
 }
 
 func (s *Service) DeleteFeed(owner domain.User, path string) error {
+	return s.DeleteFeedContext(context.Background(), owner, path)
+}
+
+// DeleteFeedContext is the context-aware form used by HTTP and other
+// adapters so audit identity and request tracing reach the shared service.
+func (s *Service) DeleteFeedContext(ctx context.Context, owner domain.User, path string) (err error) {
+	started := time.Now()
+	defer func() {
+		observability.Record(ctx, observability.Event{
+			Event:      observability.EventMutation,
+			Operation:  policy.OperationFeedsDelete,
+			ActorID:    owner.ID,
+			Result:     auditResult(err),
+			DurationMS: time.Since(started).Milliseconds(),
+		})
+	}()
 	s.refreshMu.Lock()
 	defer s.refreshMu.Unlock()
 	accountID := owner.ID
@@ -578,7 +643,7 @@ func (s *Service) refreshFeed(ctx context.Context, feed domain.Feed, force bool)
 	if err := s.cache.Write(feed, filtered, lastModified); err != nil {
 		return err
 	}
-	log.Printf("generated %s with %d matching episodes", feed.Path, matched)
+	log.Printf("generated feed matching_episodes=%d", matched)
 	return nil
 }
 
@@ -602,7 +667,7 @@ func (s *Service) cacheIsFresh(ctx context.Context, feed domain.Feed) (bool, err
 		return false, err
 	}
 	if lastModified.IsZero() {
-		log.Printf("source %s returned no valid Last-Modified; keeping cached feed", feed.Slug)
+		log.Printf("source returned no valid last_modified; keeping cached feed")
 		return true, nil
 	}
 	if metadata.LastModified.IsZero() {
@@ -610,7 +675,7 @@ func (s *Service) cacheIsFresh(ctx context.Context, feed domain.Feed) (bool, err
 	}
 	changed := lastModified.After(metadata.LastModified)
 	if changed {
-		log.Printf("source %s changed: %s -> %s", feed.Slug, metadata.LastModified.Format(time.RFC1123), lastModified.Format(time.RFC1123))
+		log.Printf("source changed")
 	}
 	return !changed, nil
 }
@@ -668,7 +733,7 @@ func (s *Service) refreshFeedGroup(ctx context.Context, feed domain.Feed) error 
 	}
 	if !needsRefresh {
 		if lastModified.IsZero() {
-			log.Printf("source %s returned no valid Last-Modified; keeping cached feed", triggering.Slug)
+			log.Printf("source returned no valid last_modified; keeping cached feed")
 			return nil
 		}
 		for _, cached := range metadata {
@@ -698,7 +763,7 @@ func (s *Service) refreshFeedGroup(ctx context.Context, feed domain.Feed) error 
 		if err := s.cache.Write(candidate, filtered[i].Feed, lastModified); err != nil {
 			return err
 		}
-		log.Printf("generated %s with %d matching episodes", candidate.Path, filtered[i].Count)
+		log.Printf("generated feed matching_episodes=%d", filtered[i].Count)
 	}
 	return nil
 }
@@ -723,7 +788,7 @@ func (s *Service) triggerRefresh(feed domain.Feed) {
 		defer cancel()
 		refreshErr := s.refreshFeedGroup(ctx, feed)
 		if refreshErr != nil {
-			log.Printf("refresh %s: %v", feed.Path, refreshErr)
+			log.Printf("refresh feed: %T", refreshErr)
 		}
 		s.stateMu.Lock()
 		if refreshErr != nil {

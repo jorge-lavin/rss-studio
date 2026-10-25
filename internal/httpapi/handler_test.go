@@ -20,6 +20,7 @@ import (
 	"rss-studio/internal/cache"
 	"rss-studio/internal/domain"
 	"rss-studio/internal/httpapi"
+	"rss-studio/internal/observability"
 	"rss-studio/internal/rss"
 	"rss-studio/internal/storage"
 	"rss-studio/internal/version"
@@ -37,6 +38,14 @@ type failingMutationCache struct {
 	data        map[string][]byte
 	writes      int
 	failOnWrite int
+}
+
+type requestAuditRecorder struct {
+	events []observability.Event
+}
+
+func (r *requestAuditRecorder) Record(event observability.Event) {
+	r.events = append(r.events, event)
 }
 
 func (c *failingMutationCache) Read(feed domain.Feed) ([]byte, error) {
@@ -198,6 +207,43 @@ func TestHandlerCreatesAndServesFeed(t *testing.T) {
 	}
 	if !strings.Contains(string(body), "Keep foo") || strings.Contains(string(body), "<title>Drop</title>") {
 		t.Fatalf("unexpected feed body: %s", body)
+	}
+}
+
+func TestRateRejectionAuditEventUsesAccountIdentity(t *testing.T) {
+	now := time.Unix(1000, 0).UTC()
+	server, _ := newAuthenticatedServerWithClock(t, func() time.Time { return now })
+	token := loginToken(t, server)
+	recorder := &requestAuditRecorder{}
+	body := `{"source_url":"https://example.test/rss","outputs":[{"name":"Foo","keyword":"foo"}]}`
+
+	for attempt := 0; attempt < 21; attempt++ {
+		request := httptest.NewRequest(http.MethodPost, server.URL+"/api/v1/feeds/preview", strings.NewReader(body))
+		request.Header.Set("Authorization", "Bearer "+token)
+		request.Header.Set("Content-Type", "application/json")
+		request = request.WithContext(observability.WithRecorder(request.Context(), recorder))
+		response := httptest.NewRecorder()
+		server.Config.Handler.ServeHTTP(response, request)
+		if attempt < 20 && response.Code != http.StatusOK {
+			t.Fatalf("preview attempt %d failed: %d %s", attempt, response.Code, response.Body.String())
+		}
+		if attempt == 20 && response.Code != http.StatusTooManyRequests {
+			t.Fatalf("expected rate rejection, got %d %s", response.Code, response.Body.String())
+		}
+	}
+
+	found := false
+	for _, event := range recorder.events {
+		if !event.RateRejected {
+			continue
+		}
+		found = true
+		if event.Operation != "feeds.preview" || event.ActorID == 0 || event.TokenID != 0 || event.Result != "rejected" {
+			t.Fatalf("unexpected rate rejection audit event: %#v", event)
+		}
+	}
+	if !found {
+		t.Fatal("missing rate rejection audit event")
 	}
 }
 

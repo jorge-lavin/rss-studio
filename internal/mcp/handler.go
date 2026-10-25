@@ -11,6 +11,7 @@ import (
 
 	"rss-studio/internal/application"
 	"rss-studio/internal/domain"
+	"rss-studio/internal/policy"
 	"rss-studio/internal/version"
 )
 
@@ -29,6 +30,13 @@ var supportedProtocolVersions = map[string]bool{
 // UserAuthenticator supplies the authenticated tenant for an MCP request.
 type UserAuthenticator interface {
 	UserFromRequest(*http.Request) (domain.User, error)
+}
+
+// IdentityAuthenticator lets the adapter propagate shared actor identity to
+// application audit events without changing compatibility with simpler auth
+// implementations.
+type IdentityAuthenticator interface {
+	IdentityFromRequest(*http.Request) (policy.Identity, error)
 }
 
 type Handler struct {
@@ -193,10 +201,22 @@ func (h *Handler) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 		unauthorized(writer)
 		return
 	}
-	owner, err := h.authenticator.UserFromRequest(request)
-	if err != nil {
-		unauthorized(writer)
-		return
+	var owner domain.User
+	if identityAuthenticator, ok := h.authenticator.(IdentityAuthenticator); ok {
+		identity, identityErr := identityAuthenticator.IdentityFromRequest(request)
+		if identityErr != nil {
+			unauthorized(writer)
+			return
+		}
+		owner = identity.User
+		request = request.WithContext(policy.WithIdentity(request.Context(), identity))
+	} else {
+		var err error
+		owner, err = h.authenticator.UserFromRequest(request)
+		if err != nil {
+			unauthorized(writer)
+			return
+		}
 	}
 	if version := request.Header.Get("MCP-Protocol-Version"); version != "" && !supportedProtocolVersions[version] {
 		writeHTTPRPCError(writer, http.StatusBadRequest, nil, -32600, "Unsupported MCP protocol version.")
@@ -333,7 +353,7 @@ func (h *Handler) callTool(ctx context.Context, request *http.Request, owner dom
 			return toolError("Invalid tool arguments."), nil
 		}
 		path := feedPath(args.Path)
-		if err := h.service.DeleteFeed(owner, path); err != nil {
+		if err := h.service.DeleteFeedContext(ctx, owner, path); err != nil {
 			return toolError(serviceErrorMessage(err)), nil
 		}
 		return jsonToolResult(map[string]any{"deleted": true, "path": path}), nil

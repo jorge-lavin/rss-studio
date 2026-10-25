@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"rss-studio/internal/domain"
+	"rss-studio/internal/observability"
+	"rss-studio/internal/policy"
 	"rss-studio/internal/rss"
 	"rss-studio/internal/storage"
 )
@@ -21,6 +23,24 @@ type sourceStub struct {
 	getCount  atomic.Int32
 	headCount atomic.Int32
 	head      time.Time
+}
+
+type auditEventRecorder struct {
+	events []observability.Event
+}
+
+func (r *auditEventRecorder) Record(event observability.Event) {
+	r.events = append(r.events, event)
+}
+
+type failingAuditSource struct{}
+
+func (failingAuditSource) Head(context.Context, string) (time.Time, error) {
+	return time.Time{}, errors.New("upstream unavailable")
+}
+
+func (failingAuditSource) Get(context.Context, string) ([]byte, time.Time, error) {
+	return nil, time.Time{}, errors.New("upstream unavailable")
 }
 
 func (s *sourceStub) Head(context.Context, string) (time.Time, error) {
@@ -175,6 +195,35 @@ func TestServicePreviewsWithoutPersisting(t *testing.T) {
 	}
 	if results[0].Titles[0] != "AI episode 1" || results[0].Titles[4] != "AI episode 5" {
 		t.Fatalf("unexpected sample titles: %#v", results[0].Titles)
+	}
+}
+
+func TestServiceAuditEventsAttributeQuotaAndUpstreamOutcomes(t *testing.T) {
+	store, owner := testSQLiteStore(t)
+	recorder := &auditEventRecorder{}
+	identity := policy.WithIdentity(context.Background(), policy.Identity{
+		User:    owner,
+		TokenID: 23,
+	})
+	ctx := observability.WithRecorder(identity, recorder)
+	limits := policy.DefaultQuotaLimits()
+	limits.PreviewsPerDay = 0
+	service := NewServiceWithQuotas(store, &memoryCache{}, &sourceStub{}, rss.Filter, limits)
+
+	if _, err := service.PreviewForOwner(ctx, owner, "https://example.test/rss", []PreviewRule{{Name: "Foo", Keyword: "foo"}}); !errors.Is(err, ErrQuotaExceeded) {
+		t.Fatalf("expected quota rejection, got %v", err)
+	}
+	if len(recorder.events) != 1 || recorder.events[0].ActorID != owner.ID || recorder.events[0].TokenID != 23 || !recorder.events[0].QuotaRejected || recorder.events[0].Result != "quota_rejected" {
+		t.Fatalf("unexpected quota audit event: %#v", recorder.events)
+	}
+
+	recorder.events = nil
+	service = NewService(store, &memoryCache{}, failingAuditSource{}, rss.Filter)
+	if _, err := service.CreateFeed(ctx, owner, "Foo", "https://example.test/rss", "foo"); !errors.Is(err, ErrSourceUnavailable) {
+		t.Fatalf("expected upstream failure, got %v", err)
+	}
+	if len(recorder.events) != 1 || recorder.events[0].Operation != policy.OperationFeedsCreate || recorder.events[0].ActorID != owner.ID || recorder.events[0].TokenID != 23 || !recorder.events[0].UpstreamFailure || recorder.events[0].Result != "upstream_failure" {
+		t.Fatalf("unexpected upstream audit event: %#v", recorder.events)
 	}
 }
 
