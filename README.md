@@ -17,7 +17,7 @@ export RSS_STUDIO_JWT_SECRET="$(openssl rand -base64 32)"
 docker compose up -d --build
 ```
 
-Open <http://localhost:8080> to create an account and sign in through the web
+Open <http://localhost:8080> to create an account and log in through the web
 UI. Accounts and bcrypt password hashes persist in the SQLite database. For API
 clients, register and then authenticate before sending the returned bearer token
 for management requests:

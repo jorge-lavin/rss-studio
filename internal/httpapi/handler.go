@@ -23,10 +23,11 @@ type Handler struct {
 }
 
 type homePageData struct {
-	Feeds   []domain.Feed
-	BaseURL string
-	Version string
-	Error   string
+	Feeds         []domain.Feed
+	BaseURL       string
+	Version       string
+	Error         string
+	Authenticated bool
 }
 
 type authPageData struct {
@@ -52,6 +53,7 @@ func NewHandler(service *application.Service, authenticators ...*Authenticator) 
 		mux.HandleFunc("GET /auth/login", handler.loginPage)
 		mux.HandleFunc("POST /auth/sign-in", handler.login)
 		mux.HandleFunc("POST /auth/login", handler.login)
+		mux.HandleFunc("POST /auth/logout", handler.logout)
 		mux.HandleFunc("GET /auth/sign-up", handler.registerPage)
 		mux.HandleFunc("GET /auth/register", handler.registerPage)
 		mux.HandleFunc("POST /auth/sign-up", handler.register)
@@ -116,6 +118,20 @@ func (h *Handler) login(writer http.ResponseWriter, request *http.Request) {
 	})
 }
 
+func (h *Handler) logout(writer http.ResponseWriter, request *http.Request) {
+	http.SetCookie(writer, &http.Cookie{
+		Name:     authCookieName,
+		Value:    "",
+		Path:     "/",
+		Expires:  time.Unix(1, 0).UTC(),
+		MaxAge:   -1,
+		HttpOnly: true,
+		Secure:   request.TLS != nil || strings.EqualFold(request.Header.Get("X-Forwarded-Proto"), "https"),
+		SameSite: http.SameSiteLaxMode,
+	})
+	http.Redirect(writer, request, "/auth/login", http.StatusSeeOther)
+}
+
 func (h *Handler) register(writer http.ResponseWriter, request *http.Request) {
 	if allowed, retryAfter := h.loginLimiter.allow(requestClient(request)); !allowed {
 		seconds := int((retryAfter + time.Second - 1) / time.Second)
@@ -165,7 +181,7 @@ func (h *Handler) register(writer http.ResponseWriter, request *http.Request) {
 		}{Username: strings.TrimSpace(credentials.Username)})
 		return
 	}
-	http.Redirect(writer, request, "/auth/sign-in", http.StatusSeeOther)
+	http.Redirect(writer, request, "/auth/login", http.StatusSeeOther)
 }
 
 func parseCredentials(request *http.Request) (authCredentials, error) {
@@ -224,7 +240,7 @@ func (h *Handler) authenticate(next http.Handler) http.Handler {
 		user, err := h.auth.UserFromRequest(request)
 		if err != nil {
 			if request.Method == http.MethodGet && acceptsHTML(request) {
-				http.Redirect(writer, request, "/auth/sign-in", http.StatusSeeOther)
+				http.Redirect(writer, request, "/auth/login", http.StatusSeeOther)
 				return
 			}
 			writer.Header().Set("WWW-Authenticate", `Bearer realm="rss-studio"`)
@@ -243,6 +259,9 @@ func acceptsHTML(request *http.Request) bool {
 func isPublicRequest(request *http.Request) bool {
 	if request.URL.Path == "/auth/login" || request.URL.Path == "/auth/sign-in" || request.URL.Path == "/auth/register" || request.URL.Path == "/auth/sign-up" {
 		return request.Method == http.MethodGet || request.Method == http.MethodPost
+	}
+	if request.URL.Path == "/auth/logout" {
+		return request.Method == http.MethodPost
 	}
 	return request.Method == http.MethodGet && strings.HasPrefix(request.URL.Path, "/feeds/") && strings.HasSuffix(request.URL.Path, ".xml")
 }
@@ -322,7 +341,7 @@ func (h *Handler) renderHome(writer http.ResponseWriter, request *http.Request, 
 	}
 	writer.Header().Set("Content-Type", "text/html; charset=utf-8")
 	writer.WriteHeader(status)
-	if err := homeTemplate.Execute(writer, homePageData{Feeds: feeds, BaseURL: baseURL(request), Version: version.Version, Error: message}); err != nil {
+	if err := homeTemplate.Execute(writer, homePageData{Feeds: feeds, BaseURL: baseURL(request), Version: version.Version, Error: message, Authenticated: h.auth != nil}); err != nil {
 		log.Printf("render home: %v", err)
 	}
 }
@@ -378,6 +397,7 @@ var homeTemplate = template.Must(template.New("home").Parse(`<!doctype html>
         </a>
         <div class="flex items-center gap-4">
           <span class="hidden text-sm text-slate-400 sm:block">Podcast feed filter</span>
+          {{if .Authenticated}}<form method="post" action="/auth/logout"><button type="submit" class="inline-flex items-center gap-2 rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-xs font-medium text-slate-300 transition hover:bg-white/10 focus:outline-none focus:ring-4 focus:ring-violet-400/30">Logout</button></form>{{end}}
           <button id="theme-toggle" type="button" aria-pressed="false" aria-label="Switch to dark mode" class="inline-flex items-center gap-2 rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-xs font-medium text-slate-300 transition hover:bg-white/10 focus:outline-none focus:ring-4 focus:ring-violet-400/30">
             <span data-theme-icon aria-hidden="true">☾</span><span data-theme-label>Dark mode</span>
           </button>
@@ -508,7 +528,7 @@ var authTemplate = template.Must(template.New("auth").Parse(`<!doctype html>
       } catch {}
     })();
   </script>
-  <title>{{if .Registration}}Create account{{else}}Sign in{{end}} · RSS Studio</title>
+  <title>{{if .Registration}}Create account{{else}}Login{{end}} · RSS Studio</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <script>
     tailwind.config = { darkMode: "class" };
@@ -526,11 +546,11 @@ var authTemplate = template.Must(template.New("auth").Parse(`<!doctype html>
           <span data-theme-icon aria-hidden="true">☾</span><span data-theme-label>Dark mode</span>
         </button>
       </div>
-      <h1 class="mt-8 text-2xl font-semibold tracking-tight">{{if .Registration}}Create account{{else}}Sign in{{end}}</h1>
-      <p class="mt-1 text-sm text-slate-500 dark:text-slate-400">{{if .Registration}}Create an account to manage your filtered feeds.{{else}}Sign in to manage your filtered feeds.{{end}}</p>
+      <h1 class="mt-8 text-2xl font-semibold tracking-tight">{{if .Registration}}Create account{{else}}Login{{end}}</h1>
+      <p class="mt-1 text-sm text-slate-500 dark:text-slate-400">{{if .Registration}}Create an account to manage your filtered feeds.{{else}}Login to manage your filtered feeds.{{end}}</p>
     </div>
     {{if .Error}}<div class="mb-6 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700 dark:border-rose-800 dark:bg-rose-950/50 dark:text-rose-300" role="alert">{{.Error}}</div>{{end}}
-    <form method="post" action="{{if .Registration}}/auth/sign-up{{else}}/auth/sign-in{{end}}" class="space-y-5">
+    <form method="post" action="{{if .Registration}}/auth/sign-up{{else}}/auth/login{{end}}" class="space-y-5">
       <div>
         <label for="username" class="mb-2 block text-sm font-medium text-slate-700 dark:text-slate-300">Username</label>
         <input id="username" name="username" autocomplete="username" required autofocus class="block w-full rounded-lg border border-slate-300 bg-white px-3.5 py-3 text-sm text-slate-900 shadow-sm outline-none transition focus:border-violet-600 focus:ring-4 focus:ring-violet-600/10 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100">
@@ -539,9 +559,9 @@ var authTemplate = template.Must(template.New("auth").Parse(`<!doctype html>
         <label for="password" class="mb-2 block text-sm font-medium text-slate-700 dark:text-slate-300">Password</label>
         <input id="password" name="password" type="password" autocomplete="{{if .Registration}}new-password{{else}}current-password{{end}}" required class="block w-full rounded-lg border border-slate-300 bg-white px-3.5 py-3 text-sm text-slate-900 shadow-sm outline-none transition focus:border-violet-600 focus:ring-4 focus:ring-violet-600/10 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100">
       </div>
-      <button type="submit" class="inline-flex min-h-[46px] w-full items-center justify-center rounded-lg bg-violet-600 px-5 py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-violet-700 focus:outline-none focus:ring-4 focus:ring-violet-600/20">{{if .Registration}}Create account{{else}}Sign in{{end}}</button>
+      <button type="submit" class="inline-flex min-h-[46px] w-full items-center justify-center rounded-lg bg-violet-600 px-5 py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-violet-700 focus:outline-none focus:ring-4 focus:ring-violet-600/20">{{if .Registration}}Create account{{else}}Login{{end}}</button>
     </form>
-    <p class="mt-6 text-center text-sm text-slate-500 dark:text-slate-400">{{if .Registration}}Already have an account? <a class="font-semibold text-violet-600 hover:text-violet-700 dark:text-violet-400 dark:hover:text-violet-300" href="/auth/sign-in">Sign in</a>{{else}}Need an account? <a class="font-semibold text-violet-600 hover:text-violet-700 dark:text-violet-400 dark:hover:text-violet-300" href="/auth/sign-up">Create one</a>{{end}}</p>
+    <p class="mt-6 text-center text-sm text-slate-500 dark:text-slate-400">{{if .Registration}}Already have an account? <a class="font-semibold text-violet-600 hover:text-violet-700 dark:text-violet-400 dark:hover:text-violet-300" href="/auth/login">Login</a>{{else}}Need an account? <a class="font-semibold text-violet-600 hover:text-violet-700 dark:text-violet-400 dark:hover:text-violet-300" href="/auth/sign-up">Create one</a>{{end}}</p>
   </main>
 <script>
   (() => {

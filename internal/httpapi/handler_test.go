@@ -285,19 +285,19 @@ func TestAuthenticatedHandlerSupportsBrowserLogin(t *testing.T) {
 	request.Header.Set("Accept", "text/html")
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, request)
-	if recorder.Code != http.StatusSeeOther || recorder.Header().Get("Location") != "/auth/sign-in" {
-		t.Fatalf("expected browser request to redirect to sign-in, got %d and %q", recorder.Code, recorder.Header().Get("Location"))
+	if recorder.Code != http.StatusSeeOther || recorder.Header().Get("Location") != "/auth/login" {
+		t.Fatalf("expected browser request to redirect to login, got %d and %q", recorder.Code, recorder.Header().Get("Location"))
 	}
 
-	request = httptest.NewRequest(http.MethodGet, "/auth/sign-in", nil)
+	request = httptest.NewRequest(http.MethodGet, "/auth/login", nil)
 	request.Header.Set("Accept", "text/html")
 	recorder = httptest.NewRecorder()
 	handler.ServeHTTP(recorder, request)
-	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `action="/auth/sign-in"`) || !strings.Contains(recorder.Body.String(), "Sign in") || !strings.Contains(recorder.Body.String(), `href="/auth/sign-up"`) {
-		t.Fatalf("expected sign-in page to be publicly reachable, got %d", recorder.Code)
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `action="/auth/login"`) || !strings.Contains(recorder.Body.String(), "Login") || !strings.Contains(recorder.Body.String(), `href="/auth/sign-up"`) {
+		t.Fatalf("expected login page to be publicly reachable, got %d", recorder.Code)
 	}
 	if !strings.Contains(recorder.Body.String(), `id="theme-toggle"`) || !strings.Contains(recorder.Body.String(), `darkMode: "class"`) || !strings.Contains(recorder.Body.String(), `rss-studio-theme`) {
-		t.Fatalf("sign-in page does not include dark-mode toggle: %s", recorder.Body.String())
+		t.Fatalf("login page does not include dark-mode toggle: %s", recorder.Body.String())
 	}
 	assertTailwindUsesClassDarkMode(t, recorder.Body.String())
 
@@ -313,11 +313,11 @@ func TestAuthenticatedHandlerSupportsBrowserLogin(t *testing.T) {
 	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	recorder = httptest.NewRecorder()
 	handler.ServeHTTP(recorder, request)
-	if recorder.Code != http.StatusSeeOther || recorder.Header().Get("Location") != "/auth/sign-in" {
-		t.Fatalf("expected registration to redirect to sign-in, got %d and %q", recorder.Code, recorder.Header().Get("Location"))
+	if recorder.Code != http.StatusSeeOther || recorder.Header().Get("Location") != "/auth/login" {
+		t.Fatalf("expected registration to redirect to login, got %d and %q", recorder.Code, recorder.Header().Get("Location"))
 	}
 
-	request = httptest.NewRequest(http.MethodPost, "/auth/sign-in", strings.NewReader("username=unknown&password=wrong"))
+	request = httptest.NewRequest(http.MethodPost, "/auth/login", strings.NewReader("username=unknown&password=wrong"))
 	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	recorder = httptest.NewRecorder()
 	handler.ServeHTTP(recorder, request)
@@ -325,7 +325,7 @@ func TestAuthenticatedHandlerSupportsBrowserLogin(t *testing.T) {
 		t.Fatalf("expected unknown credentials to be rejected, got %d: %s", recorder.Code, recorder.Body.String())
 	}
 
-	request = httptest.NewRequest(http.MethodPost, "/auth/sign-in", strings.NewReader("username=new-user&password=new-password"))
+	request = httptest.NewRequest(http.MethodPost, "/auth/login", strings.NewReader("username=new-user&password=new-password"))
 	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	recorder = httptest.NewRecorder()
 	handler.ServeHTTP(recorder, request)
@@ -343,6 +343,29 @@ func TestAuthenticatedHandlerSupportsBrowserLogin(t *testing.T) {
 	handler.ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("expected cookie-authenticated home request to succeed, got %d", recorder.Code)
+	}
+	if !strings.Contains(recorder.Body.String(), `action="/auth/logout"`) || !strings.Contains(recorder.Body.String(), ">Logout<") {
+		t.Fatalf("authenticated home page does not include logout button: %s", recorder.Body.String())
+	}
+
+	request = httptest.NewRequest(http.MethodPost, "/auth/logout", nil)
+	request.AddCookie(cookies[0])
+	recorder = httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusSeeOther || recorder.Header().Get("Location") != "/auth/login" {
+		t.Fatalf("expected logout to redirect to login, got %d and %q", recorder.Code, recorder.Header().Get("Location"))
+	}
+	logoutCookies := recorder.Result().Cookies()
+	if len(logoutCookies) != 1 || logoutCookies[0].Name != "rss_studio_token" || logoutCookies[0].MaxAge != -1 {
+		t.Fatalf("expected auth cookie to be cleared, got %#v", logoutCookies)
+	}
+
+	request = httptest.NewRequest(http.MethodGet, "/", nil)
+	request.Header.Set("Accept", "text/html")
+	recorder = httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusSeeOther || recorder.Header().Get("Location") != "/auth/login" {
+		t.Fatalf("expected logged-out home request to redirect to login, got %d and %q", recorder.Code, recorder.Header().Get("Location"))
 	}
 }
 
