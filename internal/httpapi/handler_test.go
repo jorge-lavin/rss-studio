@@ -3,7 +3,9 @@ package httpapi_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
+	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -27,6 +29,38 @@ func (sourceStub) Head(context.Context, string) (time.Time, error) { return time
 
 func (sourceStub) Get(context.Context, string) ([]byte, time.Time, error) {
 	return []byte(`<rss version="2.0"><channel><title>Source</title><item><title>Keep foo</title><guid>1</guid></item><item><title>Drop</title><guid>2</guid></item></channel></rss>`), time.Time{}, nil
+}
+
+type failingMutationCache struct {
+	data        map[string][]byte
+	writes      int
+	failOnWrite int
+}
+
+func (c *failingMutationCache) Read(feed domain.Feed) ([]byte, error) {
+	data, ok := c.data[feed.Path]
+	if !ok {
+		return nil, fs.ErrNotExist
+	}
+	return data, nil
+}
+
+func (c *failingMutationCache) ReadMetadata(domain.Feed) (application.CacheMetadata, error) {
+	return application.CacheMetadata{}, fs.ErrNotExist
+}
+
+func (c *failingMutationCache) Write(feed domain.Feed, data []byte, _ time.Time) error {
+	c.writes++
+	if c.writes == c.failOnWrite {
+		return errors.New("cache write failed")
+	}
+	c.data[feed.Path] = append([]byte(nil), data...)
+	return nil
+}
+
+func (c *failingMutationCache) Remove(feed domain.Feed) error {
+	delete(c.data, feed.Path)
+	return nil
 }
 
 func newAuthenticatedServer(t *testing.T) (*httptest.Server, *storage.SQLiteStore) {
@@ -61,8 +95,12 @@ func newAuthenticatedServerWithSource(t *testing.T, feedSource application.Sourc
 }
 
 func loginToken(t *testing.T, server *httptest.Server) string {
+	return loginTokenAs(t, server, "admin", "password")
+}
+
+func loginTokenAs(t *testing.T, server *httptest.Server, username, password string) string {
 	t.Helper()
-	response, err := http.Post(server.URL+"/auth/login", "application/json", strings.NewReader(`{"username":"admin","password":"password"}`))
+	response, err := http.Post(server.URL+"/auth/login", "application/json", strings.NewReader(`{"username":"`+username+`","password":"`+password+`"}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -772,7 +810,10 @@ func TestVersionedAPIAuthenticationNeverRedirects(t *testing.T) {
 		body   string
 	}{
 		{method: http.MethodGet, path: "/api/v1/feeds"},
+		{method: http.MethodPost, path: "/api/v1/feeds", body: `{}`},
 		{method: http.MethodPost, path: "/api/v1/feeds/preview", body: `{}`},
+		{method: http.MethodPost, path: "/api/v1/feeds/split", body: `{}`},
+		{method: http.MethodDelete, path: "/api/v1/feeds/missing"},
 	} {
 		request := httptest.NewRequest(test.method, test.path, strings.NewReader(test.body))
 		request.Header.Set("Accept", "text/html")
@@ -781,6 +822,210 @@ func TestVersionedAPIAuthenticationNeverRedirects(t *testing.T) {
 		if recorder.Code != http.StatusUnauthorized || recorder.Header().Get("Location") != "" || !strings.HasPrefix(recorder.Header().Get("Content-Type"), "application/json") {
 			t.Fatalf("expected JSON API authentication error for %s %s, got %d, location=%q, content-type=%q, body=%s", test.method, test.path, recorder.Code, recorder.Header().Get("Location"), recorder.Header().Get("Content-Type"), recorder.Body.String())
 		}
+	}
+}
+
+func TestVersionedCreateReturnsFeedMetadata(t *testing.T) {
+	server, _ := newAuthenticatedServer(t)
+	token := loginToken(t, server)
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/feeds", strings.NewReader(`{"name":"Foo feed","source_url":"https://example.test/rss","operator":"starts_with","keyword":"Keep"}`))
+	request.Header.Set("Authorization", "Bearer "+token)
+	request.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+	server.Config.Handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusCreated || recorder.Header().Get("Location") != "" || !strings.HasPrefix(recorder.Header().Get("Content-Type"), "application/json") {
+		t.Fatalf("expected feed metadata JSON without redirect, got %d and %q: %s", recorder.Code, recorder.Header().Get("Location"), recorder.Body.String())
+	}
+	var feed struct {
+		Name      string    `json:"name"`
+		Path      string    `json:"path"`
+		URL       string    `json:"url"`
+		SourceURL string    `json:"source_url"`
+		Operator  string    `json:"operator"`
+		Keyword   string    `json:"keyword"`
+		CreatedAt time.Time `json:"created_at"`
+	}
+	if err := json.NewDecoder(recorder.Body).Decode(&feed); err != nil {
+		t.Fatal(err)
+	}
+	if feed.Name != "Foo feed" || feed.Path != "/feeds/foo-feed.xml" || feed.URL != "http://example.com/feeds/foo-feed.xml" || feed.SourceURL != "https://example.test/rss" || feed.Operator != "starts_with" || feed.Keyword != "Keep" || feed.CreatedAt.IsZero() {
+		t.Fatalf("unexpected created feed metadata: %#v", feed)
+	}
+}
+
+func TestVersionedSplitReturnsAllFeedReferences(t *testing.T) {
+	server, _ := newAuthenticatedServer(t)
+	token := loginToken(t, server)
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/feeds/split", strings.NewReader(`{"source_url":"https://example.test/rss","outputs":[{"name":"Keep","operator":"starts_with","keyword":"keep"},{"name":"Drop","operator":"equals","keyword":"drop"}]}`))
+	request.Header.Set("Authorization", "Bearer "+token)
+	request.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+	server.Config.Handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusCreated || recorder.Header().Get("Location") != "" {
+		t.Fatalf("expected split creation without redirect, got %d and %q: %s", recorder.Code, recorder.Header().Get("Location"), recorder.Body.String())
+	}
+	var response struct {
+		Outputs []struct {
+			Name     string `json:"name"`
+			Operator string `json:"operator"`
+			Keyword  string `json:"keyword"`
+			Path     string `json:"path"`
+			URL      string `json:"url"`
+		} `json:"outputs"`
+	}
+	if err := json.NewDecoder(recorder.Body).Decode(&response); err != nil {
+		t.Fatal(err)
+	}
+	if len(response.Outputs) != 2 || response.Outputs[0].Name != "Keep" || response.Outputs[0].Operator != "starts_with" || response.Outputs[1].Name != "Drop" || response.Outputs[1].Operator != "equals" {
+		t.Fatalf("unexpected split response: %#v", response)
+	}
+	for _, output := range response.Outputs {
+		if output.Path == "" || output.URL != "http://example.com"+output.Path || !strings.HasPrefix(output.Path, "/feeds/") || !strings.HasSuffix(output.Path, ".xml") {
+			t.Fatalf("unexpected split feed reference: %#v", output)
+		}
+	}
+}
+
+func TestVersionedSplitReturnsErrorAfterRollback(t *testing.T) {
+	store, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "rss-studio.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	owner, err := store.CreateUser("admin", "password")
+	if err != nil {
+		t.Fatal(err)
+	}
+	auth, err := httpapi.NewAuthenticator(httpapi.AuthConfig{JWTSecret: strings.Repeat("x", 32), UserStore: store})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cache := &failingMutationCache{data: make(map[string][]byte), failOnWrite: 2}
+	service := application.NewServiceWithOperator(store, cache, sourceStub{}, rss.FilterWithOperator)
+	token, _, err := auth.IssueToken("admin", "password")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/feeds/split", strings.NewReader(`{"source_url":"https://example.test/rss","outputs":[{"name":"Foo","keyword":"foo"},{"name":"Keep","keyword":"keep"}]}`))
+	request.Header.Set("Authorization", "Bearer "+token)
+	request.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+	httpapi.NewHandler(service, auth).ServeHTTP(recorder, request)
+	assertAPIError(t, recorder, http.StatusInternalServerError, "internal_error")
+
+	feeds, err := store.List(owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(feeds) != 0 || len(cache.data) != 0 {
+		t.Fatalf("split rollback left state: feeds=%#v cache=%#v", feeds, cache.data)
+	}
+}
+
+func TestVersionedMutationsReturnStableJSONErrors(t *testing.T) {
+	server, _ := newAuthenticatedServer(t)
+	token := loginToken(t, server)
+	tests := []struct {
+		name   string
+		method string
+		path   string
+		body   string
+		code   string
+	}{
+		{name: "create malformed JSON", method: http.MethodPost, path: "/api/v1/feeds", body: `{"name":`, code: "invalid_json"},
+		{name: "create unknown field", method: http.MethodPost, path: "/api/v1/feeds", body: `{"name":"Foo","source_url":"https://example.test/rss","keyword":"foo","extra":true}`, code: "unknown_field"},
+		{name: "create invalid source", method: http.MethodPost, path: "/api/v1/feeds", body: `{"name":"Foo","source_url":"file:///tmp/feed.xml","keyword":"foo"}`, code: "validation_error"},
+		{name: "split invalid operator", method: http.MethodPost, path: "/api/v1/feeds/split", body: `{"source_url":"https://example.test/rss","outputs":[{"name":"Foo","operator":"bogus","keyword":"foo"}]}`, code: "validation_error"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			request := httptest.NewRequest(test.method, test.path, strings.NewReader(test.body))
+			request.Header.Set("Authorization", "Bearer "+token)
+			request.Header.Set("Content-Type", "application/json")
+			request.Header.Set("Accept", "text/html")
+			recorder := httptest.NewRecorder()
+			server.Config.Handler.ServeHTTP(recorder, request)
+			if recorder.Code != http.StatusBadRequest || recorder.Header().Get("Location") != "" || !strings.HasPrefix(recorder.Header().Get("Content-Type"), "application/json") {
+				t.Fatalf("unexpected mutation error: status=%d location=%q content-type=%q body=%s", recorder.Code, recorder.Header().Get("Location"), recorder.Header().Get("Content-Type"), recorder.Body.String())
+			}
+			var response apiErrorTestResponse
+			if err := json.NewDecoder(recorder.Body).Decode(&response); err != nil {
+				t.Fatal(err)
+			}
+			if response.Error.Code != test.code || response.Error.Message == "" || response.RequestID == "" {
+				t.Fatalf("unexpected mutation error response: %#v", response)
+			}
+		})
+	}
+}
+
+func TestVersionedDeleteIsTenantScopedAndRepeatable(t *testing.T) {
+	server, _ := newAuthenticatedServer(t)
+	adminToken := loginToken(t, server)
+
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/feeds", strings.NewReader(`{"name":"Foo feed","source_url":"https://example.test/rss","keyword":"foo"}`))
+	request.Header.Set("Authorization", "Bearer "+adminToken)
+	request.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+	server.Config.Handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("expected feed creation, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	var created struct {
+		Path string `json:"path"`
+	}
+	if err := json.NewDecoder(recorder.Body).Decode(&created); err != nil {
+		t.Fatal(err)
+	}
+	feedPath := strings.TrimSuffix(strings.TrimPrefix(created.Path, "/feeds/"), ".xml")
+
+	request = httptest.NewRequest(http.MethodPost, "/api/v1/auth/register", strings.NewReader(`{"username":"reader","password":"reader-password"}`))
+	request.Header.Set("Content-Type", "application/json")
+	recorder = httptest.NewRecorder()
+	server.Config.Handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("expected reader registration, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	readerToken := loginTokenAs(t, server, "reader", "reader-password")
+
+	request = httptest.NewRequest(http.MethodDelete, "/api/v1/feeds/"+feedPath, nil)
+	request.Header.Set("Authorization", "Bearer "+readerToken)
+	recorder = httptest.NewRecorder()
+	server.Config.Handler.ServeHTTP(recorder, request)
+	assertAPIError(t, recorder, http.StatusNotFound, "not_found")
+
+	request = httptest.NewRequest(http.MethodDelete, "/api/v1/feeds/"+feedPath, nil)
+	request.Header.Set("Authorization", "Bearer "+adminToken)
+	recorder = httptest.NewRecorder()
+	server.Config.Handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK || recorder.Header().Get("Location") != "" {
+		t.Fatalf("expected delete success without redirect, got %d and %q: %s", recorder.Code, recorder.Header().Get("Location"), recorder.Body.String())
+	}
+	var deleted struct {
+		Deleted bool   `json:"deleted"`
+		Path    string `json:"path"`
+	}
+	if err := json.NewDecoder(recorder.Body).Decode(&deleted); err != nil {
+		t.Fatal(err)
+	}
+	if !deleted.Deleted || deleted.Path != feedPath {
+		t.Fatalf("unexpected delete response: %#v", deleted)
+	}
+
+	request = httptest.NewRequest(http.MethodDelete, "/api/v1/feeds/"+feedPath+".xml", nil)
+	request.Header.Set("Authorization", "Bearer "+adminToken)
+	recorder = httptest.NewRecorder()
+	server.Config.Handler.ServeHTTP(recorder, request)
+	assertAPIError(t, recorder, http.StatusNotFound, "not_found")
+
+	response, err := http.Get(server.URL + "/feeds/" + feedPath + ".xml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected deleted public feed to return 404, got %d", response.StatusCode)
 	}
 }
 
@@ -964,4 +1209,18 @@ type apiErrorTestResponse struct {
 		Message string `json:"message"`
 	} `json:"error"`
 	RequestID string `json:"request_id"`
+}
+
+func assertAPIError(t *testing.T, recorder *httptest.ResponseRecorder, status int, code string) {
+	t.Helper()
+	if recorder.Code != status || recorder.Header().Get("Location") != "" || !strings.HasPrefix(recorder.Header().Get("Content-Type"), "application/json") {
+		t.Fatalf("unexpected API error: status=%d location=%q content-type=%q body=%s", recorder.Code, recorder.Header().Get("Location"), recorder.Header().Get("Content-Type"), recorder.Body.String())
+	}
+	var response apiErrorTestResponse
+	if err := json.NewDecoder(recorder.Body).Decode(&response); err != nil {
+		t.Fatal(err)
+	}
+	if response.Error.Code != code || response.Error.Message == "" || response.RequestID == "" {
+		t.Fatalf("unexpected API error response: %#v", response)
+	}
 }

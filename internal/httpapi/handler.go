@@ -46,6 +46,13 @@ type previewRequest struct {
 	Outputs   []previewOutput `json:"outputs"`
 }
 
+type createFeedRequest struct {
+	Name      string                `json:"name"`
+	SourceURL string                `json:"source_url"`
+	Operator  domain.FilterOperator `json:"operator"`
+	Keyword   string                `json:"keyword"`
+}
+
 type previewOutput struct {
 	Name     string                `json:"name"`
 	Operator domain.FilterOperator `json:"operator"`
@@ -118,9 +125,23 @@ func NewHandler(service *application.Service, authenticators ...*Authenticator) 
 		mux.HandleFunc("/api/v1/auth/login", handler.apiMethodNotAllowed)
 		mux.HandleFunc("/api/v1/auth/register", handler.apiMethodNotAllowed)
 		mux.HandleFunc("GET /api/v1/feeds", handler.apiListFeeds)
+		mux.HandleFunc("POST /api/v1/feeds", handler.apiCreateFeed)
+		mux.HandleFunc("PUT /api/v1/feeds", handler.apiFeedsMethodNotAllowed)
+		mux.HandleFunc("PATCH /api/v1/feeds", handler.apiFeedsMethodNotAllowed)
+		mux.HandleFunc("DELETE /api/v1/feeds", handler.apiFeedsMethodNotAllowed)
 		mux.HandleFunc("POST /api/v1/feeds/preview", handler.apiPreview)
-		mux.HandleFunc("/api/v1/feeds", handler.apiFeedsMethodNotAllowed)
-		mux.HandleFunc("/api/v1/feeds/preview", handler.apiPreviewMethodNotAllowed)
+		mux.HandleFunc("POST /api/v1/feeds/split", handler.apiSplitFeeds)
+		mux.HandleFunc("DELETE /api/v1/feeds/{path}", handler.apiDeleteFeed)
+		mux.HandleFunc("GET /api/v1/feeds/{path}", handler.apiFeedPathMethodNotAllowed)
+		mux.HandleFunc("POST /api/v1/feeds/{path}", handler.apiFeedPathMethodNotAllowed)
+		mux.HandleFunc("PUT /api/v1/feeds/{path}", handler.apiFeedPathMethodNotAllowed)
+		mux.HandleFunc("PATCH /api/v1/feeds/{path}", handler.apiFeedPathMethodNotAllowed)
+		mux.HandleFunc("GET /api/v1/feeds/split", handler.apiSplitMethodNotAllowed)
+		mux.HandleFunc("PUT /api/v1/feeds/split", handler.apiSplitMethodNotAllowed)
+		mux.HandleFunc("PATCH /api/v1/feeds/split", handler.apiSplitMethodNotAllowed)
+		mux.HandleFunc("GET /api/v1/feeds/preview", handler.apiPreviewMethodNotAllowed)
+		mux.HandleFunc("PUT /api/v1/feeds/preview", handler.apiPreviewMethodNotAllowed)
+		mux.HandleFunc("PATCH /api/v1/feeds/preview", handler.apiPreviewMethodNotAllowed)
 	}
 	mux.HandleFunc("/api/v1", handler.apiNotFound)
 	mux.HandleFunc("/api/v1/", handler.apiNotFound)
@@ -209,7 +230,15 @@ func (h *Handler) apiMethodNotAllowed(writer http.ResponseWriter, request *http.
 }
 
 func (h *Handler) apiFeedsMethodNotAllowed(writer http.ResponseWriter, request *http.Request) {
-	h.apiMethodNotAllowedFor(writer, request, http.MethodGet)
+	h.apiMethodNotAllowedFor(writer, request, "GET, POST")
+}
+
+func (h *Handler) apiFeedPathMethodNotAllowed(writer http.ResponseWriter, request *http.Request) {
+	h.apiMethodNotAllowedFor(writer, request, http.MethodDelete)
+}
+
+func (h *Handler) apiSplitMethodNotAllowed(writer http.ResponseWriter, request *http.Request) {
+	h.apiMethodNotAllowedFor(writer, request, http.MethodPost)
 }
 
 func (h *Handler) apiPreviewMethodNotAllowed(writer http.ResponseWriter, request *http.Request) {
@@ -240,6 +269,23 @@ func (h *Handler) apiListFeeds(writer http.ResponseWriter, request *http.Request
 	writeAPIJSON(writer, http.StatusOK, response)
 }
 
+func (h *Handler) apiCreateFeed(writer http.ResponseWriter, request *http.Request) {
+	request.Body = http.MaxBytesReader(writer, request.Body, maxJSONRequestBody)
+	var input createFeedRequest
+	if inputErr := parseAPIJSON(request, &input); inputErr != nil {
+		writeAPIError(writer, request, http.StatusBadRequest, inputErr.Code, inputErr.Message)
+		return
+	}
+
+	feed, err := h.service.CreateFeedWithOperator(request.Context(), h.requestUser(request), input.Name, input.SourceURL, input.Operator, input.Keyword)
+	if err != nil {
+		h.writeAPIFeedError(writer, request, err, "Could not create feed.")
+		return
+	}
+
+	writeAPIJSON(writer, http.StatusCreated, feedListResponseFeedFor(request, feed))
+}
+
 func (h *Handler) apiPreview(writer http.ResponseWriter, request *http.Request) {
 	request.Body = http.MaxBytesReader(writer, request.Body, maxJSONRequestBody)
 	var input previewRequest
@@ -264,6 +310,37 @@ func (h *Handler) apiPreview(writer http.ResponseWriter, request *http.Request) 
 	}
 
 	writeAPIJSON(writer, http.StatusOK, previewResponseFor(results))
+}
+
+func (h *Handler) apiSplitFeeds(writer http.ResponseWriter, request *http.Request) {
+	request.Body = http.MaxBytesReader(writer, request.Body, maxJSONRequestBody)
+	var input previewRequest
+	if inputErr := parseAPIJSON(request, &input); inputErr != nil {
+		writeAPIError(writer, request, http.StatusBadRequest, inputErr.Code, inputErr.Message)
+		return
+	}
+
+	feeds, err := h.service.CreateSplitFeeds(request.Context(), h.requestUser(request), input.SourceURL, previewRulesFor(input.Outputs))
+	if err != nil {
+		h.writeAPIFeedError(writer, request, err, "Could not publish feeds.")
+		return
+	}
+
+	writeAPIJSON(writer, http.StatusCreated, splitResponseFor(request, feeds))
+}
+
+func (h *Handler) writeAPIFeedError(writer http.ResponseWriter, request *http.Request, err error, internalMessage string) {
+	switch {
+	case errors.Is(err, application.ErrInvalidFeed):
+		writeAPIError(writer, request, http.StatusBadRequest, "validation_error", err.Error())
+	case errors.Is(err, application.ErrFeedNotFound):
+		writeAPIError(writer, request, http.StatusNotFound, "not_found", "Feed not found.")
+	case errors.Is(err, application.ErrSourceUnavailable):
+		writeAPIError(writer, request, http.StatusBadGateway, "source_unavailable", "Source feed could not be fetched or processed.")
+	default:
+		log.Printf("API feed operation: %v", err)
+		writeAPIError(writer, request, http.StatusInternalServerError, "internal_error", internalMessage)
+	}
 }
 
 func previewRulesFor(outputs []previewOutput) []application.PreviewRule {
@@ -605,6 +682,16 @@ func (h *Handler) splitFeeds(writer http.ResponseWriter, request *http.Request) 
 		return
 	}
 
+	response := splitResponseFor(request, feeds)
+	writer.Header().Set("Content-Type", "application/json; charset=utf-8")
+	writer.Header().Set("Cache-Control", "no-store")
+	writer.WriteHeader(http.StatusCreated)
+	if err := json.NewEncoder(writer).Encode(response); err != nil {
+		log.Printf("write split response: %v", err)
+	}
+}
+
+func splitResponseFor(request *http.Request, feeds []domain.Feed) splitResponse {
 	response := splitResponse{Outputs: make([]splitResponseOutput, len(feeds))}
 	for i, feed := range feeds {
 		path := "/feeds/" + feed.Path + ".xml"
@@ -616,12 +703,7 @@ func (h *Handler) splitFeeds(writer http.ResponseWriter, request *http.Request) 
 			URL:      baseURL(request) + path,
 		}
 	}
-	writer.Header().Set("Content-Type", "application/json; charset=utf-8")
-	writer.Header().Set("Cache-Control", "no-store")
-	writer.WriteHeader(http.StatusCreated)
-	if err := json.NewEncoder(writer).Encode(response); err != nil {
-		log.Printf("write split response: %v", err)
-	}
+	return response
 }
 
 func writeJSONError(writer http.ResponseWriter, message string, status int) {
@@ -668,6 +750,24 @@ func (h *Handler) deleteFeed(writer http.ResponseWriter, request *http.Request) 
 		return
 	}
 	http.Redirect(writer, request, "/", http.StatusSeeOther)
+}
+
+func (h *Handler) apiDeleteFeed(writer http.ResponseWriter, request *http.Request) {
+	path := feedPath(request.PathValue("path"))
+	if err := h.service.DeleteFeed(h.requestUser(request), path); err != nil {
+		h.writeAPIFeedError(writer, request, err, "Could not delete feed.")
+		return
+	}
+	writeAPIJSON(writer, http.StatusOK, struct {
+		Deleted bool   `json:"deleted"`
+		Path    string `json:"path"`
+	}{Deleted: true, Path: path})
+}
+
+func feedPath(value string) string {
+	value = strings.TrimSpace(value)
+	value = strings.TrimPrefix(value, "/feeds/")
+	return strings.TrimSuffix(value, ".xml")
 }
 
 func (h *Handler) renderHome(writer http.ResponseWriter, request *http.Request, message string, status int) {
