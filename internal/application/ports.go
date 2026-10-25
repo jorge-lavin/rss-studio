@@ -37,3 +37,17 @@ type FeedCache interface {
 type Filter func(source []byte, keyword, outputTitle string) ([]byte, int, error)
 
 type OperatorFilter func(source []byte, operator domain.FilterOperator, keyword, outputTitle string) ([]byte, int, error)
+
+type PreviewRule struct {
+	Name     string
+	Operator domain.FilterOperator
+	Keyword  string
+}
+
+type PreviewResult struct {
+	Name     string
+	Operator domain.FilterOperator
+	Keyword  string
+	Count    int
+	Titles   []string
+}

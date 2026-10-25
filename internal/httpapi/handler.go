@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"html/template"
+	"io"
 	"log"
 	"net/http"
 	"strconv"
@@ -40,6 +41,46 @@ type authCredentials struct {
 	Password string `json:"password"`
 }
 
+type previewRequest struct {
+	SourceURL string          `json:"source_url"`
+	Outputs   []previewOutput `json:"outputs"`
+}
+
+type previewOutput struct {
+	Name     string                `json:"name"`
+	Operator domain.FilterOperator `json:"operator"`
+	Keyword  string                `json:"keyword"`
+}
+
+type previewResponse struct {
+	Outputs []previewResponseOutput `json:"outputs"`
+}
+
+type previewResponseOutput struct {
+	Name         string   `json:"name"`
+	Operator     string   `json:"operator"`
+	Keyword      string   `json:"keyword"`
+	Count        int      `json:"count"`
+	SampleTitles []string `json:"sample_titles"`
+}
+
+type splitResponse struct {
+	Outputs []splitResponseOutput `json:"outputs"`
+}
+
+type splitResponseOutput struct {
+	Name     string `json:"name"`
+	Operator string `json:"operator"`
+	Keyword  string `json:"keyword"`
+	Path     string `json:"path"`
+	URL      string `json:"url"`
+}
+
+const (
+	maxJSONRequestBody     = 1 << 20
+	maxAuthJSONRequestBody = 16 << 10
+)
+
 func NewHandler(service *application.Service, authenticators ...*Authenticator) http.Handler {
 	var auth *Authenticator
 	if len(authenticators) > 0 {
@@ -60,6 +101,8 @@ func NewHandler(service *application.Service, authenticators ...*Authenticator) 
 		mux.HandleFunc("POST /auth/register", handler.register)
 	}
 	mux.HandleFunc("POST /feeds", handler.createFeed)
+	mux.HandleFunc("POST /feeds/split", handler.splitFeeds)
+	mux.HandleFunc("POST /preview", handler.preview)
 	mux.HandleFunc("GET /feeds/{path}", handler.serveFeed)
 	mux.HandleFunc("POST /feeds/{path}/delete", handler.deleteFeed)
 	return observability.HTTPHandler(handler.authenticate(mux))
@@ -77,6 +120,9 @@ func (h *Handler) login(writer http.ResponseWriter, request *http.Request) {
 		return
 	}
 
+	if isJSONRequest(request) {
+		request.Body = http.MaxBytesReader(writer, request.Body, maxAuthJSONRequestBody)
+	}
 	credentials, err := parseCredentials(request)
 	if err != nil {
 		http.Error(writer, "Invalid login request.", http.StatusBadRequest)
@@ -144,6 +190,9 @@ func (h *Handler) register(writer http.ResponseWriter, request *http.Request) {
 		return
 	}
 
+	if isJSONRequest(request) {
+		request.Body = http.MaxBytesReader(writer, request.Body, maxAuthJSONRequestBody)
+	}
 	credentials, err := parseCredentials(request)
 	if err != nil {
 		http.Error(writer, "Invalid registration request.", http.StatusBadRequest)
@@ -187,7 +236,11 @@ func (h *Handler) register(writer http.ResponseWriter, request *http.Request) {
 func parseCredentials(request *http.Request) (authCredentials, error) {
 	var credentials authCredentials
 	if isJSONRequest(request) {
-		if err := json.NewDecoder(request.Body).Decode(&credentials); err != nil {
+		decoder := json.NewDecoder(request.Body)
+		if err := decoder.Decode(&credentials); err != nil {
+			return authCredentials{}, err
+		}
+		if err := decoder.Decode(&struct{}{}); err != io.EOF {
 			return authCredentials{}, err
 		}
 		return credentials, nil
@@ -289,6 +342,107 @@ func (h *Handler) createFeed(writer http.ResponseWriter, request *http.Request) 
 		return
 	}
 	http.Redirect(writer, request, "/", http.StatusSeeOther)
+}
+
+func (h *Handler) preview(writer http.ResponseWriter, request *http.Request) {
+	var input previewRequest
+	request.Body = http.MaxBytesReader(writer, request.Body, maxJSONRequestBody)
+	decoder := json.NewDecoder(request.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&input); err != nil || decoder.Decode(&struct{}{}) != io.EOF {
+		writeJSONError(writer, "Invalid preview request.", http.StatusBadRequest)
+		return
+	}
+
+	rules := make([]application.PreviewRule, len(input.Outputs))
+	for i, output := range input.Outputs {
+		rules[i] = application.PreviewRule{Name: output.Name, Operator: output.Operator, Keyword: output.Keyword}
+	}
+	results, err := h.service.Preview(request.Context(), input.SourceURL, rules)
+	if err != nil {
+		switch {
+		case errors.Is(err, application.ErrInvalidFeed):
+			writeJSONError(writer, err.Error(), http.StatusBadRequest)
+		case errors.Is(err, application.ErrSourceUnavailable):
+			writeJSONError(writer, "Source feed could not be fetched or processed.", http.StatusBadGateway)
+		default:
+			log.Printf("preview feed: %v", err)
+			writeJSONError(writer, "Could not preview feed.", http.StatusInternalServerError)
+		}
+		return
+	}
+
+	response := previewResponse{Outputs: make([]previewResponseOutput, len(results))}
+	for i, result := range results {
+		response.Outputs[i] = previewResponseOutput{
+			Name:         result.Name,
+			Operator:     string(result.Operator),
+			Keyword:      result.Keyword,
+			Count:        result.Count,
+			SampleTitles: result.Titles,
+		}
+	}
+	writer.Header().Set("Content-Type", "application/json; charset=utf-8")
+	writer.Header().Set("Cache-Control", "no-store")
+	if err := json.NewEncoder(writer).Encode(response); err != nil {
+		log.Printf("write preview response: %v", err)
+	}
+}
+
+func (h *Handler) splitFeeds(writer http.ResponseWriter, request *http.Request) {
+	var input previewRequest
+	request.Body = http.MaxBytesReader(writer, request.Body, maxJSONRequestBody)
+	decoder := json.NewDecoder(request.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&input); err != nil || decoder.Decode(&struct{}{}) != io.EOF {
+		writeJSONError(writer, "Invalid split request.", http.StatusBadRequest)
+		return
+	}
+
+	rules := make([]application.PreviewRule, len(input.Outputs))
+	for i, output := range input.Outputs {
+		rules[i] = application.PreviewRule{Name: output.Name, Operator: output.Operator, Keyword: output.Keyword}
+	}
+	feeds, err := h.service.CreateSplitFeeds(request.Context(), h.requestUser(request), input.SourceURL, rules)
+	if err != nil {
+		switch {
+		case errors.Is(err, application.ErrInvalidFeed):
+			writeJSONError(writer, err.Error(), http.StatusBadRequest)
+		case errors.Is(err, application.ErrSourceUnavailable):
+			writeJSONError(writer, "Source feed could not be fetched or processed.", http.StatusBadGateway)
+		default:
+			log.Printf("split feeds: %v", err)
+			writeJSONError(writer, "Could not publish feeds.", http.StatusInternalServerError)
+		}
+		return
+	}
+
+	response := splitResponse{Outputs: make([]splitResponseOutput, len(feeds))}
+	for i, feed := range feeds {
+		path := "/feeds/" + feed.Path + ".xml"
+		response.Outputs[i] = splitResponseOutput{
+			Name:     feed.Name,
+			Operator: string(feed.Operator),
+			Keyword:  feed.Keyword,
+			Path:     path,
+			URL:      baseURL(request) + path,
+		}
+	}
+	writer.Header().Set("Content-Type", "application/json; charset=utf-8")
+	writer.Header().Set("Cache-Control", "no-store")
+	writer.WriteHeader(http.StatusCreated)
+	if err := json.NewEncoder(writer).Encode(response); err != nil {
+		log.Printf("write split response: %v", err)
+	}
+}
+
+func writeJSONError(writer http.ResponseWriter, message string, status int) {
+	writer.Header().Set("Content-Type", "application/json; charset=utf-8")
+	writer.Header().Set("Cache-Control", "no-store")
+	writer.WriteHeader(status)
+	_ = json.NewEncoder(writer).Encode(struct {
+		Error string `json:"error"`
+	}{Error: message})
 }
 
 func (h *Handler) serveFeed(writer http.ResponseWriter, request *http.Request) {
@@ -442,6 +596,77 @@ var homeTemplate = template.Must(template.New("home").Parse(`<!doctype html>
       </form>
     </section>
 
+    <section class="mt-8 rounded-2xl bg-white p-6 shadow-xl shadow-slate-900/5 ring-1 ring-slate-200 dark:bg-slate-900 dark:ring-slate-800 sm:p-8" aria-labelledby="split-heading">
+      <div class="mb-7 flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
+        <div>
+          <h2 id="split-heading" class="text-xl font-semibold tracking-tight">Split feeds</h2>
+          <p class="mt-1 text-sm text-slate-500 dark:text-slate-400">Create multiple filtered feeds from one source.</p>
+        </div>
+        <span class="text-xs font-medium uppercase tracking-wider text-slate-400">Batch feeds</span>
+      </div>
+      <form id="split-form" method="post" action="/feeds/split" class="space-y-6">
+        <div>
+          <label for="split-source-url" class="mb-2 block text-sm font-medium text-slate-700 dark:text-slate-300">Source RSS URL</label>
+          <input id="split-source-url" name="source_url" type="url" maxlength="2048" placeholder="https://example.com/feed.xml" required class="block w-full rounded-lg border border-slate-300 bg-white px-3.5 py-3 text-sm text-slate-900 shadow-sm outline-none transition placeholder:text-slate-400 focus:border-violet-600 focus:ring-4 focus:ring-violet-600/10 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 dark:placeholder:text-slate-500">
+        </div>
+        <div>
+          <div class="mb-3 flex items-center justify-between gap-4">
+            <h3 class="text-sm font-semibold text-slate-800 dark:text-slate-200">Output feeds</h3>
+            <button id="add-split-output" type="button" aria-disabled="false" aria-label="Add output" class="text-sm font-semibold text-violet-600 hover:text-violet-700 focus:outline-none focus:ring-4 focus:ring-violet-600/10 disabled:cursor-not-allowed disabled:opacity-50 dark:text-violet-400 dark:hover:text-violet-300">Add output <span aria-hidden="true">＋</span></button>
+          </div>
+          <div id="split-outputs" class="space-y-4">
+             <div data-output-row class="grid gap-4 rounded-xl border border-slate-200 p-4 dark:border-slate-800 sm:grid-cols-[1fr_0.8fr_1fr_auto] sm:items-end">
+              <div>
+                <label for="split-output-name-1" class="mb-2 block text-sm font-medium text-slate-700 dark:text-slate-300">Output name</label>
+                <input id="split-output-name-1" data-output-name name="output_name" maxlength="120" placeholder="AI episodes" required class="block w-full rounded-lg border border-slate-300 bg-white px-3.5 py-3 text-sm text-slate-900 shadow-sm outline-none transition placeholder:text-slate-400 focus:border-violet-600 focus:ring-4 focus:ring-violet-600/10 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 dark:placeholder:text-slate-500">
+              </div>
+               <div>
+                 <label for="split-output-operator-1" class="mb-2 block text-sm font-medium text-slate-700 dark:text-slate-300">Operator</label>
+                 <select id="split-output-operator-1" data-output-operator name="output_operator" class="block w-full rounded-lg border border-slate-300 bg-white px-3.5 py-3 text-sm text-slate-900 shadow-sm outline-none transition focus:border-violet-600 focus:ring-4 focus:ring-violet-600/10 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100">
+                   <option value="contains">Contains</option>
+                   <option value="starts_with">Starts with</option>
+                   <option value="ends_with">Ends with</option>
+                   <option value="equals">Equals</option>
+                 </select>
+               </div>
+               <div>
+                 <label for="split-output-keyword-1" class="mb-2 block text-sm font-medium text-slate-700 dark:text-slate-300">Match title</label>
+                <input id="split-output-keyword-1" data-output-keyword name="output_keyword" maxlength="200" placeholder="e.g. AI" required class="block w-full rounded-lg border border-slate-300 bg-white px-3.5 py-3 text-sm text-slate-900 shadow-sm outline-none transition placeholder:text-slate-400 focus:border-violet-600 focus:ring-4 focus:ring-violet-600/10 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 dark:placeholder:text-slate-500">
+              </div>
+              <button type="button" data-remove-output disabled aria-disabled="true" aria-label="Remove output 1" class="min-h-[46px] rounded-lg border border-slate-300 px-4 py-3 text-sm font-medium text-slate-500 transition hover:border-rose-300 hover:text-rose-600 focus:outline-none focus:ring-4 focus:ring-violet-600/10 disabled:cursor-not-allowed disabled:opacity-50 dark:border-slate-700 dark:text-slate-400 dark:hover:border-rose-700 dark:hover:text-rose-400">Remove</button>
+            </div>
+          </div>
+          <template id="split-output-row-template">
+             <div data-output-row class="grid gap-4 rounded-xl border border-slate-200 p-4 dark:border-slate-800 sm:grid-cols-[1fr_0.8fr_1fr_auto] sm:items-end">
+              <div>
+                <label data-output-name-label class="mb-2 block text-sm font-medium text-slate-700 dark:text-slate-300">Output name</label>
+                <input data-output-name name="output_name" maxlength="120" placeholder="AI episodes" required class="block w-full rounded-lg border border-slate-300 bg-white px-3.5 py-3 text-sm text-slate-900 shadow-sm outline-none transition placeholder:text-slate-400 focus:border-violet-600 focus:ring-4 focus:ring-violet-600/10 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 dark:placeholder:text-slate-500">
+              </div>
+               <div>
+                 <label data-output-operator-label class="mb-2 block text-sm font-medium text-slate-700 dark:text-slate-300">Operator</label>
+                 <select data-output-operator name="output_operator" class="block w-full rounded-lg border border-slate-300 bg-white px-3.5 py-3 text-sm text-slate-900 shadow-sm outline-none transition focus:border-violet-600 focus:ring-4 focus:ring-violet-600/10 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100">
+                   <option value="contains">Contains</option>
+                   <option value="starts_with">Starts with</option>
+                   <option value="ends_with">Ends with</option>
+                   <option value="equals">Equals</option>
+                 </select>
+               </div>
+               <div>
+                 <label data-output-keyword-label class="mb-2 block text-sm font-medium text-slate-700 dark:text-slate-300">Match title</label>
+                <input data-output-keyword name="output_keyword" maxlength="200" placeholder="e.g. AI" required class="block w-full rounded-lg border border-slate-300 bg-white px-3.5 py-3 text-sm text-slate-900 shadow-sm outline-none transition placeholder:text-slate-400 focus:border-violet-600 focus:ring-4 focus:ring-violet-600/10 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 dark:placeholder:text-slate-500">
+              </div>
+              <button type="button" data-remove-output aria-label="Remove output 2" class="min-h-[46px] rounded-lg border border-slate-300 px-4 py-3 text-sm font-medium text-slate-500 transition hover:border-rose-300 hover:text-rose-600 focus:outline-none focus:ring-4 focus:ring-violet-600/10 disabled:cursor-not-allowed disabled:opacity-50 dark:border-slate-700 dark:text-slate-400 dark:hover:border-rose-700 dark:hover:text-rose-400">Remove</button>
+            </div>
+          </template>
+        </div>
+        <div id="split-status" role="status" aria-live="polite" aria-atomic="true" class="space-y-3 text-sm text-slate-600 dark:text-slate-300"></div>
+        <div class="flex flex-wrap gap-3">
+          <button id="split-preview" type="button" class="inline-flex min-h-[46px] items-center justify-center rounded-lg border border-violet-600 px-5 py-3 text-sm font-semibold text-violet-700 shadow-sm transition hover:bg-violet-50 focus:outline-none focus:ring-4 focus:ring-violet-600/20 dark:text-violet-300 dark:hover:bg-violet-950/50">Preview split</button>
+          <button id="split-publish" type="submit" class="inline-flex min-h-[46px] items-center justify-center gap-2 rounded-lg bg-violet-600 px-5 py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-violet-700 focus:outline-none focus:ring-4 focus:ring-violet-600/20">Publish split feeds <span aria-hidden="true">→</span></button>
+        </div>
+      </form>
+    </section>
+
     <section class="mt-12">
       <div class="mb-5 flex items-center justify-between gap-4">
         <div>
@@ -507,6 +732,165 @@ var homeTemplate = template.Must(template.New("home").Parse(`<!doctype html>
       update();
     });
     update();
+  })();
+</script>
+<script>
+  (() => {
+    const form = document.getElementById("split-form");
+    if (!form) return;
+    const outputs = document.getElementById("split-outputs");
+    const rowTemplate = document.getElementById("split-output-row-template");
+    const addButton = document.getElementById("add-split-output");
+    const previewButton = document.getElementById("split-preview");
+    const status = document.getElementById("split-status");
+    let busy = false;
+    let nextOutputID = 2;
+    const maxOutputs = 32;
+
+    const clearStatus = () => {
+      status.replaceChildren();
+      status.classList.remove("text-rose-700", "dark:text-rose-300");
+    };
+    const showMessage = (message, error) => {
+      clearStatus();
+      status.textContent = message;
+      if (error) status.classList.add("text-rose-700", "dark:text-rose-300");
+    };
+    const updateRemoveButtons = () => {
+      const canRemove = outputs.children.length > 1;
+      outputs.querySelectorAll("[data-remove-output]").forEach((button, index) => {
+        const name = button.closest("[data-output-row]").querySelector("[data-output-name]").value.trim();
+        button.setAttribute("aria-label", name ? "Remove output " + name : "Remove output " + (index + 1));
+        button.disabled = busy || !canRemove;
+        button.setAttribute("aria-disabled", String(busy || !canRemove));
+      });
+      const atLimit = outputs.children.length >= maxOutputs;
+      addButton.disabled = busy || atLimit;
+      addButton.setAttribute("aria-disabled", String(busy || atLimit));
+      addButton.setAttribute("aria-label", atLimit ? "Output limit reached" : "Add output");
+    };
+    const setBusy = (value) => {
+      busy = value;
+      form.querySelectorAll("input, button").forEach((control) => { control.disabled = value; });
+      updateRemoveButtons();
+      status.setAttribute("aria-busy", String(value));
+    };
+     const payload = () => ({
+       source_url: form.querySelector('[name="source_url"]').value.trim(),
+       outputs: Array.from(outputs.querySelectorAll("[data-output-row]")).map((row) => ({
+         name: row.querySelector("[data-output-name]").value.trim(),
+         operator: row.querySelector("[data-output-operator]").value,
+         keyword: row.querySelector("[data-output-keyword]").value.trim()
+       }))
+    });
+    const addOutput = () => {
+      if (busy || outputs.children.length >= maxOutputs) return;
+      const fragment = rowTemplate.content.cloneNode(true);
+       const row = fragment.querySelector("[data-output-row]");
+       const number = nextOutputID++;
+       const nameID = "split-output-name-" + number;
+       const operatorID = "split-output-operator-" + number;
+       const keywordID = "split-output-keyword-" + number;
+       row.querySelector("[data-output-name-label]").htmlFor = nameID;
+       row.querySelector("[data-output-operator-label]").htmlFor = operatorID;
+       row.querySelector("[data-output-keyword-label]").htmlFor = keywordID;
+       row.querySelector("[data-output-name]").id = nameID;
+       row.querySelector("[data-output-operator]").id = operatorID;
+       row.querySelector("[data-output-keyword]").id = keywordID;
+      outputs.appendChild(row);
+      updateRemoveButtons();
+    };
+    const renderPreview = (data) => {
+      clearStatus();
+      const heading = document.createElement("p");
+      heading.className = "font-semibold text-slate-800 dark:text-slate-200";
+      heading.textContent = "Preview results";
+      status.appendChild(heading);
+      const results = data && Array.isArray(data.outputs) ? data.outputs : [];
+      results.forEach((output) => {
+        const section = document.createElement("section");
+        const title = document.createElement("p");
+        const name = typeof output.name === "string" ? output.name : "Output";
+        const count = Number.isFinite(output.count) ? output.count : 0;
+        title.textContent = name + ": " + count + " matching episode" + (count === 1 ? "" : "s");
+        section.appendChild(title);
+        const samples = Array.isArray(output.sample_titles) ? output.sample_titles.slice(0, 5) : [];
+        if (samples.length === 0) {
+          const empty = document.createElement("p");
+          empty.className = "text-slate-500 dark:text-slate-400";
+          empty.textContent = "No matching episode titles.";
+          section.appendChild(empty);
+        } else {
+          const list = document.createElement("ul");
+          list.className = "list-disc pl-5 text-slate-500 dark:text-slate-400";
+          samples.forEach((sample) => {
+            const item = document.createElement("li");
+            item.textContent = typeof sample === "string" ? sample : String(sample);
+            list.appendChild(item);
+          });
+          section.appendChild(list);
+        }
+        status.appendChild(section);
+      });
+    };
+    const renderPublished = (data) => {
+      clearStatus();
+      const heading = document.createElement("p");
+      heading.className = "font-semibold text-slate-800 dark:text-slate-200";
+      heading.textContent = "Published split feeds";
+      status.appendChild(heading);
+      const list = document.createElement("ul");
+      list.className = "space-y-1 text-slate-500 dark:text-slate-400";
+      const results = data && Array.isArray(data.outputs) ? data.outputs : [];
+      results.forEach((output) => {
+        const item = document.createElement("li");
+        const name = typeof output.name === "string" ? output.name : "Output";
+        const url = typeof output.url === "string" ? output.url : "";
+        item.textContent = name + (url ? ": " + url : "");
+        list.appendChild(item);
+      });
+      status.appendChild(list);
+    };
+    const send = async (endpoint, message, render) => {
+      if (busy || !form.reportValidity()) return;
+      setBusy(true);
+      showMessage(message, false);
+      try {
+        const response = await fetch(endpoint, {
+          method: "POST",
+          credentials: "same-origin",
+          headers: { "Content-Type": "application/json", "Accept": "application/json" },
+          body: JSON.stringify(payload())
+        });
+        const data = await response.json().catch(() => null);
+        if (!response.ok) {
+          const message = data && typeof data.error === "string" && data.error ? data.error : "Request failed (HTTP " + response.status + ").";
+          throw new Error(message);
+        }
+        render(data);
+      } catch (error) {
+        showMessage(error instanceof Error ? error.message : "Request failed.", true);
+      } finally {
+        setBusy(false);
+      }
+    };
+
+    addButton.addEventListener("click", addOutput);
+    outputs.addEventListener("click", (event) => {
+      const target = event.target;
+      if (!(target instanceof Element) || !target.matches("[data-remove-output]") || target.disabled || busy) return;
+      target.closest("[data-output-row]").remove();
+      updateRemoveButtons();
+    });
+    outputs.addEventListener("input", (event) => {
+      if (event.target instanceof Element && event.target.matches("[data-output-name]")) updateRemoveButtons();
+    });
+    previewButton.addEventListener("click", () => send("/preview", "Loading preview...", renderPreview));
+    form.addEventListener("submit", (event) => {
+      event.preventDefault();
+      send("/feeds/split", "Publishing split feeds...", renderPublished);
+    });
+    updateRemoveButtons();
   })();
 </script>
 </body>

@@ -148,6 +148,65 @@ func TestHandlerCreatesAndServesFeed(t *testing.T) {
 	}
 }
 
+func TestHomeRendersSplitFeedWorkflow(t *testing.T) {
+	server, _ := newAuthenticatedServer(t)
+	token := loginToken(t, server)
+	request := httptest.NewRequest(http.MethodGet, "/", nil)
+	request.Header.Set("Authorization", "Bearer "+token)
+	recorder := httptest.NewRecorder()
+	server.Config.Handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected home page, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+
+	page := recorder.Body.String()
+	for _, marker := range []string{
+		`id="split-form"`,
+		`action="/feeds/split"`,
+		"Split feeds",
+		`id="split-source-url"`,
+		`data-output-row`,
+		`data-output-name`,
+		`data-output-operator`,
+		`data-output-keyword`,
+		`id="add-split-output"`,
+		`aria-disabled="false"`,
+		`const maxOutputs = 32`,
+		`outputs.children.length >= maxOutputs`,
+		`Output limit reached`,
+		`data-remove-output`,
+		`aria-label="Remove output 1"`,
+		`id="split-preview"`,
+		"Preview split",
+		`id="split-publish"`,
+		"Publish split feeds",
+		`id="split-status"`,
+		`role="status"`,
+		`aria-live="polite"`,
+		`"/preview"`,
+		`"/feeds/split"`,
+		`credentials: "same-origin"`,
+	} {
+		if !strings.Contains(page, marker) {
+			t.Fatalf("home page missing split workflow marker %q: %s", marker, page)
+		}
+	}
+}
+
+func TestAuthJSONEndpointsRejectOversizedBodies(t *testing.T) {
+	server, _ := newAuthenticatedServer(t)
+	body := `{"username":"admin","password":"password"}` + strings.Repeat(" ", 16<<10)
+	for _, endpoint := range []string{"/auth/login", "/auth/register"} {
+		request := httptest.NewRequest(http.MethodPost, endpoint, strings.NewReader(body))
+		request.Header.Set("Content-Type", "application/json")
+		recorder := httptest.NewRecorder()
+		server.Config.Handler.ServeHTTP(recorder, request)
+		if recorder.Code != http.StatusBadRequest || strings.Contains(recorder.Body.String(), "password") {
+			t.Fatalf("expected safe oversized %s response, got %d: %s", endpoint, recorder.Code, recorder.Body.String())
+		}
+	}
+}
+
 func TestAuthenticatedHandlerProtectsManagementAndLeavesFeedsPublic(t *testing.T) {
 	server, _ := newAuthenticatedServer(t)
 
@@ -198,6 +257,189 @@ func TestAuthenticatedHandlerProtectsManagementAndLeavesFeedsPublic(t *testing.T
 	if response.StatusCode != http.StatusNotFound {
 		t.Fatalf("expected public missing feed to return 404, got %d", response.StatusCode)
 	}
+}
+
+func TestPreviewEndpointReturnsSamplesAndRequiresAuthentication(t *testing.T) {
+	server, _ := newAuthenticatedServer(t)
+
+	request, err := http.NewRequest(http.MethodPost, server.URL+"/preview", strings.NewReader(`{"source_url":"https://example.test/rss","outputs":[{"name":"AI","keyword":"foo"}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Content-Type", "application/json")
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("expected unauthenticated preview to fail, got %d", response.StatusCode)
+	}
+
+	token := loginToken(t, server)
+	request, err = http.NewRequest(http.MethodPost, server.URL+"/preview", strings.NewReader(`{"source_url":"https://example.test/rss","outputs":[{"name":"Foo","operator":"starts_with","keyword":"keep"}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Authorization", "Bearer "+token)
+	request.Header.Set("Content-Type", "application/json")
+	response, err = http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("expected preview success, got %d", response.StatusCode)
+	}
+	var body struct {
+		Outputs []struct {
+			Name         string   `json:"name"`
+			Operator     string   `json:"operator"`
+			Keyword      string   `json:"keyword"`
+			Count        int      `json:"count"`
+			SampleTitles []string `json:"sample_titles"`
+		} `json:"outputs"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if len(body.Outputs) != 1 || body.Outputs[0].Name != "Foo" || body.Outputs[0].Operator != "starts_with" || body.Outputs[0].Keyword != "keep" || body.Outputs[0].Count != 1 || len(body.Outputs[0].SampleTitles) != 1 {
+		t.Fatalf("unexpected preview response: %#v", body)
+	}
+}
+
+func TestPreviewEndpointRejectsMalformedInput(t *testing.T) {
+	server, _ := newAuthenticatedServer(t)
+	token := loginToken(t, server)
+	request := httptest.NewRequest(http.MethodPost, "/preview", strings.NewReader(`{"source_url":`))
+	request.Header.Set("Authorization", "Bearer "+token)
+	request.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+	server.Config.Handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("expected malformed preview to return 400, got %d", recorder.Code)
+	}
+}
+
+func TestSplitJSONEndpointsRejectOversizedBodies(t *testing.T) {
+	server, _ := newAuthenticatedServer(t)
+	token := loginToken(t, server)
+	body := `{"source_url":"https://example.test/rss","outputs":[{"name":"Foo","keyword":"foo"}]}` + strings.Repeat(" ", 1<<20)
+	for _, endpoint := range []string{"/preview", "/feeds/split"} {
+		request := httptest.NewRequest(http.MethodPost, endpoint, strings.NewReader(body))
+		request.Header.Set("Authorization", "Bearer "+token)
+		request.Header.Set("Content-Type", "application/json")
+		recorder := httptest.NewRecorder()
+		server.Config.Handler.ServeHTTP(recorder, request)
+		if recorder.Code != http.StatusBadRequest {
+			t.Fatalf("expected oversized %s request to return 400, got %d: %s", endpoint, recorder.Code, recorder.Body.String())
+		}
+	}
+}
+
+func TestPreviewEndpointReturnsBadGatewayForInvalidSource(t *testing.T) {
+	service := application.NewService(nil, nil, invalidSourceStub{}, rss.Filter)
+	handler := httpapi.NewHandler(service)
+	request := httptest.NewRequest(http.MethodPost, "/preview", strings.NewReader(`{"source_url":"https://example.test/rss","outputs":[{"name":"Foo","keyword":"foo"}]}`))
+	request.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusBadGateway {
+		t.Fatalf("expected invalid source to return 502, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestSplitEndpointRequiresAuthenticationAndReturnsPublicFeeds(t *testing.T) {
+	server, _ := newAuthenticatedServer(t)
+
+	request, err := http.NewRequest(http.MethodPost, server.URL+"/feeds/split", strings.NewReader(`{"source_url":"https://example.test/rss","outputs":[{"name":"Foo","keyword":"foo"}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Content-Type", "application/json")
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("expected unauthenticated split request to fail, got %d", response.StatusCode)
+	}
+
+	token := loginToken(t, server)
+	request, err = http.NewRequest(http.MethodPost, server.URL+"/feeds/split", strings.NewReader(`{"source_url":"https://example.test/rss","outputs":[{"name":"Keep","operator":"starts_with","keyword":"keep"},{"name":"Drop","operator":"equals","keyword":"drop"}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Authorization", "Bearer "+token)
+	request.Header.Set("Content-Type", "application/json")
+	response, err = http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusCreated {
+		t.Fatalf("expected split success, got %d", response.StatusCode)
+	}
+	var body struct {
+		Outputs []struct {
+			Name     string `json:"name"`
+			Operator string `json:"operator"`
+			Keyword  string `json:"keyword"`
+			Path     string `json:"path"`
+			URL      string `json:"url"`
+		} `json:"outputs"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if len(body.Outputs) != 2 || body.Outputs[0].Name != "Keep" || body.Outputs[0].Operator != "starts_with" || body.Outputs[1].Name != "Drop" || body.Outputs[1].Operator != "equals" {
+		t.Fatalf("unexpected split response: %#v", body)
+	}
+	for _, output := range body.Outputs {
+		if output.Path == "" || output.URL != server.URL+output.Path || !strings.HasPrefix(output.Path, "/feeds/") || !strings.HasSuffix(output.Path, ".xml") {
+			t.Fatalf("unexpected public feed reference: %#v", output)
+		}
+	}
+}
+
+func TestSplitEndpointRejectsMalformedAndInvalidInput(t *testing.T) {
+	server, _ := newAuthenticatedServer(t)
+	token := loginToken(t, server)
+	for _, input := range []string{
+		`{"source_url":`,
+		`{"source_url":"not-a-url","outputs":[{"name":"Foo","keyword":"foo"}]}`,
+		`{"source_url":"https://example.test/rss","outputs":[{"name":"","keyword":"foo"}]}`,
+	} {
+		request := httptest.NewRequest(http.MethodPost, "/feeds/split", strings.NewReader(input))
+		request.Header.Set("Authorization", "Bearer "+token)
+		request.Header.Set("Content-Type", "application/json")
+		recorder := httptest.NewRecorder()
+		server.Config.Handler.ServeHTTP(recorder, request)
+		if recorder.Code != http.StatusBadRequest {
+			t.Fatalf("expected invalid split request to return 400, got %d: %s", recorder.Code, recorder.Body.String())
+		}
+	}
+}
+
+func TestSplitEndpointReturnsBadGatewayForInvalidSource(t *testing.T) {
+	service := application.NewService(nil, nil, invalidSourceStub{}, rss.Filter)
+	handler := httpapi.NewHandler(service)
+	request := httptest.NewRequest(http.MethodPost, "/feeds/split", strings.NewReader(`{"source_url":"https://example.test/rss","outputs":[{"name":"Foo","keyword":"foo"}]}`))
+	request.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusBadGateway {
+		t.Fatalf("expected invalid split source to return 502, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+}
+
+type invalidSourceStub struct{}
+
+func (invalidSourceStub) Head(context.Context, string) (time.Time, error) { return time.Time{}, nil }
+
+func (invalidSourceStub) Get(context.Context, string) ([]byte, time.Time, error) {
+	return []byte("not an RSS feed"), time.Time{}, nil
 }
 
 func TestAuthenticatedHandlerIsolatesFeedsByUser(t *testing.T) {

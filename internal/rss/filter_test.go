@@ -1,6 +1,7 @@
 package rss
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 
@@ -44,26 +45,86 @@ func TestFilterRejectsAtom(t *testing.T) {
 	}
 }
 
-func TestFilterOperators(t *testing.T) {
-	source := []byte(`<rss version="2.0"><channel><title>Source</title><item><title>AI weekly</title></item><item><title>Weekly AI</title></item><item><title>AI</title></item><item><title>Other show</title></item></channel></rss>`)
-	tests := []struct {
-		operator domain.FilterOperator
-		want     int
-	}{
-		{domain.FilterContains, 3},
-		{domain.FilterStartsWith, 2},
-		{domain.FilterEndsWith, 2},
-		{domain.FilterEquals, 1},
+func TestFilterMany(t *testing.T) {
+	source := []byte(`<?xml version="1.0"?><rss version="2.0" xmlns:itunes="http://www.itunes.com/dtds/podcast-1.0.dtd"><channel><title>Original</title><link>https://example.test/feed</link><item><title>AI weekly</title><guid>one</guid><enclosure url="https://media.test/one.mp3" type="audio/mpeg"/><itunes:duration>10</itunes:duration></item><item><title>AI news</title><guid>two</guid><enclosure url="https://media.test/two.mp3" type="audio/mpeg"/></item><item><title>Other show</title><guid>three</guid></item></channel></rss>`)
+
+	results, err := FilterMany(source, []FilterRule{
+		{Name: "AI", Keyword: "ai"},
+		{Name: "News", Keyword: "news"},
+		{Name: "Missing", Keyword: "missing"},
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
-	for _, test := range tests {
-		t.Run(test.operator.Label(), func(t *testing.T) {
-			result, count, err := FilterWithOperator(source, test.operator, "ai", "Filtered")
-			if err != nil {
-				t.Fatal(err)
+	if len(results) != 3 {
+		t.Fatalf("expected 3 results, got %d", len(results))
+	}
+
+	want := []struct {
+		name  string
+		count int
+		guids []string
+	}{
+		{name: "AI", count: 2, guids: []string{"one", "two"}},
+		{name: "News", count: 1, guids: []string{"two"}},
+		{name: "Missing", count: 0},
+	}
+	for i, test := range want {
+		result := results[i]
+		if result.Name != test.name || result.Count != test.count {
+			t.Fatalf("result %d: got name %q and count %d", i, result.Name, result.Count)
+		}
+
+		document := etree.NewDocument()
+		if err := document.ReadFromBytes(result.Feed); err != nil {
+			t.Fatal(err)
+		}
+		channel := document.FindElement("/rss/channel")
+		if got := channel.SelectElement("title").Text(); got != test.name {
+			t.Fatalf("result %d: expected title %q, got %q", i, test.name, got)
+		}
+		if got := channel.SelectElement("link").Text(); got != "https://example.test/feed" {
+			t.Fatalf("result %d: channel metadata was not preserved", i)
+		}
+
+		items := channel.SelectElements("item")
+		if len(items) != len(test.guids) {
+			t.Fatalf("result %d: expected %d items, got %d", i, len(test.guids), len(items))
+		}
+		for j, guid := range test.guids {
+			if got := items[j].SelectElement("guid").Text(); got != guid {
+				t.Fatalf("result %d item %d: expected guid %q, got %q", i, j, guid, got)
 			}
-			if count != test.want {
-				t.Fatalf("expected %d matches, got %d: %s", test.want, count, result)
-			}
-		})
+		}
+	}
+	if !strings.Contains(string(results[0].Feed), `url="https://media.test/one.mp3"`) ||
+		!strings.Contains(string(results[0].Feed), "itunes:duration") {
+		t.Fatal("matching item data was not preserved")
+	}
+}
+
+func TestFilterManyUsesEachRuleOperator(t *testing.T) {
+	source := []byte(`<rss version="2.0"><channel><title>Source</title><item><title>AI weekly</title></item><item><title>Weekly AI</title></item><item><title>AI</title></item><item><title>Other show</title></item></channel></rss>`)
+	results, err := FilterMany(source, []FilterRule{
+		{Name: "Starts", Operator: domain.FilterStartsWith, Keyword: "ai"},
+		{Name: "Ends", Operator: domain.FilterEndsWith, Keyword: "ai"},
+		{Name: "Equals", Operator: domain.FilterEquals, Keyword: "ai"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := []int{results[0].Count, results[1].Count, results[2].Count}; !reflect.DeepEqual(got, []int{2, 2, 1}) {
+		t.Fatalf("unexpected operator counts: %v", got)
+	}
+}
+
+func TestPreviewManyReturnsMetadataWithoutFeeds(t *testing.T) {
+	source := []byte(`<rss version="2.0"><channel><title>Source</title><item><title>AI one</title></item><item><title>Other</title></item></channel></rss>`)
+	results, err := PreviewMany(source, []FilterRule{{Name: "AI", Keyword: "ai"}, {Name: "Other", Keyword: "other"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 2 || results[0].Name != "AI" || results[0].Count != 1 || len(results[0].Titles) != 1 || results[1].Count != 1 {
+		t.Fatalf("unexpected preview results: %#v", results)
 	}
 }

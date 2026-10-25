@@ -60,6 +60,69 @@ development environment.
 
 Generated feeds are precomputed on disk. Requests return cached XML immediately, then check the source in the background. RSS Studio regenerates only when the source `Last-Modified` value advances.
 
+## Split feeds
+
+One source feed can produce multiple public RSS outputs. Each output has its own
+name, operator, and keyword. Supported operators are `contains`, `starts_with`,
+`ends_with`, and `equals`; matching is case-insensitive. Each output gets its
+own cached RSS file and public
+`/feeds/*.xml` URL. Background refreshes for outputs sharing a source are
+coalesced per tenant, so the source is refreshed once for that group. A split
+request can contain at most 32 outputs.
+
+### Web UI
+
+After signing in, use **Split feeds** on the home page:
+
+1. Enter the source RSS URL and add output rows with a name, operator, and title keyword.
+2. Select **Preview split** to see each output's matching episode count and
+   sample titles.
+3. Select **Publish split feeds** to create the outputs and receive their public
+   URLs.
+
+### JSON API
+
+`POST /preview` and `POST /feeds/split` are authenticated management endpoints;
+send the bearer token returned by `/auth/login`. Both accept JSON in this shape:
+
+```json
+{
+  "source_url": "https://example.com/podcast.xml",
+  "outputs": [
+    {"name": "AI episodes", "operator": "contains", "keyword": "AI"},
+    {"name": "Updates", "operator": "ends_with", "keyword": "update"}
+  ]
+}
+```
+
+Preview the matches without publishing:
+
+```sh
+curl -sS -X POST http://localhost:8080/preview \
+  -H "Authorization: Bearer $token" \
+  -H 'Content-Type: application/json' \
+  -d '{"source_url":"https://example.com/podcast.xml","outputs":[{"name":"AI episodes","operator":"contains","keyword":"AI"}]}'
+```
+
+The response contains `outputs` entries with `name`, `operator`, `keyword`,
+`count`, and `sample_titles` for each requested output.
+
+Publish the split outputs:
+
+```sh
+curl -sS -X POST http://localhost:8080/feeds/split \
+  -H "Authorization: Bearer $token" \
+  -H 'Content-Type: application/json' \
+  -d '{"source_url":"https://example.com/podcast.xml","outputs":[{"name":"AI episodes","operator":"contains","keyword":"AI"}]}'
+```
+
+The response contains `outputs` entries with each output's `name`, `operator`,
+`keyword`, public `path`, and absolute `url`.
+
+The existing single-output `POST /feeds` endpoint remains available. Its form
+fields are `name`, `source_url`, `operator`, and `keyword`; omitted operators
+default to `contains`.
+
 ## Observability
 
 RSS Studio records OpenTelemetry-compatible HTTP server spans. Each span includes
