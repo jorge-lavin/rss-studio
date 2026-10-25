@@ -1,7 +1,10 @@
 package policy
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -95,6 +98,25 @@ func RateLimitOperationForHTTP(method, path string) (string, bool) {
 // bearer credential. Account and token buckets are checked atomically.
 type RateLimitBucket struct {
 	Key string
+}
+
+// RateLimitBuckets returns account- and credential-scoped buckets shared by
+// every authenticated adapter. It never retains a bearer credential.
+func RateLimitBuckets(identity Identity) []RateLimitBucket {
+	accountKey := "account:" + strconv.FormatInt(identity.User.ID, 10)
+	if identity.User.ID <= 0 {
+		accountKey = "account:" + hashRateLimitKey(identity.User.Username)
+	}
+	buckets := []RateLimitBucket{{Key: accountKey}}
+	if identity.CredentialHash != "" {
+		buckets = append(buckets, RateLimitBucket{Key: "token:" + hashRateLimitKey(identity.CredentialHash)})
+	}
+	return buckets
+}
+
+func hashRateLimitKey(value string) string {
+	sum := sha256.Sum256([]byte(value))
+	return hex.EncodeToString(sum[:])
 }
 
 // RateLimitDecision contains headers and retry information for one request.

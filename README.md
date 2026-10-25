@@ -160,14 +160,19 @@ credentials, expire automatically, and are stored only as SHA-256 hashes.
 
 ## MCP
 
-RSS Studio exposes a stateless Streamable HTTP MCP endpoint at `/mcp`. It uses
-the same bearer token as the JSON API; configure an MCP client with the URL
-`https://your-host.example/mcp` and the token returned by `/auth/login`.
+RSS Studio exposes a stateless Streamable HTTP MCP endpoint at `/mcp`. It
+requires an expiring service token (not a browser login JWT or auth cookie); configure
+an MCP client with the URL `https://your-host.example/mcp` and a token created
+through the service-token API.
 
 Available tools are `list_feeds`, `preview_feed`, `create_feed`,
 `create_split_feeds`, and `delete_feed`. Feed management stays scoped to the
-authenticated account. The endpoint supports MCP protocol versions
+authenticated account. `create_feed`, `create_split_feeds`, and `delete_feed`
+accept optional `idempotency_key` arguments; retries with the same key and
+arguments replay the original result. The endpoint supports MCP protocol versions
 `2024-11-05`, `2025-03-26`, `2025-06-18`, and `2025-11-25`.
+MCP is enabled by default for compatibility; set `RSS_STUDIO_MCP_ENABLED=false`
+to leave `/mcp` unavailable.
 
 ## Observability
 

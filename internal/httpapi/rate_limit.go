@@ -1,8 +1,6 @@
 package httpapi
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"net"
 	"net/http"
 	"strconv"
@@ -98,20 +96,7 @@ func (l *apiRateLimiter) allow(identity policy.Identity, operation string) (poli
 	if !ok || l == nil || l.store == nil {
 		return policy.RateLimitDecision{Allowed: true}, nil
 	}
-	accountKey := "account:" + strconv.FormatInt(identity.User.ID, 10)
-	if identity.User.ID <= 0 {
-		accountKey = "account:" + hashRateLimitKey(identity.User.Username)
-	}
-	buckets := []policy.RateLimitBucket{{Key: accountKey}}
-	if identity.CredentialHash != "" {
-		buckets = append(buckets, policy.RateLimitBucket{Key: "token:" + hashRateLimitKey(identity.CredentialHash)})
-	}
-	return l.store.CheckRateLimits(spec.Operation, spec.Limit, spec.Window, buckets, l.now().UTC())
-}
-
-func hashRateLimitKey(value string) string {
-	sum := sha256.Sum256([]byte(value))
-	return hex.EncodeToString(sum[:])
+	return l.store.CheckRateLimits(spec.Operation, spec.Limit, spec.Window, policy.RateLimitBuckets(identity), l.now().UTC())
 }
 
 func rateLimitSeconds(duration time.Duration) int {

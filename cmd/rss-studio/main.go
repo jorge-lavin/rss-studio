@@ -75,7 +75,15 @@ func main() {
 		quotas,
 	)
 	mux := http.NewServeMux()
-	mux.Handle("/mcp", observability.HTTPHandler(mcp.NewHandler(service, auth)))
+	mcpEnabled, err := mcpEnabledFromEnv()
+	if err != nil {
+		log.Fatalf("configure MCP: %v", err)
+	}
+	if mcpEnabled {
+		mux.Handle("/mcp", observability.HTTPHandler(mcp.NewHandler(service, auth)))
+	} else {
+		mux.HandleFunc("/mcp", http.NotFound)
+	}
 	mux.Handle("/", httpapi.NewHandler(service, auth))
 	server := &http.Server{
 		Addr:              address,
@@ -88,6 +96,18 @@ func main() {
 	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Fatal(err)
 	}
+}
+
+func mcpEnabledFromEnv() (bool, error) {
+	value := os.Getenv("RSS_STUDIO_MCP_ENABLED")
+	if value == "" {
+		return true, nil
+	}
+	enabled, err := strconv.ParseBool(value)
+	if err != nil {
+		return false, errors.New("RSS_STUDIO_MCP_ENABLED must be a boolean")
+	}
+	return enabled, nil
 }
 
 func envOrDefault(key, fallback string) string {
