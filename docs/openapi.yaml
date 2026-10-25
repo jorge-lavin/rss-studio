@@ -1,0 +1,956 @@
+openapi: 3.1.0
+info:
+  title: RSS Studio API
+  description: |
+    Versioned management API for tenant-scoped filtered RSS feeds.
+
+    Browser JWTs have implicit access to management operations. Expiring
+    service tokens must have the scope required by each operation. Generated
+    RSS documents are public and are returned from `/feeds/{slug}.xml`.
+  version: v1
+  license:
+    name: See repository license
+servers:
+  - url: http://localhost:8080
+    description: Local Compose deployment
+tags:
+  - name: Authentication
+  - name: Service tokens
+  - name: Feeds
+paths:
+  /api/v1/auth/login:
+    post:
+      tags: [Authentication]
+      summary: Issue browser JWT
+      description: Public endpoint. JWTs use HS256 and expire after 24 hours by default.
+      operationId: login
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Credentials'
+      responses:
+        '200':
+          description: Browser bearer JWT issued.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoginResponse'
+        '400':
+          description: Invalid JSON, unknown field, unsupported media type, or oversized body.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '401':
+          description: invalid_credentials.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '429':
+          description: rate_limited; five login or registration attempts per client IP per one-minute fixed window. Includes Retry-After seconds.
+          headers:
+            Retry-After: { $ref: '#/components/headers/RetryAfter' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+  /api/v1/auth/register:
+    post:
+      tags: [Authentication]
+      summary: Register account
+      description: Public endpoint. Registration uses the same per-client-IP protection as login.
+      operationId: register
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Credentials'
+      responses:
+        '201':
+          description: Account created.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [username]
+                properties:
+                  username: { type: string }
+        '400':
+          description: Invalid JSON, unknown field, unsupported media type, or validation error.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '409':
+          description: username_taken.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '429':
+          description: rate_limited; includes Retry-After seconds.
+          headers:
+            Retry-After: { $ref: '#/components/headers/RetryAfter' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '501':
+          description: registration_unavailable.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '500':
+          description: internal_error.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+  /api/v1/auth/tokens:
+    get:
+      tags: [Service tokens]
+      summary: List service-token metadata
+      description: Browser JWT only. Raw service-token values are never returned by this endpoint.
+      operationId: listServiceTokens
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Tokens owned by authenticated account.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [tokens]
+                properties:
+                  tokens:
+                    type: array
+                    items: { $ref: '#/components/schemas/ServiceToken' }
+        '401':
+          description: authentication_required.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '403':
+          description: forbidden; service tokens cannot manage service tokens.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '429':
+          description: rate_limited; cheap-read limit is 120 requests per one-minute fixed window.
+          headers:
+            RateLimit-Limit: { $ref: '#/components/headers/RateLimitLimit' }
+            RateLimit-Remaining: { $ref: '#/components/headers/RateLimitRemaining' }
+            RateLimit-Reset: { $ref: '#/components/headers/RateLimitReset' }
+            Retry-After: { $ref: '#/components/headers/RetryAfter' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '501':
+          description: service_tokens_unavailable.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '503':
+          description: rate_limit_unavailable.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '500':
+          description: internal_error.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+    post:
+      tags: [Service tokens]
+      summary: Create service token
+      description: |
+        Browser JWT only. Supply exactly one of `expires_in` (positive seconds)
+        or `expires_at` (RFC3339 timestamp). The raw bearer token is returned
+        only in this response; store it securely because later responses expose
+        metadata and scopes only.
+      operationId: createServiceToken
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ServiceTokenCreate'
+      responses:
+        '201':
+          description: Service token created. Raw token is shown once.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreatedServiceToken'
+        '400':
+          description: Invalid JSON, unknown field, unsupported media type, or token validation error.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '401':
+          description: authentication_required.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '403':
+          description: forbidden; service tokens cannot manage service tokens.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '429':
+          description: rate_limited; create limit is 10 requests per one-minute fixed window.
+          headers:
+            RateLimit-Limit: { $ref: '#/components/headers/RateLimitLimit' }
+            RateLimit-Remaining: { $ref: '#/components/headers/RateLimitRemaining' }
+            RateLimit-Reset: { $ref: '#/components/headers/RateLimitReset' }
+            Retry-After: { $ref: '#/components/headers/RetryAfter' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '501':
+          description: service_tokens_unavailable.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '503':
+          description: rate_limit_unavailable.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '500':
+          description: internal_error.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+  /api/v1/auth/tokens/{id}/revoke:
+    post:
+      tags: [Service tokens]
+      summary: Revoke service token
+      description: Browser JWT only. Revocation is scoped to the authenticated account.
+      operationId: revokeServiceToken
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/TokenID'
+      responses:
+        '200':
+          description: Token revoked.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RevokeResponse'
+        '400':
+          description: validation_error; token ID is invalid.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '401':
+          description: authentication_required.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '403':
+          description: forbidden; service tokens cannot manage service tokens.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '404':
+          description: not_found.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '429':
+          description: rate_limited; delete/revoke limit is 10 requests per one-minute fixed window.
+          headers:
+            RateLimit-Limit: { $ref: '#/components/headers/RateLimitLimit' }
+            RateLimit-Remaining: { $ref: '#/components/headers/RateLimitRemaining' }
+            RateLimit-Reset: { $ref: '#/components/headers/RateLimitReset' }
+            Retry-After: { $ref: '#/components/headers/RetryAfter' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '501':
+          description: service_tokens_unavailable.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '503':
+          description: rate_limit_unavailable.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '500':
+          description: internal_error.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+  /api/v1/auth/tokens/{id}:
+    delete:
+      tags: [Service tokens]
+      summary: Revoke service token
+      description: DELETE is an alias for the revoke operation. Browser JWT only.
+      operationId: deleteServiceToken
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/TokenID'
+      responses:
+        '200':
+          description: Token revoked.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RevokeResponse'
+        '400':
+          description: validation_error.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '401':
+          description: authentication_required.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '403':
+          description: forbidden; service tokens cannot manage service tokens.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '404':
+          description: not_found.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '429':
+          description: rate_limited; delete/revoke limit is 10 requests per one-minute fixed window.
+          headers:
+            RateLimit-Limit: { $ref: '#/components/headers/RateLimitLimit' }
+            RateLimit-Remaining: { $ref: '#/components/headers/RateLimitRemaining' }
+            RateLimit-Reset: { $ref: '#/components/headers/RateLimitReset' }
+            Retry-After: { $ref: '#/components/headers/RetryAfter' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '501':
+          description: service_tokens_unavailable.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '503':
+          description: rate_limit_unavailable.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '500':
+          description: internal_error.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+  /api/v1/feeds:
+    get:
+      tags: [Feeds]
+      summary: List authenticated feeds
+      description: Requires a browser JWT or a service token with feeds:read.
+      operationId: listFeeds
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Feeds belonging to authenticated tenant.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [feeds]
+                properties:
+                  feeds:
+                    type: array
+                    items: { $ref: '#/components/schemas/Feed' }
+        '401':
+          description: authentication_required.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '403':
+          description: insufficient_scope for a service token without feeds:read.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '429':
+          description: rate_limited; cheap-read limit is 120 requests per one-minute fixed window.
+          headers:
+            RateLimit-Limit: { $ref: '#/components/headers/RateLimitLimit' }
+            RateLimit-Remaining: { $ref: '#/components/headers/RateLimitRemaining' }
+            RateLimit-Reset: { $ref: '#/components/headers/RateLimitReset' }
+            Retry-After: { $ref: '#/components/headers/RetryAfter' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '503':
+          description: rate_limit_unavailable.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '500':
+          description: internal_error.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+    post:
+      tags: [Feeds]
+      summary: Publish one filtered feed
+      description: |
+        Requires a browser JWT or a service token with `feeds:write`.
+        `operator` defaults to `contains`. An optional `Idempotency-Key` makes
+        this mutation replayable for the same owner and credential.
+      operationId: createFeed
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateFeedRequest'
+      responses:
+        '201':
+          description: Feed published. An identical idempotent retry returns the same JSON result and status.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Feed'
+        '400':
+          description: Invalid JSON, unknown field, unsupported media type, or validation_error.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '401':
+          description: authentication_required.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '403':
+          description: insufficient_scope for a service token without feeds:write.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '409':
+          description: idempotency_conflict; key was used by same owner and credential with another payload.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '429':
+          description: rate_limited or quota_exceeded. Quota errors include quota metadata; daily/concurrent quota errors include Retry-After.
+          headers:
+            RateLimit-Limit: { $ref: '#/components/headers/RateLimitLimit' }
+            RateLimit-Remaining: { $ref: '#/components/headers/RateLimitRemaining' }
+            RateLimit-Reset: { $ref: '#/components/headers/RateLimitReset' }
+            Retry-After: { $ref: '#/components/headers/RetryAfter' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '502':
+          description: source_unavailable; upstream source could not be fetched or processed.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '503':
+          description: quota_unavailable or rate_limit_unavailable.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '500':
+          description: internal_error.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+  /api/v1/feeds/preview:
+    post:
+      tags: [Feeds]
+      summary: Preview filtered outputs
+      description: Requires a browser JWT or a service token with feeds:preview. Does not publish feeds.
+      operationId: previewFeeds
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SplitRequest'
+      responses:
+        '200':
+          description: Match counts and up to five sample titles for each output.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PreviewResponse'
+        '400':
+          description: Invalid JSON, unknown field, unsupported media type, or validation_error.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '401':
+          description: authentication_required.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '403':
+          description: insufficient_scope for a service token without feeds:preview.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '429':
+          description: rate_limited or quota_exceeded; preview rate limit is 20 per one-minute fixed window and preview quota is 100 per UTC day by default.
+          headers:
+            RateLimit-Limit: { $ref: '#/components/headers/RateLimitLimit' }
+            RateLimit-Remaining: { $ref: '#/components/headers/RateLimitRemaining' }
+            RateLimit-Reset: { $ref: '#/components/headers/RateLimitReset' }
+            Retry-After: { $ref: '#/components/headers/RetryAfter' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '502':
+          description: source_unavailable.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '503':
+          description: quota_unavailable or rate_limit_unavailable.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '500':
+          description: internal_error.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+  /api/v1/feeds/split:
+    post:
+      tags: [Feeds]
+      summary: Publish multiple filtered feeds
+      description: |
+        Requires a browser JWT or a service token with `feeds:write`.
+        Publishes up to 32 outputs from one source. An optional
+        `Idempotency-Key` makes this mutation replayable for the same owner and
+        credential.
+      operationId: splitFeeds
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SplitRequest'
+      responses:
+        '201':
+          description: Feeds published. An identical idempotent retry returns the same JSON result and status.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SplitResponse'
+        '400':
+          description: Invalid JSON, unknown field, unsupported media type, or validation_error.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '401':
+          description: authentication_required.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '403':
+          description: insufficient_scope for a service token without feeds:write.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '409':
+          description: idempotency_conflict.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '429':
+          description: rate_limited or quota_exceeded; split rate limit is 5 per one-minute fixed window.
+          headers:
+            RateLimit-Limit: { $ref: '#/components/headers/RateLimitLimit' }
+            RateLimit-Remaining: { $ref: '#/components/headers/RateLimitRemaining' }
+            RateLimit-Reset: { $ref: '#/components/headers/RateLimitReset' }
+            Retry-After: { $ref: '#/components/headers/RetryAfter' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '502':
+          description: source_unavailable.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '503':
+          description: quota_unavailable or rate_limit_unavailable.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '500':
+          description: internal_error.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+  /api/v1/feeds/{path}:
+    delete:
+      tags: [Feeds]
+      summary: Delete published feed
+      description: Requires a browser JWT or a service token with feeds:delete. Use a path such as my-feed.xml; the response returns the canonical slug without /feeds/ or .xml.
+      operationId: deleteFeed
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/FeedPath'
+      responses:
+        '200':
+          description: Feed deleted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeleteFeedResponse'
+        '401':
+          description: authentication_required.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '403':
+          description: insufficient_scope for a service token without feeds:delete.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '404':
+          description: not_found; feed is absent or belongs to another tenant.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '429':
+          description: rate_limited; delete limit is 10 requests per one-minute fixed window.
+          headers:
+            RateLimit-Limit: { $ref: '#/components/headers/RateLimitLimit' }
+            RateLimit-Remaining: { $ref: '#/components/headers/RateLimitRemaining' }
+            RateLimit-Reset: { $ref: '#/components/headers/RateLimitReset' }
+            Retry-After: { $ref: '#/components/headers/RetryAfter' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '503':
+          description: rate_limit_unavailable.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '500':
+          description: internal_error.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT or RSS Studio service token
+      description: Use Authorization Bearer credential. Browser JWTs are 24-hour credentials by default; service tokens expire at their configured expiry and are revocable.
+  parameters:
+    TokenID:
+      name: id
+      in: path
+      required: true
+      description: Positive service-token ID.
+      schema:
+        type: integer
+        format: int64
+        minimum: 1
+    FeedPath:
+      name: path
+      in: path
+      required: true
+      description: Feed slug, normally including .xml, for example my-feed.xml.
+      schema:
+        type: string
+        minLength: 1
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: false
+      description: Opaque key up to 255 characters. It is trimmed and stored only as a hash; never log or expose it.
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 255
+    RateLimitLimit:
+      name: RateLimit-Limit
+      in: header
+      description: Fixed-window request limit for the operation.
+      schema: { type: integer }
+    RateLimitRemaining:
+      name: RateLimit-Remaining
+      in: header
+      description: Requests remaining in the current fixed window.
+      schema: { type: integer, minimum: 0 }
+    RateLimitReset:
+      name: RateLimit-Reset
+      in: header
+      description: Approximate seconds until the limiting window resets.
+      schema: { type: integer, minimum: 1 }
+    RetryAfter:
+      name: Retry-After
+      in: header
+      description: Seconds before retrying a rate-limited or daily/concurrent-quota request.
+      schema: { type: integer, minimum: 1 }
+  schemas:
+    Credentials:
+      type: object
+      additionalProperties: false
+      required: [username, password]
+      properties:
+        username: { type: string }
+        password: { type: string, format: password }
+    LoginResponse:
+      type: object
+      required: [access_token, token_type, expires_at]
+      properties:
+        access_token: { type: string }
+        token_type: { type: string, enum: [Bearer] }
+        expires_at:
+          type: integer
+          format: int64
+          description: Unix timestamp in seconds.
+    ServiceTokenCreate:
+      type: object
+      additionalProperties: false
+      required: [name, scopes]
+      properties:
+        name:
+          type: string
+          maxLength: 100
+        scopes:
+          type: array
+          minItems: 1
+          items:
+            type: string
+            enum: [feeds:read, feeds:preview, feeds:write, feeds:delete]
+        expires_in:
+          type: integer
+          format: int64
+          exclusiveMinimum: 0
+          description: Lifetime in seconds. Use exactly one expiry property.
+        expires_at:
+          type: string
+          format: date-time
+          description: Absolute RFC3339 expiry. Use exactly one expiry property.
+      oneOf:
+        - required: [expires_in]
+          not: { required: [expires_at] }
+        - required: [expires_at]
+          not: { required: [expires_in] }
+    ServiceToken:
+      type: object
+      required: [id, name, scopes, created_at, expires_at]
+      properties:
+        id: { type: integer, format: int64 }
+        name: { type: string }
+        scopes:
+          type: array
+          items:
+            type: string
+            enum: [feeds:read, feeds:preview, feeds:write, feeds:delete]
+        created_at: { type: string, format: date-time }
+        expires_at: { type: string, format: date-time }
+        revoked_at:
+          type: string
+          format: date-time
+          description: Present only after revocation.
+    CreatedServiceToken:
+      allOf:
+        - $ref: '#/components/schemas/ServiceToken'
+        - type: object
+          required: [token]
+          properties:
+            token:
+              type: string
+              description: Raw bearer token. Returned only by token creation.
+    RevokeResponse:
+      type: object
+      required: [revoked, id]
+      properties:
+        revoked: { type: boolean, const: true }
+        id: { type: integer, format: int64 }
+    CreateFeedRequest:
+      type: object
+      additionalProperties: false
+      required: [name, source_url, keyword]
+      properties:
+        name: { type: string, maxLength: 120 }
+        source_url:
+          type: string
+          maxLength: 2048
+          description: HTTP or HTTPS URL without user information.
+        operator:
+          type: string
+          enum: [contains, starts_with, ends_with, equals]
+          default: contains
+        keyword: { type: string, maxLength: 200 }
+    OutputRequest:
+      type: object
+      additionalProperties: false
+      required: [name, keyword]
+      properties:
+        name: { type: string, maxLength: 120 }
+        operator:
+          type: string
+          enum: [contains, starts_with, ends_with, equals]
+          default: contains
+        keyword: { type: string, maxLength: 200 }
+    SplitRequest:
+      type: object
+      additionalProperties: false
+      required: [source_url, outputs]
+      properties:
+        source_url:
+          type: string
+          maxLength: 2048
+          description: HTTP or HTTPS URL without user information.
+        outputs:
+          type: array
+          minItems: 1
+          maxItems: 32
+          items: { $ref: '#/components/schemas/OutputRequest' }
+    Feed:
+      type: object
+      required: [name, path, url, source_url, operator, keyword, created_at]
+      properties:
+        name: { type: string }
+        path:
+          type: string
+          description: Public path, such as /feeds/my-feed.xml.
+        url:
+          type: string
+          format: uri
+          description: Absolute public URL derived from the request host.
+        source_url: { type: string }
+        operator:
+          type: string
+          enum: [contains, starts_with, ends_with, equals]
+        keyword: { type: string }
+        created_at: { type: string, format: date-time }
+    PreviewResponse:
+      type: object
+      required: [outputs]
+      properties:
+        outputs:
+          type: array
+          items: { $ref: '#/components/schemas/PreviewOutput' }
+    PreviewOutput:
+      type: object
+      required: [name, operator, keyword, count, sample_titles]
+      properties:
+        name: { type: string }
+        operator:
+          type: string
+          enum: [contains, starts_with, ends_with, equals]
+        keyword: { type: string }
+        count: { type: integer, minimum: 0 }
+        sample_titles:
+          type: array
+          maxItems: 5
+          items: { type: string }
+    SplitResponse:
+      type: object
+      required: [outputs]
+      properties:
+        outputs:
+          type: array
+          items: { $ref: '#/components/schemas/SplitOutput' }
+    SplitOutput:
+      type: object
+      required: [name, operator, keyword, path, url]
+      properties:
+        name: { type: string }
+        operator:
+          type: string
+          enum: [contains, starts_with, ends_with, equals]
+        keyword: { type: string }
+        path: { type: string }
+        url: { type: string, format: uri }
+    DeleteFeedResponse:
+      type: object
+      required: [deleted, path]
+      properties:
+        deleted: { type: boolean, const: true }
+        path:
+          type: string
+          description: Canonical feed slug without /feeds/ or .xml.
+    ErrorBody:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          description: Stable machine-readable error code.
+          enum:
+            - authentication_required
+            - invalid_credentials
+            - unsupported_media_type
+            - invalid_json
+            - unknown_field
+            - validation_error
+            - username_taken
+            - forbidden
+            - insufficient_scope
+            - rate_limited
+            - rate_limit_unavailable
+            - quota_exceeded
+            - quota_unavailable
+            - idempotency_conflict
+            - source_unavailable
+            - not_found
+            - method_not_allowed
+            - registration_unavailable
+            - service_tokens_unavailable
+            - internal_error
+        message: { type: string }
+        quota:
+          type: string
+          enum: [published_feeds, previews_per_day, creations_per_day, splits_per_day, concurrent_expensive_operations]
+        limit: { type: integer, minimum: 0 }
+        remaining: { type: integer, minimum: 0 }
+        reset_at:
+          type: string
+          format: date-time
+          description: Present for UTC-day quotas.
+        reset_after:
+          type: integer
+          minimum: 0
+          description: Seconds until quota reset. The published-feed quota has no time reset and returns zero when exceeded.
+    ErrorResponse:
+      type: object
+      required: [error, request_id]
+      properties:
+        error: { $ref: '#/components/schemas/ErrorBody' }
+        request_id:
+          type: string
+          description: Request correlation ID; also returned in X-Request-ID.
+  responses:
+    APIError:
+      description: Stable JSON error envelope. See error.code for the machine-readable code.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+    RateLimited:
+      description: Rate limit or quota rejection with applicable reset metadata.
+      headers:
+        RateLimit-Limit: { $ref: '#/components/headers/RateLimitLimit' }
+        RateLimit-Remaining: { $ref: '#/components/headers/RateLimitRemaining' }
+        RateLimit-Reset: { $ref: '#/components/headers/RateLimitReset' }
+        Retry-After: { $ref: '#/components/headers/RetryAfter' }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }

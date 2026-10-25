@@ -19,17 +19,17 @@ docker compose up -d --build
 
 Open <http://localhost:8080> to create an account and log in through the web
 UI. Accounts and bcrypt password hashes persist in the SQLite database. For API
-clients, register and then authenticate before sending the returned bearer token
-for management requests:
+clients, register and then authenticate against the versioned API before sending
+the returned bearer token for management requests:
 
 ```sh
-curl -i http://localhost:8080/auth/register \
+curl -i http://localhost:8080/api/v1/auth/register \
   -H 'Content-Type: application/json' \
   -d '{"username":"alice","password":"change-this-password"}'
-token=$(curl -s http://localhost:8080/auth/login \
+token=$(curl -s http://localhost:8080/api/v1/auth/login \
   -H 'Content-Type: application/json' \
   -d '{"username":"alice","password":"change-this-password"}' | jq -r .access_token)
-curl -H "Authorization: Bearer $token" http://localhost:8080/
+curl -H "Authorization: Bearer $token" http://localhost:8080/api/v1/feeds
 ```
 
 Generated RSS URLs remain public so RSS readers can fetch them without JWT
@@ -69,110 +69,311 @@ development environment.
 
 Generated feeds are precomputed on disk. Requests return cached XML immediately, then check the source in the background. RSS Studio regenerates only when the source `Last-Modified` value advances.
 
-## Split feeds
+## Public contract and versioned API
 
-One source feed can produce multiple public RSS outputs. Each output has its own
-name, operator, and keyword. Supported operators are `contains`, `starts_with`,
-`ends_with`, and `equals`; matching is case-insensitive. Each output gets its
-own cached RSS file and public
-`/feeds/*.xml` URL. Background refreshes for outputs sharing a source are
-coalesced per tenant, so the source is refreshed once for that group. A split
-request can contain at most 32 outputs.
+The supported public management contract is [`docs/openapi.yaml`](docs/openapi.yaml).
+All versioned API requests and responses use JSON. Unknown request fields are
+rejected. API errors never redirect to the browser UI.
 
-### Web UI
+### Endpoints and credentials
 
-After signing in, use **Split feeds** on the home page:
+| Method and path | Result | Credential / scope |
+| --- | --- | --- |
+| `POST /api/v1/auth/login` | Issue browser JWT | Public |
+| `POST /api/v1/auth/register` | Create account | Public |
+| `GET /api/v1/auth/tokens` | List token metadata | Browser JWT only |
+| `POST /api/v1/auth/tokens` | Create service token | Browser JWT only |
+| `POST /api/v1/auth/tokens/{id}/revoke` | Revoke service token | Browser JWT only |
+| `DELETE /api/v1/auth/tokens/{id}` | Revoke service token alias | Browser JWT only |
+| `GET /api/v1/feeds` | List tenant feeds | Browser JWT or `feeds:read` |
+| `POST /api/v1/feeds` | Publish one feed | Browser JWT or `feeds:write` |
+| `POST /api/v1/feeds/preview` | Preview outputs | Browser JWT or `feeds:preview` |
+| `POST /api/v1/feeds/split` | Publish up to 32 outputs | Browser JWT or `feeds:write` |
+| `DELETE /api/v1/feeds/{path}` | Delete tenant feed | Browser JWT or `feeds:delete` |
 
-1. Enter the source RSS URL and add output rows with a name, operator, and title keyword.
-2. Select **Preview split** to see each output's matching episode count and
-   sample titles.
-3. Select **Publish split feeds** to create the outputs and receive their public
-   URLs.
+Send credentials as `Authorization: Bearer <value>`. Browser JWTs are HS256
+tokens with a 24-hour default lifetime. Service tokens are separate, expiring,
+revocable bearer credentials. Browser JWTs have implicit API scopes; service
+tokens have only explicitly granted scopes and cannot access token-management
+endpoints. Tenant isolation applies to every feed and token operation.
 
-### JSON API
+### Accounts and service tokens
 
-`POST /preview` and `POST /feeds/split` are authenticated management endpoints;
-send the bearer token returned by `/auth/login`. Both accept JSON in this shape:
-
-```json
-{
-  "source_url": "https://example.com/podcast.xml",
-  "outputs": [
-    {"name": "AI episodes", "operator": "contains", "keyword": "AI"},
-    {"name": "Updates", "operator": "ends_with", "keyword": "update"}
-  ]
-}
-```
-
-Preview the matches without publishing:
+Register and log in with JSON:
 
 ```sh
-curl -sS -X POST http://localhost:8080/preview \
-  -H "Authorization: Bearer $token" \
+BASE_URL=http://localhost:8080
+USERNAME=alice-$(date +%s)
+PASSWORD='change-this-password'
+curl -fsS -X POST "$BASE_URL/api/v1/auth/register" \
   -H 'Content-Type: application/json' \
-  -d '{"source_url":"https://example.com/podcast.xml","outputs":[{"name":"AI episodes","operator":"contains","keyword":"AI"}]}'
+  -d "$(jq -nc --arg u "$USERNAME" --arg p "$PASSWORD" '{username:$u,password:$p}')" | jq
+token=$(curl -fsS -X POST "$BASE_URL/api/v1/auth/login" \
+  -H 'Content-Type: application/json' \
+  -d "$(jq -nc --arg u "$USERNAME" --arg p "$PASSWORD" '{username:$u,password:$p}')" | jq -r .access_token)
 ```
 
-The response contains `outputs` entries with `name`, `operator`, `keyword`,
-`count`, and `sample_titles` for each requested output.
+Token creation requires `name`, a non-empty list of valid scopes, and exactly
+one of positive `expires_in` seconds or RFC3339 `expires_at`:
 
-Publish the split outputs:
-
-```sh
-curl -sS -X POST http://localhost:8080/feeds/split \
-  -H "Authorization: Bearer $token" \
-  -H 'Content-Type: application/json' \
-  -d '{"source_url":"https://example.com/podcast.xml","outputs":[{"name":"AI episodes","operator":"contains","keyword":"AI"}]}'
-```
-
-The response contains `outputs` entries with each output's `name`, `operator`,
-`keyword`, public `path`, and absolute `url`.
-
-Versioned API `POST /api/v1/feeds` and `POST /api/v1/feeds/split` requests
-accept an optional `Idempotency-Key` header. The key is scoped to the
-authenticated owner and credential. Retrying the same request replays its
-original result; reusing a key with changed JSON returns a conflict. Keys and
-credentials are stored only as hashes, and completed keys expire after 24
-hours.
-
-The existing single-output `POST /feeds` endpoint remains available. Its form
-fields are `name`, `source_url`, `operator`, and `keyword`; omitted operators
-default to `contains`.
-
-### Service tokens
-
-Authenticated owners can create and manage agent tokens through the versioned
-API. Creation requires `name`, `scopes`, and exactly one expiry: `expires_in`
-(seconds) or RFC3339 `expires_at`:
-
-```sh
-curl -sS -X POST http://localhost:8080/api/v1/auth/tokens \
-  -H "Authorization: Bearer $token" \
-  -H 'Content-Type: application/json' \
-  -d '{"name":"feed-agent","scopes":["feeds:read","feeds:preview"],"expires_in":86400}'
+```bash
+token_json=$(curl -fsS -X POST "$BASE_URL/api/v1/auth/tokens" \
+  -H "Authorization: Bearer $token" -H 'Content-Type: application/json' \
+  -d '{"name":"feed-agent","scopes":["feeds:read","feeds:preview","feeds:write","feeds:delete"],"expires_in":86400}')
+service_token=$(jq -r .token <<<"$token_json")
+token_id=$(jq -r .id <<<"$token_json")
+jq '{id,name,scopes,created_at,expires_at}' <<<"$token_json"
+curl -fsS "$BASE_URL/api/v1/auth/tokens" -H "Authorization: Bearer $token" | jq
 ```
 
 Supported scopes are `feeds:read`, `feeds:preview`, `feeds:write`, and
-`feeds:delete`. The raw token is returned only by creation; `GET
-/api/v1/auth/tokens` returns metadata and scopes, and `POST
-/api/v1/auth/tokens/{id}/revoke` revokes one token. Tokens are bearer
-credentials, expire automatically, and are stored only as SHA-256 hashes.
+`feeds:delete`. Duplicate scopes are removed and returned in canonical order.
+The raw `token` value is returned only by creation; save it in a secret store,
+never put it in source control, URLs, logs, or support tickets. Listing tokens
+returns `id`, `name`, `scopes`, `created_at`, `expires_at`, and optional
+`revoked_at`, never the raw token. `DELETE /api/v1/auth/tokens/{id}` is an
+alias for the revoke POST.
+
+### Feed request and response shapes
+
+Create and preview output objects use `name`, `source_url`, `operator`, and
+`keyword`. Operators are `contains`, `starts_with`, `ends_with`, and `equals`;
+matching is case-insensitive. Omitted operators default to `contains`. Names
+are limited to 120 characters, source URLs to 2048 characters, keywords to 200
+characters, and source URLs must be HTTP or HTTPS without user information.
+
+`GET /api/v1/feeds` returns `{ "feeds": [...] }`. Each feed has `name`, `path`,
+`url`, `source_url`, `operator`, `keyword`, and RFC3339 `created_at`. Create
+returns one feed object with HTTP 201. Preview returns
+`{ "outputs": [{"name","operator","keyword","count","sample_titles"}] }`;
+sample titles contain at most five entries. Split accepts one to 32 outputs and
+returns `{ "outputs": [{"name","operator","keyword","path","url"}] }`
+with HTTP 201. Delete returns `{ "deleted": true, "path": "slug" }`.
+
+### Stable errors and response metadata
+
+Every versioned API error is:
+
+```json
+{"error":{"code":"validation_error","message":"..."},"request_id":"..."}
+```
+
+`request_id` is also returned as `X-Request-ID`; a client may supply a safe
+request ID in that header. Codes currently returned are:
+
+| HTTP | Codes and meaning |
+| --- | --- |
+| 400 | `invalid_json`, `unknown_field`, `unsupported_media_type`, `validation_error` |
+| 401 | `authentication_required`, `invalid_credentials` |
+| 403 | `forbidden` (browser-only operation), `insufficient_scope` |
+| 404 | `not_found` |
+| 405 | `method_not_allowed` |
+| 409 | `username_taken`, `idempotency_conflict` |
+| 429 | `rate_limited`, `quota_exceeded` |
+| 501 | `registration_unavailable`, `service_tokens_unavailable` |
+| 502 | `source_unavailable` (upstream could not be fetched or processed) |
+| 503 | `rate_limit_unavailable`, `quota_unavailable` |
+| 500 | `internal_error` |
+
+Policy failures include `WWW-Authenticate: Bearer`; insufficient-scope
+responses identify `insufficient_scope` without disclosing the credential.
+Rate-limited API operations include `RateLimit-Limit`,
+`RateLimit-Remaining`, `RateLimit-Reset`, and `Retry-After` on the 429 response.
+The `X-RateLimit-*` spellings are also emitted for older clients. Reset values
+are approximate seconds. Login/registration protection emits `Retry-After` but
+not operation rate-limit headers.
+
+Quota errors include safe metadata in `error`: `quota`, `limit`, `remaining`,
+`reset_at` (UTC midnight for daily quotas), and `reset_after` seconds. A
+`Retry-After` header is returned when a quota has a future reset; the permanent
+published-feed ceiling has `reset_after: 0` and no retry delay.
+
+### Idempotency
+
+`POST /api/v1/feeds` and `POST /api/v1/feeds/split` accept optional
+`Idempotency-Key` headers, up to 255 characters. The key is bound to both
+authenticated owner and credential, and only hashes are stored. With the same
+owner, credential, key, and decoded JSON request, a retry returns the original
+JSON result and status. Reusing the key with changed JSON returns HTTP 409 and
+`idempotency_conflict`; the key is not included in the response. Completed keys
+expire after 24 hours. Failed work releases its pending claim so it can be
+retried. Do not log raw keys.
+
+### Local API integration examples
+
+The following commands use a public RSS source because the application blocks
+private and loopback upstream destinations. Set `SOURCE_URL` to another public
+RSS/Atom URL if needed:
+
+```bash
+SOURCE_URL=https://feeds.simplecast.com/54nAGcIl
+payload=$(jq -nc --arg source "$SOURCE_URL" '{source_url:$source,outputs:[{name:"AI episodes",operator:"contains",keyword:"AI"}]}' )
+
+# List, preview, create, and split.
+curl -fsS "$BASE_URL/api/v1/feeds" -H "Authorization: Bearer $token" | jq
+curl -fsS -X POST "$BASE_URL/api/v1/feeds/preview" -H "Authorization: Bearer $token" -H 'Content-Type: application/json' -d "$payload" | jq
+created=$(curl -fsS -X POST "$BASE_URL/api/v1/feeds" -H "Authorization: Bearer $token" -H 'Content-Type: application/json' -d "$(jq -nc --arg source "$SOURCE_URL" '{name:"AI episodes",source_url:$source,operator:"contains",keyword:"AI"}')")
+feed_path=$(jq -r .path <<<"$created")
+jq <<<"$created"
+split=$(curl -fsS -X POST "$BASE_URL/api/v1/feeds/split" -H "Authorization: Bearer $token" -H 'Content-Type: application/json' -H 'Idempotency-Key: split-example-1' -d "$payload")
+jq <<<"$split"
+
+# Same key and same payload replays; changed payload is a 409 conflict.
+create_payload=$(jq -nc --arg source "$SOURCE_URL" '{name:"Retry example",source_url:$source,keyword:"AI"}')
+curl -fsS -X POST "$BASE_URL/api/v1/feeds" -H "Authorization: Bearer $token" -H 'Content-Type: application/json' -H 'Idempotency-Key: create-example-1' -d "$create_payload" | jq
+curl -fsS -X POST "$BASE_URL/api/v1/feeds" -H "Authorization: Bearer $token" -H 'Content-Type: application/json' -H 'Idempotency-Key: create-example-1' -d "$create_payload" | jq
+curl -sS -o /tmp/rss-studio-conflict.json -w '%{http_code}\n' -X POST "$BASE_URL/api/v1/feeds" -H "Authorization: Bearer $token" -H 'Content-Type: application/json' -H 'Idempotency-Key: create-example-1' -d "$(jq -nc --arg source "$SOURCE_URL" '{name:"Changed retry",source_url:$source,keyword:"AI"}')"
+jq </tmp/rss-studio-conflict.json
+
+# Delete the single feed. API path parameter uses the slug plus .xml.
+curl -fsS -X DELETE "$BASE_URL/api/v1/feeds/${feed_path#/feeds/}" -H "Authorization: Bearer $token" | jq
+```
+
+### Public RSS
+
+Generated URLs do not require JWT or service-token authentication. Use the
+`path` or `url` returned by create/split and give the URL to any RSS reader:
+
+```bash
+public_url=$(jq -r '.outputs[0].url' <<<"$split")
+curl -fsS "$public_url"
+```
+
+Public delivery is not account-quota or API-rate-limit protected. Put a
+reverse proxy in front of the service and apply IP/request controls before
+exposing `/feeds/*.xml` to the Internet. The proxy must also preserve the
+client IP used for login protection according to its own trusted-proxy policy.
+
+## Limits, quotas, and operations
+
+### Defaults
+
+| Policy | Default |
+| --- | --- |
+| Login and registration protection | 5 attempts per client IP per one-minute fixed window |
+| API cheap reads (`feeds.list`, `auth.tokens.list`) | 120 requests per account and credential per minute |
+| API preview | 20 requests per account and credential per minute |
+| API delete/revoke | 10 requests per account and credential per minute |
+| API create/token creation | 10 requests per account and credential per minute |
+| API split | 5 requests per account and credential per minute |
+| Published feeds | 50 per account, permanent ceiling |
+| Previews | 100 per account per UTC day |
+| Single-feed creations | 20 per account per UTC day |
+| Split operations | 10 per account per UTC day |
+| Concurrent preview/create/split operations | 2 per account |
+| Split outputs | 32 |
+| JSON request body | 1 MiB; auth JSON body is 16 KiB |
+| Source feed response | 25 MiB |
+| Generated split aggregate | 128 MiB |
+
+API counters are fixed one-minute windows. They consume one account bucket and
+one credential bucket atomically, so several service tokens still share the
+account ceiling. Policy classes are `cheap_read`, `delete`, `preview`, and
+`create`; split uses the `create` class with its own lower limit of five.
+MCP feed tools use the same operation limits; MCP rate-limit failures are safe
+tool errors rather than HTTP headers. Login protection is an in-memory
+per-process client-IP counter and applies to login and registration.
+
+Quotas are durable SQLite account counters. A create reserves one published
+feed, one creation, and one concurrent operation. A split reserves one
+published-feed slot per output, one split, and one concurrent operation. A
+preview reserves one preview and one concurrent operation. Failed upstream work
+refunds reservations; successful deletion decrements the published-feed
+counter. Daily counters reset at UTC midnight.
+
+The SQLite rate-limit counters and in-memory login limiter are designed for one
+application instance. They do not provide a safe distributed coordinator for
+multiple replicas. Run one instance or add a shared rate-limit service before
+horizontal scaling; also enforce proxy/IP controls for public RSS.
+
+### Operator settings
+
+The application reads these environment variables. Empty quota variables keep
+their defaults. Compose passes every setting through so local overrides work:
+
+| Variable | Default / behavior |
+| --- | --- |
+| `RSS_STUDIO_ADDRESS` | `:8080` |
+| `RSS_STUDIO_DATA` | `/data`; cache directory and legacy feed location |
+| `RSS_STUDIO_DB` | `$RSS_STUDIO_DATA/rss-studio.db` |
+| `RSS_STUDIO_JWT_SECRET` | Required; at least 32 bytes; keep stable across restarts |
+| `RSS_STUDIO_MCP_ENABLED` | `true`; set `false` to make `/mcp` return 404 |
+| `RSS_STUDIO_MAX_FEEDS_PER_ACCOUNT` | `50` |
+| `RSS_STUDIO_PREVIEWS_PER_DAY` | `100` |
+| `RSS_STUDIO_CREATIONS_PER_DAY` | `20` |
+| `RSS_STUDIO_SPLITS_PER_DAY` | `10` |
+| `RSS_STUDIO_MAX_CONCURRENT_EXPENSIVE_OPERATIONS` | `2` |
+| `OTEL_SERVICE_NAME` | `rss-studio` when OTLP is enabled |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | Empty; standard OTLP/HTTP endpoint enables tracing |
+| `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` | Empty; trace-specific OTLP/HTTP endpoint alternative |
+| `OTEL_TRACES_EXPORTER` | Set `none` to disable exporting explicitly |
+
+Example local overrides must be exported before the existing Compose command:
+
+```sh
+export RSS_STUDIO_JWT_SECRET="$(openssl rand -base64 32)"
+export RSS_STUDIO_MCP_ENABLED=false
+export RSS_STUDIO_PREVIEWS_PER_DAY=200
+docker compose up -d --build
+```
+
+SQLite is created with restrictive file permissions in `/data`; keep the Docker
+volume private and back it up before migrations or rollback. `RSS_STUDIO_DB`
+must point to a path available inside the container.
 
 ## MCP
 
-RSS Studio exposes a stateless Streamable HTTP MCP endpoint at `/mcp`. It
-requires an expiring service token (not a browser login JWT or auth cookie); configure
-an MCP client with the URL `https://your-host.example/mcp` and a token created
-through the service-token API.
+RSS Studio exposes a stateless Streamable HTTP JSON-RPC MCP endpoint at
+`POST /mcp`. It requires an expiring service token in
+`Authorization: Bearer <service-token>`; browser JWTs and auth cookies are
+rejected. MCP is enabled by default. Set `RSS_STUDIO_MCP_ENABLED=false` before
+`docker compose up -d --build` to make `/mcp` unavailable.
 
-Available tools are `list_feeds`, `preview_feed`, `create_feed`,
-`create_split_feeds`, and `delete_feed`. Feed management stays scoped to the
-authenticated account. `create_feed`, `create_split_feeds`, and `delete_feed`
-accept optional `idempotency_key` arguments; retries with the same key and
-arguments replay the original result. The endpoint supports MCP protocol versions
-`2024-11-05`, `2025-03-26`, `2025-06-18`, and `2025-11-25`.
-MCP is enabled by default for compatibility; set `RSS_STUDIO_MCP_ENABLED=false`
-to leave `/mcp` unavailable.
+Supported `MCP-Protocol-Version` values are `2024-11-05`, `2025-03-26`,
+`2025-06-18`, and `2025-11-25`. If the header is omitted, initialization
+selects `2025-03-26`; an unsupported header returns HTTP 400 and JSON-RPC
+`-32600`.
+
+The endpoint supports `initialize`, `notifications/initialized`, `ping`,
+`tools/list`, and `tools/call`. The five tools and exact inputs are:
+
+| Tool | Scope | Input |
+| --- | --- | --- |
+| `list_feeds` | `feeds:read` | `{}` |
+| `preview_feed` | `feeds:preview` | `{source_url, outputs}`; each output requires `name`, `keyword`, and optional `operator`; 1–32 outputs |
+| `create_feed` | `feeds:write` | Required `name`, `source_url`, `keyword`; optional `operator`, `idempotency_key` |
+| `create_split_feeds` | `feeds:write` | Required `source_url`, `outputs`; optional `idempotency_key`; 1–32 outputs |
+| `delete_feed` | `feeds:delete` | Required `path`; optional `idempotency_key` |
+
+All tool objects reject unknown or JSON-null fields. `operator` accepts the
+same four values as the API and defaults to `contains`. `idempotency_key` is a
+non-empty value up to 255 characters when supplied. Mutation retries with the
+same service token, key, and arguments replay the original result; changed
+arguments return an `isError` tool result without exposing the key.
+
+Tool results are JSON text in `result.content[0].text`. `list_feeds` returns an
+array of feed objects; `preview_feed` returns an array of preview objects;
+`create_feed` returns one feed object; `create_split_feeds` returns an array of
+feed objects; `delete_feed` returns `{deleted:true,path}`.
+
+Safe protocol errors use JSON-RPC codes `-32700` (parse), `-32600` (invalid
+request), `-32601` (method not found), `-32602` (invalid params), `-32001`
+(authentication required), and `-32003` (insufficient scope). Service,
+quota, upstream, and rate-limit failures are safe `isError: true` tool results;
+they do not include bearer tokens, source content, or private URLs.
+
+Concise local JSON-RPC example using the `service_token` created above:
+
+```sh
+curl -fsS -X POST "$BASE_URL/mcp" \
+  -H "Authorization: Bearer $service_token" \
+  -H 'MCP-Protocol-Version: 2025-03-26' \
+  -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"list_feeds","arguments":{}}}' | jq
+
+# Revoke service token when integration is finished.
+curl -fsS -X POST "$BASE_URL/api/v1/auth/tokens/$token_id/revoke" -H "Authorization: Bearer $token" | jq
+```
 
 ## Observability
 
@@ -181,6 +382,11 @@ the matched route, status, and duration; feed slugs and request paths are not
 recorded. Panics become HTTP 500 responses, are logged with a stack trace, and
 are recorded as span errors. Requests taking at least one second are marked with
 a `slow request` log entry.
+
+Audit events use operation names and numeric account/token IDs rather than
+feed slugs. Bearer credentials, passwords, raw idempotency keys, source URLs,
+and source feed content are not included in request or audit logs. Treat
+request IDs and exported traces as operational data and restrict their access.
 
 Tracing is disabled unless an OTLP endpoint is configured. To export traces over
 OTLP/HTTP, set the standard variables before starting the container:
