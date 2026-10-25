@@ -1,10 +1,16 @@
 package httpapi
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"net"
 	"net/http"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
+
+	"rss-studio/internal/policy"
 )
 
 const (
@@ -25,9 +31,16 @@ type loginRateLimiter struct {
 }
 
 func newLoginRateLimiter() *loginRateLimiter {
+	return newLoginRateLimiterWithClock(time.Now)
+}
+
+func newLoginRateLimiterWithClock(now func() time.Time) *loginRateLimiter {
+	if now == nil {
+		now = time.Now
+	}
 	return &loginRateLimiter{
 		attempts: make(map[string]loginRateLimitEntry),
-		now:      time.Now,
+		now:      now,
 	}
 }
 
@@ -66,4 +79,76 @@ func requestClient(request *http.Request) string {
 		return host
 	}
 	return request.RemoteAddr
+}
+
+type apiRateLimiter struct {
+	store policy.RateLimitStore
+	now   func() time.Time
+}
+
+func newAPIRateLimiter(store policy.RateLimitStore, now func() time.Time) *apiRateLimiter {
+	if now == nil {
+		now = time.Now
+	}
+	return &apiRateLimiter{store: store, now: now}
+}
+
+func (l *apiRateLimiter) allow(identity policy.Identity, operation string) (policy.RateLimitDecision, error) {
+	spec, ok := policy.RateLimitSpecFor(operation)
+	if !ok || l == nil || l.store == nil {
+		return policy.RateLimitDecision{Allowed: true}, nil
+	}
+	accountKey := "account:" + strconv.FormatInt(identity.User.ID, 10)
+	if identity.User.ID <= 0 {
+		accountKey = "account:" + hashRateLimitKey(identity.User.Username)
+	}
+	buckets := []policy.RateLimitBucket{{Key: accountKey}}
+	if identity.CredentialHash != "" {
+		buckets = append(buckets, policy.RateLimitBucket{Key: "token:" + hashRateLimitKey(identity.CredentialHash)})
+	}
+	return l.store.CheckRateLimits(spec.Operation, spec.Limit, spec.Window, buckets, l.now().UTC())
+}
+
+func hashRateLimitKey(value string) string {
+	sum := sha256.Sum256([]byte(value))
+	return hex.EncodeToString(sum[:])
+}
+
+func rateLimitSeconds(duration time.Duration) int {
+	seconds := int((duration + time.Second - 1) / time.Second)
+	if seconds < 1 {
+		return 1
+	}
+	return seconds
+}
+
+func setRateLimitHeaders(writer http.ResponseWriter, decision policy.RateLimitDecision) {
+	if decision.Limit <= 0 {
+		return
+	}
+	remaining := decision.Remaining
+	if remaining < 0 {
+		remaining = 0
+	}
+	reset := rateLimitSeconds(decision.ResetAfter)
+	writer.Header().Set("RateLimit-Limit", strconv.Itoa(decision.Limit))
+	writer.Header().Set("RateLimit-Remaining", strconv.Itoa(remaining))
+	writer.Header().Set("RateLimit-Reset", strconv.Itoa(reset))
+	// Keep the widely deployed spelling available to older API clients too.
+	writer.Header().Set("X-RateLimit-Limit", strconv.Itoa(decision.Limit))
+	writer.Header().Set("X-RateLimit-Remaining", strconv.Itoa(remaining))
+	writer.Header().Set("X-RateLimit-Reset", strconv.Itoa(reset))
+}
+
+func rateLimitError(writer http.ResponseWriter, request *http.Request, decision policy.RateLimitDecision) {
+	setRateLimitHeaders(writer, decision)
+	writer.Header().Set("Retry-After", strconv.Itoa(rateLimitSeconds(decision.ResetAfter)))
+	writeAPIError(writer, request, http.StatusTooManyRequests, "rate_limited", "Rate limit exceeded. Try again later.")
+}
+
+func operationNameForRequest(request *http.Request) (string, bool) {
+	if request == nil || !strings.HasPrefix(request.URL.Path, "/api/v1/") {
+		return "", false
+	}
+	return policy.RateLimitOperationForHTTP(request.Method, request.URL.Path)
 }

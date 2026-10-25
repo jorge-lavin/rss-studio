@@ -43,8 +43,8 @@ If an older deployment has `/data/feeds.json` and an existing account, startup
 imports its feeds into the first account and removes the legacy file after a
 successful import.
 
-The service-token and idempotency migrations are additive and run in one
-transaction each at startup. There is no destructive down migration: older
+The service-token, idempotency, and rate-limit migrations are additive and run
+in one transaction each at startup. There is no destructive down migration: older
 binaries reject databases at the newer schema version, so rolling back after
 this release requires restoring a pre-migration database backup or deploying a
 compatible forward migration first. Do not remove the idempotency table from a
@@ -297,3 +297,16 @@ Override the SQLite path with `RSS_STUDIO_DB`. `RSS_STUDIO_JWT_SECRET` is
 required. JWTs use HS256 and expire after 24 hours.
 Login attempts are limited to five per client IP per minute; excess attempts
 return HTTP 429 with a `Retry-After` header.
+
+Authenticated versioned API operations use simple one-minute fixed-window
+request limits shared by account and credential. Successful limited responses
+include `RateLimit-Limit`, `RateLimit-Remaining`, and `RateLimit-Reset`; a
+limited request returns JSON error code `rate_limited`, HTTP 429, and
+`Retry-After`. Cheap reads are generous, previews and deletes are lower, and
+feed creation/splitting are more restrictive. Public RSS delivery is not
+account-quota limited; protect it with reverse-proxy/IP controls.
+
+Rate-limit counters are stored in the same SQLite database and are suitable
+for one application instance. Multiple application instances do not share a
+safe distributed rate-limit coordinator; use one instance or add a shared
+rate-limit service before scaling horizontally.

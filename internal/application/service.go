@@ -16,6 +16,7 @@ import (
 
 	"rss-studio/internal/domain"
 	"rss-studio/internal/idempotency"
+	"rss-studio/internal/policy"
 	"rss-studio/internal/rss"
 )
 
@@ -162,6 +163,14 @@ func (s *Service) ExecuteIdempotent(ctx context.Context, owner domain.User, cred
 
 func (s *Service) ListFeeds(owner domain.User) ([]domain.Feed, error) {
 	return s.store.List(owner)
+}
+
+// RateLimitStore exposes the persistent policy counter when the backing store
+// supports it. Adapters without persistent storage remain usable without rate
+// limiting, which keeps service construction compatible with existing tests.
+func (s *Service) RateLimitStore() policy.RateLimitStore {
+	store, _ := s.store.(policy.RateLimitStore)
+	return store
 }
 
 func (s *Service) Preview(ctx context.Context, sourceURL string, rules []PreviewRule) ([]PreviewResult, error) {

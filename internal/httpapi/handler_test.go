@@ -70,6 +70,14 @@ func newAuthenticatedServer(t *testing.T) (*httptest.Server, *storage.SQLiteStor
 }
 
 func newAuthenticatedServerWithSource(t *testing.T, feedSource application.Source) (*httptest.Server, *storage.SQLiteStore) {
+	return newAuthenticatedServerWithSourceAndClock(t, feedSource, time.Now)
+}
+
+func newAuthenticatedServerWithClock(t *testing.T, now func() time.Time) (*httptest.Server, *storage.SQLiteStore) {
+	return newAuthenticatedServerWithSourceAndClock(t, sourceStub{}, now)
+}
+
+func newAuthenticatedServerWithSourceAndClock(t *testing.T, feedSource application.Source, now func() time.Time) (*httptest.Server, *storage.SQLiteStore) {
 	t.Helper()
 	store, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "rss-studio.db"))
 	if err != nil {
@@ -88,7 +96,7 @@ func newAuthenticatedServerWithSource(t *testing.T, feedSource application.Sourc
 		t.Fatal(err)
 	}
 	service := application.NewServiceWithOperator(store, cache.NewFileCache(t.TempDir()), feedSource, rss.FilterWithOperator)
-	server := httptest.NewServer(httpapi.NewHandler(service, auth))
+	server := httptest.NewServer(httpapi.NewHandlerWithClock(service, now, auth))
 	t.Cleanup(func() {
 		server.Close()
 		store.Close()

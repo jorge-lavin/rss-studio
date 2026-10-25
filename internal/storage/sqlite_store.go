@@ -23,6 +23,7 @@ import (
 
 	"rss-studio/internal/domain"
 	"rss-studio/internal/idempotency"
+	"rss-studio/internal/policy"
 )
 
 //go:embed migrations/*.sql
@@ -168,6 +169,114 @@ func (s *SQLiteStore) SchemaVersion() (int, error) {
 		return 0, fmt.Errorf("read schema version: %w", err)
 	}
 	return version, nil
+}
+
+func (s *SQLiteStore) CheckRateLimits(operation string, limit int, window time.Duration, buckets []policy.RateLimitBucket, now time.Time) (policy.RateLimitDecision, error) {
+	if operation == "" || limit <= 0 || window <= 0 || len(buckets) == 0 {
+		return policy.RateLimitDecision{}, errors.New("invalid rate limit check")
+	}
+	now = now.UTC()
+	uniqueBuckets := make([]policy.RateLimitBucket, 0, len(buckets))
+	seen := make(map[string]struct{}, len(buckets))
+	for _, bucket := range buckets {
+		if bucket.Key == "" {
+			return policy.RateLimitDecision{}, errors.New("invalid rate limit bucket")
+		}
+		if _, ok := seen[bucket.Key]; ok {
+			continue
+		}
+		seen[bucket.Key] = struct{}{}
+		uniqueBuckets = append(uniqueBuckets, bucket)
+	}
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return policy.RateLimitDecision{}, fmt.Errorf("begin rate limit check: %w", err)
+	}
+	defer tx.Rollback()
+
+	type bucketState struct {
+		bucket    policy.RateLimitBucket
+		started   time.Time
+		count     int
+		exists    bool
+		reset     time.Time
+		available int
+	}
+	states := make([]bucketState, 0, len(uniqueBuckets))
+	for _, bucket := range uniqueBuckets {
+		state := bucketState{bucket: bucket}
+		var started string
+		err := tx.QueryRow(
+			"SELECT window_started, count FROM rate_limit_buckets WHERE bucket_key = ? AND operation = ?",
+			bucket.Key, operation,
+		).Scan(&started, &state.count)
+		switch {
+		case errors.Is(err, sql.ErrNoRows):
+			state.started = now
+		case err != nil:
+			return policy.RateLimitDecision{}, fmt.Errorf("read rate limit bucket: %w", err)
+		default:
+			state.exists = true
+			state.started, err = time.Parse(time.RFC3339Nano, started)
+			if err != nil {
+				return policy.RateLimitDecision{}, fmt.Errorf("parse rate limit bucket: %w", err)
+			}
+			if state.count < 0 {
+				return policy.RateLimitDecision{}, errors.New("invalid rate limit count")
+			}
+			if !now.Before(state.started.Add(window)) {
+				state.started = now
+				state.count = 0
+			}
+		}
+		state.reset = state.started.Add(window)
+		state.available = limit - state.count
+		states = append(states, state)
+	}
+
+	decision := policy.RateLimitDecision{Allowed: true, Limit: limit, Remaining: limit}
+	for _, state := range states {
+		if state.available < decision.Remaining {
+			decision.Remaining = state.available
+			decision.ResetAfter = state.reset.Sub(now)
+		} else if state.available == decision.Remaining && state.reset.Sub(now) > decision.ResetAfter {
+			decision.ResetAfter = state.reset.Sub(now)
+		}
+		if state.available <= 0 {
+			decision.Allowed = false
+			decision.Remaining = 0
+			if state.reset.Sub(now) > decision.ResetAfter {
+				decision.ResetAfter = state.reset.Sub(now)
+			}
+		}
+	}
+	if !decision.Allowed {
+		return decision, nil
+	}
+
+	for _, state := range states {
+		state.count++
+		if state.exists {
+			if _, err := tx.Exec(
+				"UPDATE rate_limit_buckets SET window_started = ?, count = ? WHERE bucket_key = ? AND operation = ?",
+				state.started.Format(time.RFC3339Nano), state.count, state.bucket.Key, operation,
+			); err != nil {
+				return policy.RateLimitDecision{}, fmt.Errorf("update rate limit bucket: %w", err)
+			}
+		} else if _, err := tx.Exec(
+			"INSERT INTO rate_limit_buckets (bucket_key, operation, window_started, count) VALUES (?, ?, ?, ?)",
+			state.bucket.Key, operation, state.started.Format(time.RFC3339Nano), state.count,
+		); err != nil {
+			return policy.RateLimitDecision{}, fmt.Errorf("create rate limit bucket: %w", err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return policy.RateLimitDecision{}, fmt.Errorf("commit rate limit check: %w", err)
+	}
+	decision.Remaining--
+	return decision, nil
 }
 
 func (s *SQLiteStore) ClaimIdempotency(ownerID int64, credentialHash, key, requestHash string, now time.Time) (IdempotencyClaim, error) {

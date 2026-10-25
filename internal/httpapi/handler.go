@@ -24,6 +24,7 @@ type Handler struct {
 	service      *application.Service
 	auth         *Authenticator
 	loginLimiter *loginRateLimiter
+	apiLimiter   *apiRateLimiter
 }
 
 type homePageData struct {
@@ -128,11 +129,20 @@ const (
 )
 
 func NewHandler(service *application.Service, authenticators ...*Authenticator) http.Handler {
+	return NewHandlerWithClock(service, time.Now, authenticators...)
+}
+
+// NewHandlerWithClock builds the HTTP handler with an injectable clock for
+// deterministic rate-limit tests and single-instance policy checks.
+func NewHandlerWithClock(service *application.Service, now func() time.Time, authenticators ...*Authenticator) http.Handler {
 	var auth *Authenticator
 	if len(authenticators) > 0 {
 		auth = authenticators[0]
 	}
-	handler := &Handler{service: service, auth: auth, loginLimiter: newLoginRateLimiter()}
+	handler := &Handler{
+		service: service, auth: auth, loginLimiter: newLoginRateLimiterWithClock(now),
+		apiLimiter: newAPIRateLimiter(service.RateLimitStore(), now),
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /{$}", handler.home)
 	if auth != nil {
@@ -745,6 +755,21 @@ func (h *Handler) authenticate(next http.Handler) http.Handler {
 			if err := authorizeAPIRequest(identity, request); err != nil {
 				writeAPIPolicyError(writer, request, err)
 				return
+			}
+			if operation, ok := operationNameForRequest(request); ok {
+				decision, err := h.apiLimiter.allow(identity, operation)
+				if err != nil {
+					log.Printf("rate limit check: %v", err)
+					writeAPIError(writer, request, http.StatusServiceUnavailable, "rate_limit_unavailable", "Rate limiting is temporarily unavailable.")
+					return
+				}
+				if h.apiLimiter.store != nil {
+					setRateLimitHeaders(writer, decision)
+				}
+				if !decision.Allowed {
+					rateLimitError(writer, request, decision)
+					return
+				}
 			}
 		}
 		next.ServeHTTP(writer, request)

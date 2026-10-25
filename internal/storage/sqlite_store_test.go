@@ -23,8 +23,8 @@ func TestSQLiteStoreMigratesAndPersistsMultipleUsers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if version != 5 {
-		t.Fatalf("expected schema version 5, got %d", version)
+	if version != 6 {
+		t.Fatalf("expected schema version 6, got %d", version)
 	}
 	if err := store.Migrate(); err != nil {
 		t.Fatalf("rerunning migrations: %v", err)
