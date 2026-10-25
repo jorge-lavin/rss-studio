@@ -60,6 +60,37 @@ func parseAPICredentials(request *http.Request) (authCredentials, *apiInputError
 	return credentials, nil
 }
 
+func parseAPIJSON(request *http.Request, value any) *apiInputError {
+	if !isJSONRequest(request) {
+		return &apiInputError{
+			Code:    "unsupported_media_type",
+			Message: "Request Content-Type must be application/json.",
+		}
+	}
+
+	decoder := json.NewDecoder(request.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(value); err != nil {
+		if strings.Contains(err.Error(), "unknown field") {
+			return &apiInputError{
+				Code:    "unknown_field",
+				Message: "Request body contains an unknown field.",
+			}
+		}
+		return &apiInputError{
+			Code:    "invalid_json",
+			Message: "Request body must contain valid JSON.",
+		}
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		return &apiInputError{
+			Code:    "invalid_json",
+			Message: "Request body must contain one JSON object.",
+		}
+	}
+	return nil
+}
+
 func writeAPIJSON(writer http.ResponseWriter, status int, value any) {
 	writer.Header().Set("Content-Type", "application/json; charset=utf-8")
 	writer.Header().Set("Cache-Control", "no-store")

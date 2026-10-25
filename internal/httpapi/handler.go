@@ -64,6 +64,20 @@ type previewResponseOutput struct {
 	SampleTitles []string `json:"sample_titles"`
 }
 
+type feedListResponse struct {
+	Feeds []feedListResponseFeed `json:"feeds"`
+}
+
+type feedListResponseFeed struct {
+	Name      string    `json:"name"`
+	Path      string    `json:"path"`
+	URL       string    `json:"url"`
+	SourceURL string    `json:"source_url"`
+	Operator  string    `json:"operator"`
+	Keyword   string    `json:"keyword"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
 type splitResponse struct {
 	Outputs []splitResponseOutput `json:"outputs"`
 }
@@ -103,6 +117,10 @@ func NewHandler(service *application.Service, authenticators ...*Authenticator) 
 		mux.HandleFunc("POST /api/v1/auth/register", handler.apiRegister)
 		mux.HandleFunc("/api/v1/auth/login", handler.apiMethodNotAllowed)
 		mux.HandleFunc("/api/v1/auth/register", handler.apiMethodNotAllowed)
+		mux.HandleFunc("GET /api/v1/feeds", handler.apiListFeeds)
+		mux.HandleFunc("POST /api/v1/feeds/preview", handler.apiPreview)
+		mux.HandleFunc("/api/v1/feeds", handler.apiFeedsMethodNotAllowed)
+		mux.HandleFunc("/api/v1/feeds/preview", handler.apiPreviewMethodNotAllowed)
 	}
 	mux.HandleFunc("/api/v1", handler.apiNotFound)
 	mux.HandleFunc("/api/v1/", handler.apiNotFound)
@@ -187,12 +205,73 @@ func (h *Handler) apiRegister(writer http.ResponseWriter, request *http.Request)
 }
 
 func (h *Handler) apiMethodNotAllowed(writer http.ResponseWriter, request *http.Request) {
-	writer.Header().Set("Allow", http.MethodPost)
+	h.apiMethodNotAllowedFor(writer, request, http.MethodPost)
+}
+
+func (h *Handler) apiFeedsMethodNotAllowed(writer http.ResponseWriter, request *http.Request) {
+	h.apiMethodNotAllowedFor(writer, request, http.MethodGet)
+}
+
+func (h *Handler) apiPreviewMethodNotAllowed(writer http.ResponseWriter, request *http.Request) {
+	h.apiMethodNotAllowedFor(writer, request, http.MethodPost)
+}
+
+func (h *Handler) apiMethodNotAllowedFor(writer http.ResponseWriter, request *http.Request, method string) {
+	writer.Header().Set("Allow", method)
 	writeAPIError(writer, request, http.StatusMethodNotAllowed, "method_not_allowed", "Method not allowed.")
 }
 
 func (h *Handler) apiNotFound(writer http.ResponseWriter, request *http.Request) {
 	writeAPIError(writer, request, http.StatusNotFound, "not_found", "API endpoint not found.")
+}
+
+func (h *Handler) apiListFeeds(writer http.ResponseWriter, request *http.Request) {
+	feeds, err := h.service.ListFeeds(h.requestUser(request))
+	if err != nil {
+		log.Printf("list API feeds: %v", err)
+		writeAPIError(writer, request, http.StatusInternalServerError, "internal_error", "Could not list feeds.")
+		return
+	}
+
+	response := feedListResponse{Feeds: make([]feedListResponseFeed, len(feeds))}
+	for i, feed := range feeds {
+		response.Feeds[i] = feedListResponseFeedFor(request, feed)
+	}
+	writeAPIJSON(writer, http.StatusOK, response)
+}
+
+func (h *Handler) apiPreview(writer http.ResponseWriter, request *http.Request) {
+	request.Body = http.MaxBytesReader(writer, request.Body, maxJSONRequestBody)
+	var input previewRequest
+	if inputErr := parseAPIJSON(request, &input); inputErr != nil {
+		writeAPIError(writer, request, http.StatusBadRequest, inputErr.Code, inputErr.Message)
+		return
+	}
+
+	rules := previewRulesFor(input.Outputs)
+	results, err := h.service.Preview(request.Context(), input.SourceURL, rules)
+	if err != nil {
+		switch {
+		case errors.Is(err, application.ErrInvalidFeed):
+			writeAPIError(writer, request, http.StatusBadRequest, "validation_error", err.Error())
+		case errors.Is(err, application.ErrSourceUnavailable):
+			writeAPIError(writer, request, http.StatusBadGateway, "source_unavailable", "Source feed could not be fetched or processed.")
+		default:
+			log.Printf("preview API feed: %v", err)
+			writeAPIError(writer, request, http.StatusInternalServerError, "internal_error", "Could not preview feed.")
+		}
+		return
+	}
+
+	writeAPIJSON(writer, http.StatusOK, previewResponseFor(results))
+}
+
+func previewRulesFor(outputs []previewOutput) []application.PreviewRule {
+	rules := make([]application.PreviewRule, len(outputs))
+	for i, output := range outputs {
+		rules[i] = application.PreviewRule{Name: output.Name, Operator: output.Operator, Keyword: output.Keyword}
+	}
+	return rules
 }
 
 func (h *Handler) login(writer http.ResponseWriter, request *http.Request) {
@@ -467,6 +546,15 @@ func (h *Handler) preview(writer http.ResponseWriter, request *http.Request) {
 		return
 	}
 
+	response := previewResponseFor(results)
+	writer.Header().Set("Content-Type", "application/json; charset=utf-8")
+	writer.Header().Set("Cache-Control", "no-store")
+	if err := json.NewEncoder(writer).Encode(response); err != nil {
+		log.Printf("write preview response: %v", err)
+	}
+}
+
+func previewResponseFor(results []application.PreviewResult) previewResponse {
 	response := previewResponse{Outputs: make([]previewResponseOutput, len(results))}
 	for i, result := range results {
 		response.Outputs[i] = previewResponseOutput{
@@ -477,10 +565,15 @@ func (h *Handler) preview(writer http.ResponseWriter, request *http.Request) {
 			SampleTitles: result.Titles,
 		}
 	}
-	writer.Header().Set("Content-Type", "application/json; charset=utf-8")
-	writer.Header().Set("Cache-Control", "no-store")
-	if err := json.NewEncoder(writer).Encode(response); err != nil {
-		log.Printf("write preview response: %v", err)
+	return response
+}
+
+func feedListResponseFeedFor(request *http.Request, feed domain.Feed) feedListResponseFeed {
+	path := "/feeds/" + feed.Path + ".xml"
+	return feedListResponseFeed{
+		Name: feed.Name, Path: path, URL: baseURL(request) + path,
+		SourceURL: feed.SourceURL, Operator: string(feed.Operator), Keyword: feed.Keyword,
+		CreatedAt: feed.CreatedAt,
 	}
 }
 
