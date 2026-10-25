@@ -43,13 +43,14 @@ If an older deployment has `/data/feeds.json` and an existing account, startup
 imports its feeds into the first account and removes the legacy file after a
 successful import.
 
-The service-token, idempotency, and rate-limit migrations are additive and run
+The service-token, idempotency, rate-limit, and quota migrations are additive and run
 in one transaction each at startup. There is no destructive down migration: older
 binaries reject databases at the newer schema version, so rolling back after
 this release requires restoring a pre-migration database backup or deploying a
-compatible forward migration first. Do not remove the idempotency table from a
-live database; that would discard retry protection and is not a supported
-rollback.
+compatible forward migration first. The quota migration adds account usage
+buckets only; it does not remove feeds or reset existing authentication data.
+Do not remove the idempotency or quota tables from a live database; that would
+discard retry protection or quota state and is not a supported rollback.
 
 To run the published image instead:
 
@@ -297,6 +298,12 @@ Override the SQLite path with `RSS_STUDIO_DB`. `RSS_STUDIO_JWT_SECRET` is
 required. JWTs use HS256 and expire after 24 hours.
 Login attempts are limited to five per client IP per minute; excess attempts
 return HTTP 429 with a `Retry-After` header.
+Account quotas default to 50 published feeds, 100 previews per UTC day, 20
+single-feed creations per UTC day, 10 split operations per UTC day, and two
+concurrent expensive operations. Override them with
+`RSS_STUDIO_MAX_FEEDS_PER_ACCOUNT`, `RSS_STUDIO_PREVIEWS_PER_DAY`,
+`RSS_STUDIO_CREATIONS_PER_DAY`, `RSS_STUDIO_SPLITS_PER_DAY`, and
+`RSS_STUDIO_MAX_CONCURRENT_EXPENSIVE_OPERATIONS`.
 
 Authenticated versioned API operations use simple one-minute fixed-window
 request limits shared by account and credential. Successful limited responses

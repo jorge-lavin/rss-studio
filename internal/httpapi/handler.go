@@ -448,9 +448,18 @@ func (h *Handler) apiPreview(writer http.ResponseWriter, request *http.Request) 
 	}
 
 	rules := previewRulesFor(input.Outputs)
-	results, err := h.service.Preview(request.Context(), input.SourceURL, rules)
+	results, err := h.service.PreviewForOwner(request.Context(), h.requestUser(request), input.SourceURL, rules)
 	if err != nil {
 		switch {
+		case errors.Is(err, application.ErrQuotaExceeded):
+			var quotaErr *application.QuotaError
+			if errors.As(err, &quotaErr) {
+				writeAPIQuotaError(writer, request, quotaErr)
+				return
+			}
+			writeAPIError(writer, request, http.StatusTooManyRequests, "quota_exceeded", "Quota exceeded.")
+		case errors.Is(err, application.ErrQuotaUnavailable):
+			writeAPIError(writer, request, http.StatusServiceUnavailable, "quota_unavailable", "Quotas are temporarily unavailable.")
 		case errors.Is(err, application.ErrInvalidFeed):
 			writeAPIError(writer, request, http.StatusBadRequest, "validation_error", err.Error())
 		case errors.Is(err, application.ErrSourceUnavailable):
@@ -502,6 +511,15 @@ func (h *Handler) writeAPIFeedError(writer http.ResponseWriter, request *http.Re
 	switch {
 	case errors.Is(err, application.ErrInvalidFeed):
 		writeAPIError(writer, request, http.StatusBadRequest, "validation_error", err.Error())
+	case errors.Is(err, application.ErrQuotaExceeded):
+		var quotaErr *application.QuotaError
+		if errors.As(err, &quotaErr) {
+			writeAPIQuotaError(writer, request, quotaErr)
+			return
+		}
+		writeAPIError(writer, request, http.StatusTooManyRequests, "quota_exceeded", "Quota exceeded.")
+	case errors.Is(err, application.ErrQuotaUnavailable):
+		writeAPIError(writer, request, http.StatusServiceUnavailable, "quota_unavailable", "Quotas are temporarily unavailable.")
 	case errors.Is(err, application.ErrFeedNotFound):
 		writeAPIError(writer, request, http.StatusNotFound, "not_found", "Feed not found.")
 	case errors.Is(err, application.ErrSourceUnavailable):
@@ -512,6 +530,33 @@ func (h *Handler) writeAPIFeedError(writer http.ResponseWriter, request *http.Re
 		log.Printf("API feed operation: %v", err)
 		writeAPIError(writer, request, http.StatusInternalServerError, "internal_error", internalMessage)
 	}
+}
+
+func writeAPIQuotaError(writer http.ResponseWriter, request *http.Request, quotaErr *application.QuotaError) {
+	if quotaErr == nil {
+		writeAPIError(writer, request, http.StatusTooManyRequests, "quota_exceeded", "Quota exceeded.")
+		return
+	}
+	if quotaErr.ResetAfter > 0 {
+		writer.Header().Set("Retry-After", strconv.Itoa(rateLimitSeconds(quotaErr.ResetAfter)))
+	}
+	var resetAt *time.Time
+	if !quotaErr.ResetAt.IsZero() {
+		value := quotaErr.ResetAt.UTC()
+		resetAt = &value
+	}
+	resetAfter := 0
+	if quotaErr.ResetAfter > 0 {
+		resetAfter = rateLimitSeconds(quotaErr.ResetAfter)
+	}
+	writeAPIJSON(writer, http.StatusTooManyRequests, apiErrorResponse{
+		Error: apiErrorBody{
+			Code: "quota_exceeded", Message: "Quota exceeded.", Quota: string(quotaErr.Kind),
+			Limit: quotaErr.Limit, Remaining: quotaErr.Remaining,
+			ResetAt: resetAt, ResetAfter: &resetAfter,
+		},
+		RequestID: observability.RequestID(request),
+	})
 }
 
 func idempotencyKey(request *http.Request) (string, *apiInputError) {
@@ -836,6 +881,10 @@ func (h *Handler) createFeed(writer http.ResponseWriter, request *http.Request) 
 	_, err := h.service.CreateFeedWithOperator(request.Context(), h.requestUser(request), request.FormValue("name"), request.FormValue("source_url"), domain.FilterOperator(request.FormValue("operator")), request.FormValue("keyword"))
 	if err != nil {
 		switch {
+		case errors.Is(err, application.ErrQuotaExceeded):
+			h.renderHome(writer, request, "Quota exceeded. Try again later.", http.StatusTooManyRequests)
+		case errors.Is(err, application.ErrQuotaUnavailable):
+			h.renderHome(writer, request, "Quotas are temporarily unavailable.", http.StatusServiceUnavailable)
 		case errors.Is(err, application.ErrInvalidFeed):
 			h.renderHome(writer, request, err.Error(), http.StatusBadRequest)
 		case errors.Is(err, application.ErrSourceUnavailable):
@@ -863,9 +912,13 @@ func (h *Handler) preview(writer http.ResponseWriter, request *http.Request) {
 	for i, output := range input.Outputs {
 		rules[i] = application.PreviewRule{Name: output.Name, Operator: output.Operator, Keyword: output.Keyword}
 	}
-	results, err := h.service.Preview(request.Context(), input.SourceURL, rules)
+	results, err := h.service.PreviewForOwner(request.Context(), h.requestUser(request), input.SourceURL, rules)
 	if err != nil {
 		switch {
+		case errors.Is(err, application.ErrQuotaExceeded):
+			writeJSONError(writer, "Quota exceeded. Try again later.", http.StatusTooManyRequests)
+		case errors.Is(err, application.ErrQuotaUnavailable):
+			writeJSONError(writer, "Quotas are temporarily unavailable.", http.StatusServiceUnavailable)
 		case errors.Is(err, application.ErrInvalidFeed):
 			writeJSONError(writer, err.Error(), http.StatusBadRequest)
 		case errors.Is(err, application.ErrSourceUnavailable):
@@ -925,6 +978,10 @@ func (h *Handler) splitFeeds(writer http.ResponseWriter, request *http.Request) 
 	feeds, err := h.service.CreateSplitFeeds(request.Context(), h.requestUser(request), input.SourceURL, rules)
 	if err != nil {
 		switch {
+		case errors.Is(err, application.ErrQuotaExceeded):
+			writeJSONError(writer, "Quota exceeded. Try again later.", http.StatusTooManyRequests)
+		case errors.Is(err, application.ErrQuotaUnavailable):
+			writeJSONError(writer, "Quotas are temporarily unavailable.", http.StatusServiceUnavailable)
 		case errors.Is(err, application.ErrInvalidFeed):
 			writeJSONError(writer, err.Error(), http.StatusBadRequest)
 		case errors.Is(err, application.ErrSourceUnavailable):

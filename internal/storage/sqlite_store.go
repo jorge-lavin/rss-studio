@@ -279,6 +279,222 @@ func (s *SQLiteStore) CheckRateLimits(operation string, limit int, window time.D
 	return decision, nil
 }
 
+const (
+	quotaBucketPublishedFeeds = "published_feeds"
+	quotaBucketPreviews       = "previews"
+	quotaBucketCreations      = "creations"
+	quotaBucketSplits         = "splits"
+	quotaBucketConcurrent     = "concurrent"
+	quotaPermanentPeriod      = "permanent"
+	quotaActivePeriod         = "active"
+)
+
+// ReserveQuota checks and increments all requested account counters in one
+// transaction. The published-feed counter includes reservations until they are
+// refunded, which keeps the feed ceiling atomic across concurrent requests.
+func (s *SQLiteStore) ReserveQuota(accountID int64, usage policy.QuotaUsage, limits policy.QuotaLimits, now time.Time) (policy.QuotaDecision, policy.QuotaReservation, error) {
+	if accountID <= 0 || !usage.Valid() || usage.Empty() || !limits.Valid() {
+		return policy.QuotaDecision{}, policy.QuotaReservation{}, errors.New("invalid quota reservation")
+	}
+	now = now.UTC()
+	periodStart := utcDayStart(now)
+	dailyPeriod := periodStart.Format(time.RFC3339Nano)
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return policy.QuotaDecision{}, policy.QuotaReservation{}, fmt.Errorf("begin quota reservation: %w", err)
+	}
+	defer tx.Rollback()
+
+	var exists bool
+	if err := tx.QueryRow("SELECT EXISTS(SELECT 1 FROM users WHERE id = ?)", accountID).Scan(&exists); err != nil {
+		return policy.QuotaDecision{}, policy.QuotaReservation{}, fmt.Errorf("check quota account: %w", err)
+	}
+	if !exists {
+		return policy.QuotaDecision{}, policy.QuotaReservation{}, ErrUserNotFound
+	}
+
+	counts := make(map[string]int)
+	for _, bucket := range []string{quotaBucketPublishedFeeds, quotaBucketPreviews, quotaBucketCreations, quotaBucketSplits, quotaBucketConcurrent} {
+		period := dailyPeriod
+		if bucket == quotaBucketPublishedFeeds {
+			period = quotaPermanentPeriod
+		} else if bucket == quotaBucketConcurrent {
+			period = quotaActivePeriod
+		}
+		count, err := quotaCount(tx, accountID, bucket, period)
+		if err != nil {
+			return policy.QuotaDecision{}, policy.QuotaReservation{}, err
+		}
+		counts[bucket] = count
+	}
+	// Importers and low-level store callers may have created feeds without a
+	// reservation. Never let that make the durable account count too low.
+	var feedCount int
+	if err := tx.QueryRow("SELECT COUNT(*) FROM feeds WHERE user_id = ?", accountID).Scan(&feedCount); err != nil {
+		return policy.QuotaDecision{}, policy.QuotaReservation{}, fmt.Errorf("count published feeds: %w", err)
+	}
+	if feedCount > counts[quotaBucketPublishedFeeds] {
+		counts[quotaBucketPublishedFeeds] = feedCount
+		if err := setQuotaCount(tx, accountID, quotaBucketPublishedFeeds, quotaPermanentPeriod, feedCount); err != nil {
+			return policy.QuotaDecision{}, policy.QuotaReservation{}, err
+		}
+	}
+
+	resetAt := periodStart.Add(24 * time.Hour)
+	checks := []struct {
+		kind       policy.QuotaKind
+		bucket     string
+		requested  int
+		limit      int
+		resetAt    time.Time
+		resetAfter time.Duration
+	}{
+		{policy.QuotaPublishedFeeds, quotaBucketPublishedFeeds, usage.PublishedFeeds, limits.MaxFeedsPerAccount, time.Time{}, 0},
+		{policy.QuotaPreviewsPerDay, quotaBucketPreviews, usage.Previews, limits.PreviewsPerDay, resetAt, resetAt.Sub(now)},
+		{policy.QuotaCreationsPerDay, quotaBucketCreations, usage.Creations, limits.CreationsPerDay, resetAt, resetAt.Sub(now)},
+		{policy.QuotaSplitsPerDay, quotaBucketSplits, usage.Splits, limits.SplitOperationsPerDay, resetAt, resetAt.Sub(now)},
+		{policy.QuotaConcurrentOperations, quotaBucketConcurrent, usage.ConcurrentOperations, limits.MaxConcurrentExpensiveOperations, time.Time{}, time.Second},
+	}
+	for _, check := range checks {
+		if check.requested == 0 {
+			continue
+		}
+		remaining := check.limit - counts[check.bucket]
+		if check.requested > remaining {
+			if remaining < 0 {
+				remaining = 0
+			}
+			return policy.QuotaDecision{
+				Allowed: false, Kind: check.kind, Limit: check.limit,
+				Remaining: remaining, ResetAt: check.resetAt, ResetAfter: check.resetAfter,
+			}, policy.QuotaReservation{}, nil
+		}
+	}
+
+	values := []struct {
+		bucket string
+		period string
+		count  int
+	}{
+		{quotaBucketPublishedFeeds, quotaPermanentPeriod, usage.PublishedFeeds},
+		{quotaBucketPreviews, dailyPeriod, usage.Previews},
+		{quotaBucketCreations, dailyPeriod, usage.Creations},
+		{quotaBucketSplits, dailyPeriod, usage.Splits},
+		{quotaBucketConcurrent, quotaActivePeriod, usage.ConcurrentOperations},
+	}
+	for _, value := range values {
+		if value.count == 0 {
+			continue
+		}
+		if err := addQuotaCount(tx, accountID, value.bucket, value.period, value.count); err != nil {
+			return policy.QuotaDecision{}, policy.QuotaReservation{}, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return policy.QuotaDecision{}, policy.QuotaReservation{}, fmt.Errorf("commit quota reservation: %w", err)
+	}
+	return policy.QuotaDecision{Allowed: true}, policy.QuotaReservation{
+		AccountID: accountID, PeriodStart: periodStart, Usage: usage,
+	}, nil
+}
+
+func (s *SQLiteStore) RefundQuota(reservation policy.QuotaReservation) error {
+	if reservation.AccountID <= 0 || !reservation.Usage.Valid() || reservation.Usage.Empty() {
+		return errors.New("invalid quota refund")
+	}
+	periodStart := reservation.PeriodStart.UTC()
+	if periodStart.IsZero() {
+		return errors.New("quota refund period is required")
+	}
+	dailyPeriod := periodStart.Format(time.RFC3339Nano)
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin quota refund: %w", err)
+	}
+	defer tx.Rollback()
+	values := []struct {
+		bucket string
+		period string
+		count  int
+	}{
+		{quotaBucketPublishedFeeds, quotaPermanentPeriod, reservation.Usage.PublishedFeeds},
+		{quotaBucketPreviews, dailyPeriod, reservation.Usage.Previews},
+		{quotaBucketCreations, dailyPeriod, reservation.Usage.Creations},
+		{quotaBucketSplits, dailyPeriod, reservation.Usage.Splits},
+		{quotaBucketConcurrent, quotaActivePeriod, reservation.Usage.ConcurrentOperations},
+	}
+	for _, value := range values {
+		if value.count == 0 {
+			continue
+		}
+		result, err := tx.Exec(`
+			UPDATE quota_usage_buckets
+			SET count = count - ?
+			WHERE user_id = ? AND bucket = ? AND period_start = ? AND count >= ?`,
+			value.count, reservation.AccountID, value.bucket, value.period, value.count)
+		if err != nil {
+			return fmt.Errorf("refund quota bucket: %w", err)
+		}
+		rows, err := result.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("check quota refund: %w", err)
+		}
+		if rows == 0 {
+			return fmt.Errorf("quota refund would underflow %s", value.bucket)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit quota refund: %w", err)
+	}
+	return nil
+}
+
+func quotaCount(tx *sql.Tx, accountID int64, bucket, period string) (int, error) {
+	var count int
+	err := tx.QueryRow(
+		"SELECT count FROM quota_usage_buckets WHERE user_id = ? AND bucket = ? AND period_start = ?",
+		accountID, bucket, period).Scan(&count)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, fmt.Errorf("read quota bucket: %w", err)
+	}
+	if count < 0 {
+		return 0, errors.New("invalid quota bucket count")
+	}
+	return count, nil
+}
+
+func addQuotaCount(tx *sql.Tx, accountID int64, bucket, period string, count int) error {
+	if _, err := tx.Exec(`
+		INSERT INTO quota_usage_buckets (user_id, bucket, period_start, count)
+		VALUES (?, ?, ?, ?)
+		ON CONFLICT(user_id, bucket, period_start)
+		DO UPDATE SET count = quota_usage_buckets.count + excluded.count`,
+		accountID, bucket, period, count); err != nil {
+		return fmt.Errorf("update quota bucket: %w", err)
+	}
+	return nil
+}
+
+func setQuotaCount(tx *sql.Tx, accountID int64, bucket, period string, count int) error {
+	if _, err := tx.Exec(`
+		INSERT INTO quota_usage_buckets (user_id, bucket, period_start, count)
+		VALUES (?, ?, ?, ?)
+		ON CONFLICT(user_id, bucket, period_start)
+		DO UPDATE SET count = excluded.count`, accountID, bucket, period, count); err != nil {
+		return fmt.Errorf("set quota bucket: %w", err)
+	}
+	return nil
+}
+
+func utcDayStart(now time.Time) time.Time {
+	now = now.UTC()
+	return time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+}
+
 func (s *SQLiteStore) ClaimIdempotency(ownerID int64, credentialHash, key, requestHash string, now time.Time) (IdempotencyClaim, error) {
 	if ownerID <= 0 || credentialHash == "" || key == "" || requestHash == "" {
 		return IdempotencyClaim{}, errors.New("invalid idempotency claim")
@@ -757,7 +973,12 @@ func (s *SQLiteStore) Delete(owner domain.User, path string) error {
 	if err != nil {
 		return err
 	}
-	result, err := s.db.Exec("DELETE FROM feeds WHERE user_id = ? AND path = ?", userID, path)
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin feed deletion: %w", err)
+	}
+	defer tx.Rollback()
+	result, err := tx.Exec("DELETE FROM feeds WHERE user_id = ? AND path = ?", userID, path)
 	if err != nil {
 		return fmt.Errorf("delete feed: %w", err)
 	}
@@ -767,6 +988,26 @@ func (s *SQLiteStore) Delete(owner domain.User, path string) error {
 	}
 	if count == 0 {
 		return os.ErrNotExist
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit feed deletion: %w", err)
+	}
+	return nil
+}
+
+// DecrementPublishedFeedQuota is called by the application after a successful
+// user-visible deletion. Storage rollback paths deliberately do not call it;
+// their application quota reservation is refunded as one unit instead.
+func (s *SQLiteStore) DecrementPublishedFeedQuota(accountID int64) error {
+	if accountID <= 0 {
+		return errors.New("invalid quota account")
+	}
+	if _, err := s.db.Exec(`
+		UPDATE quota_usage_buckets
+		SET count = count - 1
+		WHERE user_id = ? AND bucket = ? AND period_start = ? AND count > 0`,
+		accountID, quotaBucketPublishedFeeds, quotaPermanentPeriod); err != nil {
+		return fmt.Errorf("decrement published feed quota: %w", err)
 	}
 	return nil
 }

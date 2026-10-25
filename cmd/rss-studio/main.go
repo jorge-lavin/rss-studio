@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -15,6 +16,7 @@ import (
 	"rss-studio/internal/httpapi"
 	"rss-studio/internal/mcp"
 	"rss-studio/internal/observability"
+	"rss-studio/internal/policy"
 	"rss-studio/internal/rss"
 	"rss-studio/internal/source"
 	"rss-studio/internal/storage"
@@ -61,11 +63,16 @@ func main() {
 		log.Fatalf("configure authentication: %v", err)
 	}
 
-	service := application.NewServiceWithOperator(
+	quotas, err := quotaLimitsFromEnv()
+	if err != nil {
+		log.Fatalf("configure account quotas: %v", err)
+	}
+	service := application.NewServiceWithOperatorAndQuotas(
 		database,
 		cache.NewFileCache(filepath.Join(dataDirectory, "cache")),
 		source.NewHTTPSource(&http.Client{Timeout: 20 * time.Second}),
 		rss.FilterWithOperator,
+		quotas,
 	)
 	mux := http.NewServeMux()
 	mux.Handle("/mcp", observability.HTTPHandler(mcp.NewHandler(service, auth)))
@@ -88,4 +95,30 @@ func envOrDefault(key, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+func quotaLimitsFromEnv() (policy.QuotaLimits, error) {
+	limits := policy.DefaultQuotaLimits()
+	values := []struct {
+		key   string
+		value *int
+	}{
+		{"RSS_STUDIO_MAX_FEEDS_PER_ACCOUNT", &limits.MaxFeedsPerAccount},
+		{"RSS_STUDIO_PREVIEWS_PER_DAY", &limits.PreviewsPerDay},
+		{"RSS_STUDIO_CREATIONS_PER_DAY", &limits.CreationsPerDay},
+		{"RSS_STUDIO_SPLITS_PER_DAY", &limits.SplitOperationsPerDay},
+		{"RSS_STUDIO_MAX_CONCURRENT_EXPENSIVE_OPERATIONS", &limits.MaxConcurrentExpensiveOperations},
+	}
+	for _, setting := range values {
+		text := os.Getenv(setting.key)
+		if text == "" {
+			continue
+		}
+		value, err := strconv.Atoi(text)
+		if err != nil || value < 0 {
+			return policy.QuotaLimits{}, errors.New(setting.key + " must be a non-negative integer")
+		}
+		*setting.value = value
+	}
+	return limits, nil
 }

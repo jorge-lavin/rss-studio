@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"rss-studio/internal/domain"
+	"rss-studio/internal/policy"
 )
 
 func TestSQLiteStoreMigratesAndPersistsMultipleUsers(t *testing.T) {
@@ -23,8 +24,8 @@ func TestSQLiteStoreMigratesAndPersistsMultipleUsers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if version != 6 {
-		t.Fatalf("expected schema version 6, got %d", version)
+	if version != 7 {
+		t.Fatalf("expected schema version 7, got %d", version)
 	}
 	if err := store.Migrate(); err != nil {
 		t.Fatalf("rerunning migrations: %v", err)
@@ -305,5 +306,109 @@ func TestSQLiteStoreReclaimsExpiredIdempotencyClaim(t *testing.T) {
 	}
 	if storedKey == "request-key" || storedCredential == "credential" {
 		t.Fatal("raw idempotency values were persisted")
+	}
+}
+
+func TestSQLiteStoreQuotaBucketsResetRefundAndIsolateAccounts(t *testing.T) {
+	store, err := NewSQLiteStore(filepath.Join(t.TempDir(), "rss-studio.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	alice, err := store.CreateUser("alice", "password")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bob, err := store.CreateUser("bob", "password")
+	if err != nil {
+		t.Fatal(err)
+	}
+	limits := policy.QuotaLimits{
+		MaxFeedsPerAccount:               2,
+		PreviewsPerDay:                   1,
+		CreationsPerDay:                  2,
+		SplitOperationsPerDay:            2,
+		MaxConcurrentExpensiveOperations: 1,
+	}
+	now := time.Date(2026, time.January, 2, 23, 30, 0, 0, time.UTC)
+	usage := policy.QuotaUsage{Previews: 1, ConcurrentOperations: 1}
+	decision, reservation, err := store.ReserveQuota(alice.ID, usage, limits, now)
+	if err != nil || !decision.Allowed {
+		t.Fatalf("alice quota reservation failed: decision=%#v err=%v", decision, err)
+	}
+	if err := store.RefundQuota(policy.QuotaReservation{
+		AccountID: reservation.AccountID, PeriodStart: reservation.PeriodStart,
+		Usage: policy.QuotaUsage{ConcurrentOperations: 1},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	decision, _, err = store.ReserveQuota(alice.ID, usage, limits, now)
+	if err != nil || decision.Allowed || decision.Kind != policy.QuotaPreviewsPerDay || decision.ResetAt.IsZero() {
+		t.Fatalf("preview quota did not exhaust or expose reset: decision=%#v err=%v", decision, err)
+	}
+
+	bobDecision, bobReservation, err := store.ReserveQuota(bob.ID, usage, limits, now)
+	if err != nil || !bobDecision.Allowed {
+		t.Fatalf("bob inherited alice quota: decision=%#v err=%v", bobDecision, err)
+	}
+	if err := store.RefundQuota(bobReservation); err != nil {
+		t.Fatal(err)
+	}
+
+	resetDecision, resetReservation, err := store.ReserveQuota(alice.ID, usage, limits, now.Add(24*time.Hour))
+	if err != nil || !resetDecision.Allowed {
+		t.Fatalf("daily quota did not reset: decision=%#v err=%v", resetDecision, err)
+	}
+	if err := store.RefundQuota(resetReservation); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSQLiteStoreQuotaConcurrentReservationsAreAtomic(t *testing.T) {
+	store, err := NewSQLiteStore(filepath.Join(t.TempDir(), "rss-studio.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	owner, err := store.CreateUser("alice", "password")
+	if err != nil {
+		t.Fatal(err)
+	}
+	limits := policy.DefaultQuotaLimits()
+	limits.MaxConcurrentExpensiveOperations = 1
+	const attempts = 8
+	type result struct {
+		decision    policy.QuotaDecision
+		reservation policy.QuotaReservation
+		err         error
+	}
+	results := make(chan result, attempts)
+	start := make(chan struct{})
+	now := time.Date(2026, time.January, 2, 12, 0, 0, 0, time.UTC)
+	for i := 0; i < attempts; i++ {
+		go func() {
+			<-start
+			decision, reservation, err := store.ReserveQuota(owner.ID, policy.QuotaUsage{ConcurrentOperations: 1}, limits, now)
+			results <- result{decision: decision, reservation: reservation, err: err}
+		}()
+	}
+	close(start)
+	allowed := 0
+	var held policy.QuotaReservation
+	for i := 0; i < attempts; i++ {
+		result := <-results
+		if result.err != nil {
+			t.Fatal(result.err)
+		}
+		if result.decision.Allowed {
+			allowed++
+			held = result.reservation
+		}
+	}
+	if allowed != 1 {
+		t.Fatalf("concurrent quota reservations allowed %d operations, want 1", allowed)
+	}
+	if err := store.RefundQuota(held); err != nil {
+		t.Fatal(err)
 	}
 }

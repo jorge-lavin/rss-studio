@@ -27,6 +27,8 @@ var (
 	ErrSourceUnavailable      = errors.New("source unavailable")
 	ErrIdempotencyUnavailable = errors.New("idempotency storage unavailable")
 	ErrIdempotencyConflict    = idempotency.ErrConflict
+	ErrQuotaExceeded          = errors.New("quota exceeded")
+	ErrQuotaUnavailable       = errors.New("quota storage unavailable")
 )
 
 const (
@@ -44,6 +46,7 @@ type Service struct {
 	source         Source
 	filter         Filter
 	operatorFilter OperatorFilter
+	quotaLimits    policy.QuotaLimits
 
 	refreshMu  sync.Mutex
 	stateMu    sync.Mutex
@@ -63,20 +66,37 @@ type refreshKey struct {
 }
 
 func NewService(store FeedStore, cache FeedCache, source Source, filter Filter) *Service {
-	return newService(store, cache, source, filter, nil)
+	return newService(store, cache, source, filter, nil, policy.DefaultQuotaLimits())
 }
 
 func NewServiceWithOperator(store FeedStore, cache FeedCache, source Source, filter OperatorFilter) *Service {
-	return newService(store, cache, source, nil, filter)
+	return newService(store, cache, source, nil, filter, policy.DefaultQuotaLimits())
 }
 
-func newService(store FeedStore, cache FeedCache, source Source, filter Filter, operatorFilter OperatorFilter) *Service {
+// QuotaConfig is kept in the application package so callers do not need to
+// know which policy package stores the shared defaults.
+type QuotaConfig = policy.QuotaLimits
+
+func DefaultQuotaConfig() QuotaConfig {
+	return policy.DefaultQuotaLimits()
+}
+
+func NewServiceWithQuotas(store FeedStore, cache FeedCache, source Source, filter Filter, quotas QuotaConfig) *Service {
+	return newService(store, cache, source, filter, nil, quotas)
+}
+
+func NewServiceWithOperatorAndQuotas(store FeedStore, cache FeedCache, source Source, filter OperatorFilter, quotas QuotaConfig) *Service {
+	return newService(store, cache, source, nil, filter, quotas)
+}
+
+func newService(store FeedStore, cache FeedCache, source Source, filter Filter, operatorFilter OperatorFilter, quotas policy.QuotaLimits) *Service {
 	return &Service{
 		store:          store,
 		cache:          cache,
 		source:         source,
 		filter:         filter,
 		operatorFilter: operatorFilter,
+		quotaLimits:    quotas,
 		refreshing:     make(map[refreshKey]bool),
 		checkedAt:      make(map[refreshKey]time.Time),
 	}
@@ -173,7 +193,87 @@ func (s *Service) RateLimitStore() policy.RateLimitStore {
 	return store
 }
 
+// QuotaError is safe to expose through an API response: it contains only
+// quota metadata and never request, credential, or source data.
+type QuotaError struct {
+	Kind       policy.QuotaKind
+	Limit      int
+	Remaining  int
+	ResetAt    time.Time
+	ResetAfter time.Duration
+}
+
+func (e *QuotaError) Error() string { return "quota exceeded" }
+
+func (e *QuotaError) Unwrap() error { return ErrQuotaExceeded }
+
+type quotaLease struct {
+	store       policy.QuotaStore
+	reservation policy.QuotaReservation
+}
+
+func (l *quotaLease) finish(success bool) error {
+	if l == nil || l.store == nil {
+		return nil
+	}
+	reservation := l.reservation
+	if success {
+		reservation.Usage = policy.QuotaUsage{ConcurrentOperations: reservation.Usage.ConcurrentOperations}
+	}
+	if reservation.Usage.Empty() {
+		return nil
+	}
+	return l.store.RefundQuota(reservation)
+}
+
+func (s *Service) reserveQuota(owner domain.User, usage policy.QuotaUsage) (*quotaLease, error) {
+	store, ok := s.store.(policy.QuotaStore)
+	if !ok || usage.Empty() {
+		return nil, nil
+	}
+	accountID := owner.ID
+	if accountID <= 0 && owner.Username != "" {
+		if lookup, ok := s.store.(interface {
+			User(string) (domain.User, error)
+		}); ok {
+			resolved, err := lookup.User(owner.Username)
+			if err != nil {
+				return nil, fmt.Errorf("resolve quota account: %w", err)
+			}
+			accountID = resolved.ID
+		}
+	}
+	if accountID <= 0 {
+		return nil, ErrQuotaUnavailable
+	}
+	decision, reservation, err := store.ReserveQuota(accountID, usage, s.quotaLimits, time.Now().UTC())
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrQuotaUnavailable, err)
+	}
+	if !decision.Allowed {
+		return nil, &QuotaError{
+			Kind: decision.Kind, Limit: decision.Limit, Remaining: decision.Remaining,
+			ResetAt: decision.ResetAt, ResetAfter: decision.ResetAfter,
+		}
+	}
+	return &quotaLease{store: store, reservation: reservation}, nil
+}
+
+func (s *Service) quotaFinished(lease *quotaLease, success bool) {
+	if err := lease.finish(success); err != nil {
+		log.Printf("finish quota reservation: %v", err)
+	}
+}
+
 func (s *Service) Preview(ctx context.Context, sourceURL string, rules []PreviewRule) ([]PreviewResult, error) {
+	return s.preview(ctx, domain.User{}, sourceURL, rules)
+}
+
+func (s *Service) PreviewForOwner(ctx context.Context, owner domain.User, sourceURL string, rules []PreviewRule) ([]PreviewResult, error) {
+	return s.preview(ctx, owner, sourceURL, rules)
+}
+
+func (s *Service) preview(ctx context.Context, owner domain.User, sourceURL string, rules []PreviewRule) ([]PreviewResult, error) {
 	sourceURL = strings.TrimSpace(sourceURL)
 	if err := validateSourceURL(sourceURL); err != nil {
 		return nil, err
@@ -198,6 +298,13 @@ func (s *Service) Preview(ctx context.Context, sourceURL string, rules []Preview
 		}
 		filterRules[i] = rss.FilterRule{Name: name, Operator: operator, Keyword: keyword}
 	}
+
+	lease, err := s.reserveQuota(owner, policy.QuotaUsage{Previews: 1, ConcurrentOperations: 1})
+	if err != nil {
+		return nil, err
+	}
+	succeeded := false
+	defer func() { s.quotaFinished(lease, succeeded) }()
 
 	sourceData, _, err := s.source.Get(ctx, sourceURL)
 	if err != nil {
@@ -218,6 +325,7 @@ func (s *Service) Preview(ctx context.Context, sourceURL string, rules []Preview
 			Titles:   result.Titles,
 		}
 	}
+	succeeded = true
 	return previews, nil
 }
 
@@ -236,10 +344,19 @@ func (s *Service) CreateFeedWithOperator(ctx context.Context, owner domain.User,
 	if err := validateFeed(name, sourceURL, operator, keyword); err != nil {
 		return domain.Feed{}, err
 	}
+	operatorStore, hasOperatorStore := s.store.(OperatorFeedStore)
+	if !hasOperatorStore && operator != domain.FilterContains {
+		return domain.Feed{}, fmt.Errorf("%w: operator-aware feed storage is unavailable", ErrInvalidFeed)
+	}
+	lease, err := s.reserveQuota(owner, policy.QuotaUsage{PublishedFeeds: 1, Creations: 1, ConcurrentOperations: 1})
+	if err != nil {
+		return domain.Feed{}, err
+	}
+	succeeded := false
+	defer func() { s.quotaFinished(lease, succeeded) }()
 
 	var feed domain.Feed
-	var err error
-	if operatorStore, ok := s.store.(OperatorFeedStore); ok {
+	if hasOperatorStore {
 		feed, err = operatorStore.CreateWithOperator(owner, name, sourceURL, operator, keyword)
 	} else if operator == domain.FilterContains {
 		feed, err = s.store.Create(owner, name, sourceURL, keyword)
@@ -259,6 +376,7 @@ func (s *Service) CreateFeedWithOperator(ctx context.Context, owner domain.User,
 		}
 		return domain.Feed{}, fmt.Errorf("%w: %v", ErrSourceUnavailable, err)
 	}
+	succeeded = true
 	return feed, nil
 }
 
@@ -275,9 +393,6 @@ func (s *Service) CreateSplitFeeds(ctx context.Context, owner domain.User, sourc
 		return nil, fmt.Errorf("%w: no more than %d outputs are allowed", ErrInvalidFeed, MaxSplitOutputs)
 	}
 
-	s.refreshMu.Lock()
-	defer s.refreshMu.Unlock()
-
 	normalized := make([]PreviewRule, len(rules))
 	filterRules := make([]rss.FilterRule, len(rules))
 	for i, rule := range rules {
@@ -293,6 +408,23 @@ func (s *Service) CreateSplitFeeds(ctx context.Context, owner domain.User, sourc
 		normalized[i] = PreviewRule{Name: name, Operator: operator, Keyword: keyword}
 		filterRules[i] = rss.FilterRule{Name: name, Operator: operator, Keyword: keyword}
 	}
+	operatorStore, hasOperatorStore := s.store.(OperatorFeedStore)
+	if !hasOperatorStore {
+		for _, rule := range normalized {
+			if rule.Operator != domain.FilterContains {
+				return nil, fmt.Errorf("%w: operator-aware feed storage is unavailable", ErrInvalidFeed)
+			}
+		}
+	}
+	lease, err := s.reserveQuota(owner, policy.QuotaUsage{PublishedFeeds: len(normalized), Splits: 1, ConcurrentOperations: 1})
+	if err != nil {
+		return nil, err
+	}
+	succeeded := false
+	defer func() { s.quotaFinished(lease, succeeded) }()
+
+	s.refreshMu.Lock()
+	defer s.refreshMu.Unlock()
 
 	sourceData, lastModified, err := s.source.Get(ctx, sourceURL)
 	if err != nil {
@@ -316,7 +448,7 @@ func (s *Service) CreateSplitFeeds(ctx context.Context, owner domain.User, sourc
 	feeds := make([]domain.Feed, 0, len(filtered))
 	for i, result := range filtered {
 		var feed domain.Feed
-		if operatorStore, ok := s.store.(OperatorFeedStore); ok {
+		if hasOperatorStore {
 			feed, err = operatorStore.CreateWithOperator(owner, normalized[i].Name, sourceURL, normalized[i].Operator, normalized[i].Keyword)
 		} else if normalized[i].Operator == domain.FilterContains {
 			feed, err = s.store.Create(owner, normalized[i].Name, sourceURL, normalized[i].Keyword)
@@ -332,6 +464,7 @@ func (s *Service) CreateSplitFeeds(ctx context.Context, owner domain.User, sourc
 			return nil, withRollbackError(err, s.rollbackSplit(owner, feeds))
 		}
 	}
+	succeeded = true
 	return feeds, nil
 }
 
@@ -359,6 +492,18 @@ func withRollbackError(operationErr, rollbackErr error) error {
 func (s *Service) DeleteFeed(owner domain.User, path string) error {
 	s.refreshMu.Lock()
 	defer s.refreshMu.Unlock()
+	accountID := owner.ID
+	if accountID <= 0 {
+		if lookup, ok := s.store.(interface {
+			User(string) (domain.User, error)
+		}); ok {
+			resolved, err := lookup.User(owner.Username)
+			if err != nil {
+				return err
+			}
+			accountID = resolved.ID
+		}
+	}
 
 	feed, found, err := s.store.Get(path)
 	if err != nil {
@@ -372,6 +517,11 @@ func (s *Service) DeleteFeed(owner domain.User, path string) error {
 			return ErrFeedNotFound
 		}
 		return err
+	}
+	if counter, ok := s.store.(interface{ DecrementPublishedFeedQuota(int64) error }); ok {
+		if err := counter.DecrementPublishedFeedQuota(accountID); err != nil {
+			return err
+		}
 	}
 	return s.cache.Remove(feed)
 }

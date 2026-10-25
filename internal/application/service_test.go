@@ -442,6 +442,59 @@ func TestServicePreviewValidatesBeforeFetching(t *testing.T) {
 	}
 }
 
+func TestServiceQuotaValidatesBeforeClaimingAndRefundsUpstreamFailure(t *testing.T) {
+	store, owner := testSQLiteStore(t)
+	source := &quotaSourceStub{}
+	source.fail.Store(true)
+	limits := DefaultQuotaConfig()
+	limits.PreviewsPerDay = 1
+	limits.MaxConcurrentExpensiveOperations = 1
+	service := NewServiceWithQuotas(store, nil, source, rss.Filter, limits)
+
+	if _, err := service.PreviewForOwner(context.Background(), owner, "not-a-url", []PreviewRule{{Name: "Foo", Keyword: "foo"}}); !errors.Is(err, ErrInvalidFeed) {
+		t.Fatalf("expected validation failure, got %v", err)
+	}
+	if source.getCount.Load() != 0 {
+		t.Fatalf("validation claimed or fetched source: %d", source.getCount.Load())
+	}
+	if _, err := service.PreviewForOwner(context.Background(), owner, "https://example.test/rss", []PreviewRule{{Name: "Foo", Keyword: "foo"}}); !errors.Is(err, ErrSourceUnavailable) {
+		t.Fatalf("expected upstream failure, got %v", err)
+	}
+	source.fail.Store(false)
+	if _, err := service.PreviewForOwner(context.Background(), owner, "https://example.test/rss", []PreviewRule{{Name: "Foo", Keyword: "foo"}}); err != nil {
+		t.Fatalf("refunded preview quota was not reusable: %v", err)
+	}
+	if _, err := service.PreviewForOwner(context.Background(), owner, "https://example.test/rss", []PreviewRule{{Name: "Foo", Keyword: "foo"}}); !errors.Is(err, ErrQuotaExceeded) {
+		t.Fatalf("successful preview did not consume quota: %v", err)
+	}
+}
+
+func TestServiceQuotaLimitsConcurrentExpensiveOperationsPerAccount(t *testing.T) {
+	store, owner := testSQLiteStore(t)
+	source := &quotaSourceStub{started: make(chan struct{}, 1), release: make(chan struct{})}
+	limits := DefaultQuotaConfig()
+	limits.MaxConcurrentExpensiveOperations = 1
+	service := NewServiceWithQuotas(store, nil, source, rss.Filter, limits)
+	rules := []PreviewRule{{Name: "Foo", Keyword: "foo"}}
+	firstDone := make(chan error, 1)
+	go func() {
+		_, err := service.PreviewForOwner(context.Background(), owner, "https://example.test/rss", rules)
+		firstDone <- err
+	}()
+	select {
+	case <-source.started:
+	case <-time.After(time.Second):
+		t.Fatal("first preview did not reach source")
+	}
+	if _, err := service.PreviewForOwner(context.Background(), owner, "https://example.test/rss", rules); !errors.Is(err, ErrQuotaExceeded) {
+		t.Fatalf("concurrent preview was not rejected: %v", err)
+	}
+	close(source.release)
+	if err := <-firstDone; err != nil {
+		t.Fatalf("first preview failed: %v", err)
+	}
+}
+
 func TestServiceFailedRefreshCanRetryImmediately(t *testing.T) {
 	store, owner := testSQLiteStore(t)
 	source := &failingRefreshSource{getStarted: make(chan struct{}, 2)}
@@ -501,12 +554,40 @@ type sizedSourceStub struct {
 	data []byte
 }
 
+type quotaSourceStub struct {
+	getCount atomic.Int32
+	fail     atomic.Bool
+	started  chan struct{}
+	release  chan struct{}
+}
+
 func (s *sizedSourceStub) Head(context.Context, string) (time.Time, error) {
 	return time.Time{}, nil
 }
 
 func (s *sizedSourceStub) Get(context.Context, string) ([]byte, time.Time, error) {
 	return s.data, time.Time{}, nil
+}
+
+func (s *quotaSourceStub) Head(context.Context, string) (time.Time, error) {
+	return time.Time{}, nil
+}
+
+func (s *quotaSourceStub) Get(context.Context, string) ([]byte, time.Time, error) {
+	s.getCount.Add(1)
+	if s.started != nil {
+		select {
+		case s.started <- struct{}{}:
+		default:
+		}
+	}
+	if s.release != nil {
+		<-s.release
+	}
+	if s.fail.Load() {
+		return nil, time.Time{}, errors.New("source unavailable")
+	}
+	return []byte(`<rss version="2.0"><channel><title>Source</title><item><title>Keep foo</title></item></channel></rss>`), time.Time{}, nil
 }
 
 func (s *failingRefreshSource) Head(context.Context, string) (time.Time, error) {

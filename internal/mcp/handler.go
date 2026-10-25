@@ -288,7 +288,7 @@ func (h *Handler) callTool(ctx context.Context, request *http.Request, owner dom
 		if err := decodeArguments(input.Arguments, &args); err != nil {
 			return toolError("Invalid tool arguments."), nil
 		}
-		previews, err := h.service.Preview(ctx, args.SourceURL, previewRules(args.Outputs))
+		previews, err := h.service.PreviewForOwner(ctx, owner, args.SourceURL, previewRules(args.Outputs))
 		if err != nil {
 			return toolError(serviceErrorMessage(err)), nil
 		}
@@ -367,6 +367,8 @@ func feedPath(value string) string {
 
 func serviceErrorMessage(err error) string {
 	switch {
+	case errors.Is(err, application.ErrQuotaExceeded):
+		return "Quota exceeded."
 	case errors.Is(err, application.ErrInvalidFeed):
 		return err.Error()
 	case errors.Is(err, application.ErrFeedNotFound):

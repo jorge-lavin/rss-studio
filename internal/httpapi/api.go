@@ -5,13 +5,19 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"rss-studio/internal/observability"
 )
 
 type apiErrorBody struct {
-	Code    string `json:"code"`
-	Message string `json:"message"`
+	Code       string     `json:"code"`
+	Message    string     `json:"message"`
+	Quota      string     `json:"quota,omitempty"`
+	Limit      int        `json:"limit,omitempty"`
+	Remaining  int        `json:"remaining,omitempty"`
+	ResetAt    *time.Time `json:"reset_at,omitempty"`
+	ResetAfter *int       `json:"reset_after,omitempty"`
 }
 
 type apiErrorResponse struct {
