@@ -14,6 +14,7 @@ import (
 	"rss-studio/internal/application"
 	"rss-studio/internal/domain"
 	"rss-studio/internal/observability"
+	"rss-studio/internal/policy"
 	"rss-studio/internal/storage"
 	"rss-studio/internal/version"
 )
@@ -673,8 +674,45 @@ func (h *Handler) authenticate(next http.Handler) http.Handler {
 			return
 		}
 		request = request.WithContext(withIdentity(request.Context(), identity))
+		if isAPIRequest(request) {
+			if err := authorizeAPIRequest(identity, request); err != nil {
+				writeAPIPolicyError(writer, request, err)
+				return
+			}
+		}
 		next.ServeHTTP(writer, request)
 	})
+}
+
+func authorizeAPIRequest(identity RequestIdentity, request *http.Request) error {
+	switch {
+	case strings.HasPrefix(request.URL.Path, "/api/v1/auth/tokens"):
+		return policy.RequireBrowser(identity)
+	case request.Method == http.MethodGet && request.URL.Path == "/api/v1/feeds":
+		return policy.Authorize(identity, domain.ScopeFeedsRead)
+	case request.Method == http.MethodPost && request.URL.Path == "/api/v1/feeds":
+		return policy.Authorize(identity, domain.ScopeFeedsWrite)
+	case request.Method == http.MethodPost && request.URL.Path == "/api/v1/feeds/preview":
+		return policy.Authorize(identity, domain.ScopeFeedsPreview)
+	case request.Method == http.MethodPost && request.URL.Path == "/api/v1/feeds/split":
+		return policy.Authorize(identity, domain.ScopeFeedsWrite)
+	case request.Method == http.MethodDelete && strings.HasPrefix(request.URL.Path, "/api/v1/feeds/"):
+		return policy.Authorize(identity, domain.ScopeFeedsDelete)
+	default:
+		return nil
+	}
+}
+
+func writeAPIPolicyError(writer http.ResponseWriter, request *http.Request, err error) {
+	switch {
+	case errors.Is(err, policy.ErrInsufficientScope):
+		writer.Header().Set("WWW-Authenticate", `Bearer realm="rss-studio", error="insufficient_scope"`)
+		writeAPIError(writer, request, http.StatusForbidden, "insufficient_scope", "Insufficient scope.")
+	case errors.Is(err, policy.ErrBrowserOnly):
+		writeAPIError(writer, request, http.StatusForbidden, "forbidden", "This credential cannot access this endpoint.")
+	default:
+		writeAPIError(writer, request, http.StatusForbidden, "forbidden", "This credential cannot access this endpoint.")
+	}
 }
 
 func acceptsHTML(request *http.Request) bool {

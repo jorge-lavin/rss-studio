@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"rss-studio/internal/domain"
+	"rss-studio/internal/policy"
 )
 
 const (
@@ -59,15 +60,9 @@ type Authenticator struct {
 	serviceTokens ServiceTokenStore
 }
 
-type identityContextKey struct{}
-
-type RequestIdentity struct {
-	User         domain.User
-	TokenID      int64
-	TokenName    string
-	Scopes       []string
-	ServiceToken bool
-}
+// RequestIdentity remains exported from httpapi for existing callers while
+// its context and policy implementation live in the shared policy package.
+type RequestIdentity = policy.Identity
 
 type jwtHeader struct {
 	Algorithm string `json:"alg"`
@@ -190,16 +185,11 @@ func requestToken(request *http.Request) (string, error) {
 }
 
 func withIdentity(ctx context.Context, identity RequestIdentity) context.Context {
-	identity.Scopes = append([]string(nil), identity.Scopes...)
-	return context.WithValue(ctx, identityContextKey{}, identity)
+	return policy.WithIdentity(ctx, identity)
 }
 
 func IdentityFromContext(ctx context.Context) (RequestIdentity, bool) {
-	identity, ok := ctx.Value(identityContextKey{}).(RequestIdentity)
-	if ok {
-		identity.Scopes = append([]string(nil), identity.Scopes...)
-	}
-	return identity, ok
+	return policy.IdentityFromContext(ctx)
 }
 
 func userFromContext(ctx context.Context) (domain.User, bool) {
