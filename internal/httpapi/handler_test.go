@@ -73,6 +73,15 @@ func loginToken(t *testing.T, server *httptest.Server) string {
 	return login.AccessToken
 }
 
+func assertTailwindUsesClassDarkMode(t *testing.T, page string) {
+	t.Helper()
+	cdn := strings.Index(page, `<script src="https://cdn.tailwindcss.com"></script>`)
+	config := strings.Index(page, `tailwind.config = { darkMode: "class" };`)
+	if cdn == -1 || config == -1 || config < cdn {
+		t.Fatalf("Tailwind class dark-mode config must run after CDN script: %s", page)
+	}
+}
+
 func TestHandlerCreatesAndServesFeed(t *testing.T) {
 	server, _ := newAuthenticatedServer(t)
 	token := loginToken(t, server)
@@ -116,6 +125,7 @@ func TestHandlerCreatesAndServesFeed(t *testing.T) {
 	if !strings.Contains(string(homeBody), `id="theme-toggle"`) || !strings.Contains(string(homeBody), `darkMode: "class"`) || !strings.Contains(string(homeBody), `rss-studio-theme`) {
 		t.Fatalf("home page does not include dark-mode toggle: %s", homeBody)
 	}
+	assertTailwindUsesClassDarkMode(t, string(homeBody))
 
 	response, err = http.Get(server.URL + "/feeds/foo-feed.xml")
 	if err != nil {
@@ -285,6 +295,7 @@ func TestAuthenticatedHandlerSupportsBrowserLogin(t *testing.T) {
 	if !strings.Contains(recorder.Body.String(), `id="theme-toggle"`) || !strings.Contains(recorder.Body.String(), `darkMode: "class"`) || !strings.Contains(recorder.Body.String(), `rss-studio-theme`) {
 		t.Fatalf("sign-in page does not include dark-mode toggle: %s", recorder.Body.String())
 	}
+	assertTailwindUsesClassDarkMode(t, recorder.Body.String())
 
 	request = httptest.NewRequest(http.MethodGet, "/auth/sign-up", nil)
 	request.Header.Set("Accept", "text/html")

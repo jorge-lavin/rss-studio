@@ -361,12 +361,11 @@ var homeTemplate = template.Must(template.New("home").Parse(`<!doctype html>
       } catch {}
     })();
   </script>
-  <script>
-    window.tailwind = window.tailwind || {};
-    window.tailwind.config = { darkMode: "class" };
-  </script>
   <title>RSS Studio</title>
   <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = { darkMode: "class" };
+  </script>
 </head>
 <body class="min-h-full bg-slate-100 text-slate-950 antialiased dark:bg-slate-950 dark:text-slate-100">
 <div class="min-h-screen">
@@ -500,12 +499,11 @@ var authTemplate = template.Must(template.New("auth").Parse(`<!doctype html>
       } catch {}
     })();
   </script>
-  <script>
-    window.tailwind = window.tailwind || {};
-  window.tailwind.config = { darkMode: "class" };
-  </script>
   <title>{{if .Registration}}Create account{{else}}Sign in{{end}} · RSS Studio</title>
   <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = { darkMode: "class" };
+  </script>
 </head>
 <body class="flex min-h-full items-center justify-center bg-slate-100 px-5 py-12 text-slate-950 antialiased dark:bg-slate-950 dark:text-slate-100">
   <main class="w-full max-w-md rounded-2xl bg-white p-6 shadow-xl shadow-slate-900/5 ring-1 ring-slate-200 dark:bg-slate-900 dark:ring-slate-800 sm:p-8">
