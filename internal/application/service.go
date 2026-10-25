@@ -2,6 +2,9 @@ package application
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -12,14 +15,17 @@ import (
 	"time"
 
 	"rss-studio/internal/domain"
+	"rss-studio/internal/idempotency"
 	"rss-studio/internal/rss"
 )
 
 var (
-	ErrInvalidFeed       = errors.New("invalid feed")
-	ErrFeedNotFound      = errors.New("feed not found")
-	ErrCacheNotReady     = errors.New("feed cache not ready")
-	ErrSourceUnavailable = errors.New("source unavailable")
+	ErrInvalidFeed            = errors.New("invalid feed")
+	ErrFeedNotFound           = errors.New("feed not found")
+	ErrCacheNotReady          = errors.New("feed cache not ready")
+	ErrSourceUnavailable      = errors.New("source unavailable")
+	ErrIdempotencyUnavailable = errors.New("idempotency storage unavailable")
+	ErrIdempotencyConflict    = idempotency.ErrConflict
 )
 
 const (
@@ -42,6 +48,12 @@ type Service struct {
 	stateMu    sync.Mutex
 	refreshing map[refreshKey]bool
 	checkedAt  map[refreshKey]time.Time
+}
+
+type IdempotencyStore interface {
+	ClaimIdempotency(ownerID int64, credentialHash, key, requestHash string, now time.Time) (idempotency.Claim, error)
+	CompleteIdempotency(id int64, result []byte) error
+	AbandonIdempotency(id int64) error
 }
 
 type refreshKey struct {
@@ -67,6 +79,85 @@ func newService(store FeedStore, cache FeedCache, source Source, filter Filter, 
 		refreshing:     make(map[refreshKey]bool),
 		checkedAt:      make(map[refreshKey]time.Time),
 	}
+}
+
+// IdempotencyRequestHash returns a stable hash for one mutation operation and
+// its decoded request. It stores neither request contents nor credentials.
+func IdempotencyRequestHash(operation string, request any) (string, error) {
+	data, err := json.Marshal(struct {
+		Operation string `json:"operation"`
+		Request   any    `json:"request"`
+	}{Operation: operation, Request: request})
+	if err != nil {
+		return "", fmt.Errorf("hash idempotency request: %w", err)
+	}
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:]), nil
+}
+
+// ExecuteIdempotent runs one mutation once and durably replays its JSON
+// result for identical retries. Callers choose result representation so HTTP
+// and future adapters can share this mechanism without sharing response code.
+func (s *Service) ExecuteIdempotent(ctx context.Context, owner domain.User, credentialHash, key, requestHash string, operation func() (any, error)) ([]byte, error) {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		result, err := operation()
+		if err != nil {
+			return nil, err
+		}
+		return json.Marshal(result)
+	}
+	if len(key) > 255 || owner.ID <= 0 || credentialHash == "" || requestHash == "" {
+		return nil, ErrIdempotencyUnavailable
+	}
+	store, ok := s.store.(IdempotencyStore)
+	if !ok {
+		return nil, ErrIdempotencyUnavailable
+	}
+
+	var claim idempotency.Claim
+	for {
+		var err error
+		claim, err = store.ClaimIdempotency(owner.ID, credentialHash, key, requestHash, time.Now().UTC())
+		if errors.Is(err, idempotency.ErrConflict) {
+			return nil, ErrIdempotencyConflict
+		}
+		if err != nil {
+			return nil, fmt.Errorf("claim idempotency key: %w", err)
+		}
+		if claim.Completed {
+			return append([]byte(nil), claim.Result...), nil
+		}
+		if claim.Acquired {
+			break
+		}
+		if claim.Pending {
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(10 * time.Millisecond):
+			}
+			continue
+		}
+		break
+	}
+
+	result, err := operation()
+	if err != nil {
+		if abandonErr := store.AbandonIdempotency(claim.ID); abandonErr != nil {
+			return nil, errors.Join(err, fmt.Errorf("abandon idempotency key: %w", abandonErr))
+		}
+		return nil, err
+	}
+	encoded, err := json.Marshal(result)
+	if err != nil {
+		_ = store.AbandonIdempotency(claim.ID)
+		return nil, fmt.Errorf("encode idempotency result: %w", err)
+	}
+	if err := store.CompleteIdempotency(claim.ID, encoded); err != nil {
+		return nil, fmt.Errorf("complete idempotency key: %w", err)
+	}
+	return encoded, nil
 }
 
 func (s *Service) ListFeeds(owner domain.User) ([]domain.Feed, error) {

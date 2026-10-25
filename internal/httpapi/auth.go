@@ -5,6 +5,7 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -215,7 +216,17 @@ func (a *Authenticator) IdentityFromRequest(request *http.Request) (RequestIdent
 	if err != nil {
 		return RequestIdentity{}, err
 	}
-	return a.authenticateToken(token)
+	identity, err := a.authenticateToken(token)
+	if err != nil {
+		return RequestIdentity{}, err
+	}
+	identity.CredentialHash = hashCredential(token)
+	return identity, nil
+}
+
+func hashCredential(value string) string {
+	sum := sha256.Sum256([]byte(value))
+	return hex.EncodeToString(sum[:])
 }
 
 func (a *Authenticator) authenticateToken(token string) (RequestIdentity, error) {

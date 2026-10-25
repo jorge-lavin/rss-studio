@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"rss-studio/internal/application"
 	"rss-studio/internal/domain"
@@ -123,6 +124,7 @@ type createdServiceTokenResponse struct {
 const (
 	maxJSONRequestBody     = 1 << 20
 	maxAuthJSONRequestBody = 16 << 10
+	maxIdempotencyKey      = 255
 )
 
 func NewHandler(service *application.Service, authenticators ...*Authenticator) http.Handler {
@@ -402,13 +404,29 @@ func (h *Handler) apiCreateFeed(writer http.ResponseWriter, request *http.Reques
 		return
 	}
 
-	feed, err := h.service.CreateFeedWithOperator(request.Context(), h.requestUser(request), input.Name, input.SourceURL, input.Operator, input.Keyword)
+	key, inputErr := idempotencyKey(request)
+	if inputErr != nil {
+		writeAPIError(writer, request, http.StatusBadRequest, inputErr.Code, inputErr.Message)
+		return
+	}
+	requestHash, err := idempotencyHash("create_feed", input, key)
+	if err != nil {
+		writeAPIError(writer, request, http.StatusInternalServerError, "internal_error", "Could not create feed.")
+		return
+	}
+	result, err := h.service.ExecuteIdempotent(request.Context(), h.requestUser(request), requestCredentialHash(request), key, requestHash, func() (any, error) {
+		feed, err := h.service.CreateFeedWithOperator(request.Context(), h.requestUser(request), input.Name, input.SourceURL, input.Operator, input.Keyword)
+		if err != nil {
+			return nil, err
+		}
+		return feedListResponseFeedFor(request, feed), nil
+	})
 	if err != nil {
 		h.writeAPIFeedError(writer, request, err, "Could not create feed.")
 		return
 	}
 
-	writeAPIJSON(writer, http.StatusCreated, feedListResponseFeedFor(request, feed))
+	writeAPIJSONBytes(writer, http.StatusCreated, result)
 }
 
 func (h *Handler) apiPreview(writer http.ResponseWriter, request *http.Request) {
@@ -445,13 +463,29 @@ func (h *Handler) apiSplitFeeds(writer http.ResponseWriter, request *http.Reques
 		return
 	}
 
-	feeds, err := h.service.CreateSplitFeeds(request.Context(), h.requestUser(request), input.SourceURL, previewRulesFor(input.Outputs))
+	key, inputErr := idempotencyKey(request)
+	if inputErr != nil {
+		writeAPIError(writer, request, http.StatusBadRequest, inputErr.Code, inputErr.Message)
+		return
+	}
+	requestHash, err := idempotencyHash("split_feeds", input, key)
+	if err != nil {
+		writeAPIError(writer, request, http.StatusInternalServerError, "internal_error", "Could not publish feeds.")
+		return
+	}
+	result, err := h.service.ExecuteIdempotent(request.Context(), h.requestUser(request), requestCredentialHash(request), key, requestHash, func() (any, error) {
+		feeds, err := h.service.CreateSplitFeeds(request.Context(), h.requestUser(request), input.SourceURL, previewRulesFor(input.Outputs))
+		if err != nil {
+			return nil, err
+		}
+		return splitResponseFor(request, feeds), nil
+	})
 	if err != nil {
 		h.writeAPIFeedError(writer, request, err, "Could not publish feeds.")
 		return
 	}
 
-	writeAPIJSON(writer, http.StatusCreated, splitResponseFor(request, feeds))
+	writeAPIJSONBytes(writer, http.StatusCreated, result)
 }
 
 func (h *Handler) writeAPIFeedError(writer http.ResponseWriter, request *http.Request, err error, internalMessage string) {
@@ -462,10 +496,43 @@ func (h *Handler) writeAPIFeedError(writer http.ResponseWriter, request *http.Re
 		writeAPIError(writer, request, http.StatusNotFound, "not_found", "Feed not found.")
 	case errors.Is(err, application.ErrSourceUnavailable):
 		writeAPIError(writer, request, http.StatusBadGateway, "source_unavailable", "Source feed could not be fetched or processed.")
+	case errors.Is(err, application.ErrIdempotencyConflict):
+		writeAPIError(writer, request, http.StatusConflict, "idempotency_conflict", "Idempotency key was already used with a different request.")
 	default:
 		log.Printf("API feed operation: %v", err)
 		writeAPIError(writer, request, http.StatusInternalServerError, "internal_error", internalMessage)
 	}
+}
+
+func idempotencyKey(request *http.Request) (string, *apiInputError) {
+	key := strings.TrimSpace(request.Header.Get("Idempotency-Key"))
+	if key == "" {
+		return "", nil
+	}
+	if len(key) > maxIdempotencyKey {
+		return "", &apiInputError{Code: "validation_error", Message: "Idempotency key is invalid."}
+	}
+	for _, character := range key {
+		if unicode.IsControl(character) {
+			return "", &apiInputError{Code: "validation_error", Message: "Idempotency key is invalid."}
+		}
+	}
+	return key, nil
+}
+
+func idempotencyHash(operation string, request any, key string) (string, error) {
+	if key == "" {
+		return "", nil
+	}
+	return application.IdempotencyRequestHash(operation, request)
+}
+
+func requestCredentialHash(request *http.Request) string {
+	identity, ok := IdentityFromContext(request.Context())
+	if !ok {
+		return ""
+	}
+	return identity.CredentialHash
 }
 
 func previewRulesFor(outputs []previewOutput) []application.PreviewRule {

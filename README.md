@@ -43,10 +43,13 @@ If an older deployment has `/data/feeds.json` and an existing account, startup
 imports its feeds into the first account and removes the legacy file after a
 successful import.
 
-The service-token migration is additive and runs in one transaction at startup.
-There is no destructive down migration: older binaries reject databases at the
-newer schema version, so rollbacks require restoring a pre-migration database
-backup or deploying a compatible forward migration first.
+The service-token and idempotency migrations are additive and run in one
+transaction each at startup. There is no destructive down migration: older
+binaries reject databases at the newer schema version, so rolling back after
+this release requires restoring a pre-migration database backup or deploying a
+compatible forward migration first. Do not remove the idempotency table from a
+live database; that would discard retry protection and is not a supported
+rollback.
 
 To run the published image instead:
 
@@ -123,6 +126,13 @@ curl -sS -X POST http://localhost:8080/feeds/split \
 
 The response contains `outputs` entries with each output's `name`, `operator`,
 `keyword`, public `path`, and absolute `url`.
+
+Versioned API `POST /api/v1/feeds` and `POST /api/v1/feeds/split` requests
+accept an optional `Idempotency-Key` header. The key is scoped to the
+authenticated owner and credential. Retrying the same request replays its
+original result; reusing a key with changed JSON returns a conflict. Keys and
+credentials are stored only as hashes, and completed keys expire after 24
+hours.
 
 The existing single-output `POST /feeds` endpoint remains available. Its form
 fields are `name`, `source_url`, `operator`, and `keyword`; omitted operators

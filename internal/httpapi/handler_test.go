@@ -1,6 +1,7 @@
 package httpapi_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -11,6 +12,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -944,6 +946,176 @@ func TestVersionedCreateReturnsFeedMetadata(t *testing.T) {
 	}
 }
 
+func TestVersionedCreateIdempotencyReplaysAndRejectsChangedPayload(t *testing.T) {
+	server, store := newAuthenticatedServer(t)
+	token := loginToken(t, server)
+	body := `{"name":"Idempotent feed","source_url":"https://example.test/rss","keyword":"foo"}`
+	status, first := doIdempotentRequest(t, server, token, "/api/v1/feeds", "create-key", body)
+	if status != http.StatusCreated {
+		t.Fatalf("first create returned %d: %s", status, first)
+	}
+	status, retry := doIdempotentRequest(t, server, token, "/api/v1/feeds", "create-key", body)
+	if status != http.StatusCreated || !bytes.Equal(first, retry) {
+		t.Fatalf("retry did not replay original result: status=%d first=%s retry=%s", status, first, retry)
+	}
+	status, conflict := doIdempotentRequest(t, server, token, "/api/v1/feeds", "create-key", `{"name":"Changed feed","source_url":"https://example.test/rss","keyword":"foo"}`)
+	if status != http.StatusConflict || !bytes.Contains(conflict, []byte(`"idempotency_conflict"`)) || bytes.Contains(conflict, []byte("create-key")) {
+		t.Fatalf("changed create was not safely rejected: status=%d body=%s", status, conflict)
+	}
+	owner, err := store.User("admin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	feeds, err := store.List(owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(feeds) != 1 {
+		t.Fatalf("idempotent create created %d feeds", len(feeds))
+	}
+}
+
+func TestVersionedSplitIdempotencyReplaysOneDurableResult(t *testing.T) {
+	server, store := newAuthenticatedServer(t)
+	token := loginToken(t, server)
+	body := `{"source_url":"https://example.test/rss","outputs":[{"name":"Foo","keyword":"foo"},{"name":"Keep","keyword":"keep"}]}`
+	status, first := doIdempotentRequest(t, server, token, "/api/v1/feeds/split", "split-key", body)
+	if status != http.StatusCreated {
+		t.Fatalf("first split returned %d: %s", status, first)
+	}
+	status, retry := doIdempotentRequest(t, server, token, "/api/v1/feeds/split", "split-key", body)
+	if status != http.StatusCreated || !bytes.Equal(first, retry) {
+		t.Fatalf("split retry did not replay original result: status=%d first=%s retry=%s", status, first, retry)
+	}
+	status, conflict := doIdempotentRequest(t, server, token, "/api/v1/feeds/split", "split-key", `{"source_url":"https://example.test/rss","outputs":[{"name":"Changed","keyword":"foo"},{"name":"Keep","keyword":"keep"}]}`)
+	if status != http.StatusConflict || !bytes.Contains(conflict, []byte(`"idempotency_conflict"`)) {
+		t.Fatalf("changed split was not rejected: status=%d body=%s", status, conflict)
+	}
+	owner, err := store.User("admin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	feeds, err := store.List(owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(feeds) != 2 {
+		t.Fatalf("idempotent split created %d feeds", len(feeds))
+	}
+}
+
+func TestVersionedIdempotencyBindsOwnerAndCredential(t *testing.T) {
+	server, store := newAuthenticatedServer(t)
+	adminToken := loginToken(t, server)
+	if response, err := http.Post(server.URL+"/api/v1/auth/register", "application/json", strings.NewReader(`{"username":"reader","password":"reader-password"}`)); err != nil {
+		t.Fatal(err)
+	} else {
+		response.Body.Close()
+		if response.StatusCode != http.StatusCreated {
+			t.Fatalf("reader registration failed: %d", response.StatusCode)
+		}
+	}
+	readerToken := loginTokenAs(t, server, "reader", "reader-password")
+	body := `{"name":"Owner feed","source_url":"https://example.test/rss","keyword":"foo"}`
+	if status, _ := doIdempotentRequest(t, server, adminToken, "/api/v1/feeds", "owner-key", body); status != http.StatusCreated {
+		t.Fatalf("admin create returned %d", status)
+	}
+	if status, _ := doIdempotentRequest(t, server, readerToken, "/api/v1/feeds", "owner-key", body); status != http.StatusCreated {
+		t.Fatalf("reader create returned %d", status)
+	}
+	unauthenticated, err := http.NewRequest(http.MethodPost, server.URL+"/api/v1/feeds", strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	unauthenticated.Header.Set("Content-Type", "application/json")
+	unauthenticated.Header.Set("Idempotency-Key", "owner-key")
+	response, err := http.DefaultClient.Do(unauthenticated)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, _ := io.ReadAll(response.Body)
+	response.Body.Close()
+	if response.StatusCode != http.StatusUnauthorized || bytes.Contains(data, []byte("owner-key")) {
+		t.Fatalf("unauthenticated key claim was not rejected safely: status=%d body=%s", response.StatusCode, data)
+	}
+
+	admin, err := store.User("admin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, serviceToken, err := store.CreateServiceToken(admin, "write-agent", []string{domain.ScopeFeedsWrite}, time.Now().UTC().Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status, _ := doIdempotentRequest(t, server, serviceToken, "/api/v1/feeds", "owner-key", body); status != http.StatusCreated {
+		t.Fatalf("service-token create returned %d", status)
+	}
+	reader, err := store.User("reader")
+	if err != nil {
+		t.Fatal(err)
+	}
+	adminFeeds, err := store.List(admin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	readerFeeds, err := store.List(reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(adminFeeds) != 2 || len(readerFeeds) != 1 {
+		t.Fatalf("idempotency key crossed tenant boundary: admin=%d reader=%d", len(adminFeeds), len(readerFeeds))
+	}
+}
+
+func TestVersionedCreateIdempotencyConcurrentRequestsCreateOneFeed(t *testing.T) {
+	server, store := newAuthenticatedServer(t)
+	token := loginToken(t, server)
+	body := `{"name":"Concurrent feed","source_url":"https://example.test/rss","keyword":"foo"}`
+	const requestCount = 8
+	start := make(chan struct{})
+	statuses := make(chan int, requestCount)
+	var wait sync.WaitGroup
+	for i := 0; i < requestCount; i++ {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			<-start
+			status, _ := doIdempotentRequest(t, server, token, "/api/v1/feeds", "concurrent-key", body)
+			statuses <- status
+		}()
+	}
+	close(start)
+	wait.Wait()
+	close(statuses)
+	for status := range statuses {
+		if status != http.StatusCreated {
+			t.Fatalf("concurrent retry returned %d", status)
+		}
+	}
+	owner, err := store.User("admin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	feeds, err := store.List(owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(feeds) != 1 {
+		t.Fatalf("concurrent idempotent create created %d feeds", len(feeds))
+	}
+}
+
+func doIdempotentRequest(t *testing.T, server *httptest.Server, token, path, key, body string) (int, []byte) {
+	t.Helper()
+	request := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
+	request.Header.Set("Authorization", "Bearer "+token)
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Idempotency-Key", key)
+	recorder := httptest.NewRecorder()
+	server.Config.Handler.ServeHTTP(recorder, request)
+	return recorder.Code, recorder.Body.Bytes()
+}
+
 func TestVersionedSplitReturnsAllFeedReferences(t *testing.T) {
 	server, _ := newAuthenticatedServer(t)
 	token := loginToken(t, server)
@@ -1011,6 +1183,58 @@ func TestVersionedSplitReturnsErrorAfterRollback(t *testing.T) {
 	}
 	if len(feeds) != 0 || len(cache.data) != 0 {
 		t.Fatalf("split rollback left state: feeds=%#v cache=%#v", feeds, cache.data)
+	}
+}
+
+func TestVersionedCreateIdempotencyReleasesKeyAfterFailure(t *testing.T) {
+	store, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "rss-studio.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if _, err := store.CreateUser("admin", "password"); err != nil {
+		t.Fatal(err)
+	}
+	auth, err := httpapi.NewAuthenticator(httpapi.AuthConfig{JWTSecret: strings.Repeat("x", 32), UserStore: store})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cache := &failingMutationCache{data: make(map[string][]byte), failOnWrite: 1}
+	service := application.NewServiceWithOperator(store, cache, sourceStub{}, rss.FilterWithOperator)
+	token, _, err := auth.IssueToken("admin", "password")
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := httpapi.NewHandler(service, auth)
+	body := `{"name":"Retryable feed","source_url":"https://example.test/rss","keyword":"foo"}`
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/feeds", strings.NewReader(body))
+	request.Header.Set("Authorization", "Bearer "+token)
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Idempotency-Key", "failure-key")
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	assertAPIError(t, recorder, http.StatusBadGateway, "source_unavailable")
+
+	cache.failOnWrite = 0
+	request = httptest.NewRequest(http.MethodPost, "/api/v1/feeds", strings.NewReader(body))
+	request.Header.Set("Authorization", "Bearer "+token)
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Idempotency-Key", "failure-key")
+	recorder = httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("retry after failed mutation returned %d: %s", recorder.Code, recorder.Body.String())
+	}
+	owner, err := store.User("admin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	feeds, err := store.List(owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(feeds) != 1 {
+		t.Fatalf("failed idempotent mutation left unexpected feeds: %#v", feeds)
 	}
 }
 

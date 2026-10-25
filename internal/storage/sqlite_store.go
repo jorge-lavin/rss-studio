@@ -22,6 +22,7 @@ import (
 	_ "modernc.org/sqlite"
 
 	"rss-studio/internal/domain"
+	"rss-studio/internal/idempotency"
 )
 
 //go:embed migrations/*.sql
@@ -33,6 +34,14 @@ var (
 	ErrServiceTokenNotFound = errors.New("service token not found")
 	ErrInvalidServiceToken  = domain.ErrInvalidServiceToken
 )
+
+const (
+	idempotencyPending = "pending"
+	idempotencyDone    = "done"
+	idempotencyTTL     = 24 * time.Hour
+)
+
+type IdempotencyClaim = idempotency.Claim
 
 type SQLiteStore struct {
 	db *sql.DB
@@ -159,6 +168,120 @@ func (s *SQLiteStore) SchemaVersion() (int, error) {
 		return 0, fmt.Errorf("read schema version: %w", err)
 	}
 	return version, nil
+}
+
+func (s *SQLiteStore) ClaimIdempotency(ownerID int64, credentialHash, key, requestHash string, now time.Time) (IdempotencyClaim, error) {
+	if ownerID <= 0 || credentialHash == "" || key == "" || requestHash == "" {
+		return IdempotencyClaim{}, errors.New("invalid idempotency claim")
+	}
+	// Hash both opaque values here so storage never relies on callers to avoid
+	// persisting a raw credential, request hash, or idempotency key.
+	credentialHash = hashIdempotencyValue(credentialHash)
+	keyHash := hashIdempotencyValue(key)
+	requestHash = hashIdempotencyValue(requestHash)
+	now = now.UTC()
+	expires := now.Add(idempotencyTTL).Format(time.RFC3339Nano)
+	for {
+		inserted, err := s.db.Exec(`
+			INSERT INTO idempotency_keys (user_id, credential_hash, key_hash, request_hash, status, created_at, expires_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?)
+			ON CONFLICT(user_id, credential_hash, key_hash) DO NOTHING`,
+			ownerID, credentialHash, keyHash, requestHash, idempotencyPending,
+			now.Format(time.RFC3339Nano), expires)
+		if err != nil {
+			return IdempotencyClaim{}, fmt.Errorf("create idempotency claim: %w", err)
+		}
+		count, err := inserted.RowsAffected()
+		if err != nil {
+			return IdempotencyClaim{}, fmt.Errorf("check idempotency claim: %w", err)
+		}
+		if count > 0 {
+			id, err := inserted.LastInsertId()
+			if err != nil {
+				return IdempotencyClaim{}, fmt.Errorf("read idempotency claim id: %w", err)
+			}
+			return IdempotencyClaim{ID: id, Acquired: true}, nil
+		}
+
+		var claim IdempotencyClaim
+		var storedRequestHash, status, result string
+		var storedExpiry string
+		err = s.db.QueryRow(`
+			SELECT id, request_hash, status, COALESCE(result, ''), expires_at
+			FROM idempotency_keys
+			WHERE user_id = ? AND credential_hash = ? AND key_hash = ?`,
+			ownerID, credentialHash, keyHash).Scan(&claim.ID, &storedRequestHash, &status, &result, &storedExpiry)
+		if errors.Is(err, sql.ErrNoRows) {
+			continue
+		}
+		if err != nil {
+			return IdempotencyClaim{}, fmt.Errorf("read idempotency claim: %w", err)
+		}
+		parsedExpiry, err := time.Parse(time.RFC3339Nano, storedExpiry)
+		if err != nil {
+			return IdempotencyClaim{}, fmt.Errorf("parse idempotency expiry: %w", err)
+		}
+		if !parsedExpiry.After(now) {
+			deleted, err := s.db.Exec("DELETE FROM idempotency_keys WHERE id = ? AND expires_at <= ?", claim.ID, now.Format(time.RFC3339Nano))
+			if err != nil {
+				return IdempotencyClaim{}, fmt.Errorf("reclaim idempotency key: %w", err)
+			}
+			if _, err := deleted.RowsAffected(); err != nil {
+				return IdempotencyClaim{}, fmt.Errorf("check reclaimed idempotency key: %w", err)
+			}
+			continue
+		}
+		if storedRequestHash != requestHash {
+			return IdempotencyClaim{}, idempotency.ErrConflict
+		}
+		switch status {
+		case idempotencyPending:
+			claim.Pending = true
+		case idempotencyDone:
+			claim.Completed = true
+			claim.Result = []byte(result)
+		default:
+			return IdempotencyClaim{}, errors.New("invalid idempotency status")
+		}
+		return claim, nil
+	}
+}
+
+func (s *SQLiteStore) CompleteIdempotency(id int64, result []byte) error {
+	if id <= 0 || len(result) == 0 {
+		return errors.New("invalid idempotency result")
+	}
+	updated, err := s.db.Exec(`
+		UPDATE idempotency_keys
+		SET status = ?, result = ?, expires_at = ?
+		WHERE id = ? AND status = ?`,
+		idempotencyDone, result, time.Now().UTC().Add(idempotencyTTL).Format(time.RFC3339Nano), id, idempotencyPending)
+	if err != nil {
+		return fmt.Errorf("complete idempotency claim: %w", err)
+	}
+	count, err := updated.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("check completed idempotency claim: %w", err)
+	}
+	if count == 0 {
+		return errors.New("idempotency claim is no longer pending")
+	}
+	return nil
+}
+
+func (s *SQLiteStore) AbandonIdempotency(id int64) error {
+	if id <= 0 {
+		return errors.New("invalid idempotency claim")
+	}
+	if _, err := s.db.Exec("DELETE FROM idempotency_keys WHERE id = ? AND status = ?", id, idempotencyPending); err != nil {
+		return fmt.Errorf("abandon idempotency claim: %w", err)
+	}
+	return nil
+}
+
+func hashIdempotencyValue(value string) string {
+	sum := sha256.Sum256([]byte(value))
+	return hex.EncodeToString(sum[:])
 }
 
 func (s *SQLiteStore) CreateUser(username, password string) (domain.User, error) {

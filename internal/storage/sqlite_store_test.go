@@ -23,8 +23,8 @@ func TestSQLiteStoreMigratesAndPersistsMultipleUsers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if version != 4 {
-		t.Fatalf("expected schema version 4, got %d", version)
+	if version != 5 {
+		t.Fatalf("expected schema version 5, got %d", version)
 	}
 	if err := store.Migrate(); err != nil {
 		t.Fatalf("rerunning migrations: %v", err)
@@ -262,5 +262,48 @@ func TestSQLiteStoreServiceTokensAreHashedScopedExpiringAndRevocable(t *testing.
 	}
 	if err := store.RevokeServiceToken(alice, token.ID); !errors.Is(err, ErrServiceTokenNotFound) {
 		t.Fatalf("expected repeated revoke to fail safely, got %v", err)
+	}
+}
+
+func TestSQLiteStoreReclaimsExpiredIdempotencyClaim(t *testing.T) {
+	store, err := NewSQLiteStore(filepath.Join(t.TempDir(), "rss-studio.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	owner, err := store.CreateUser("alice", "password")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	first, err := store.ClaimIdempotency(owner.ID, "credential", "request-key", "first-request", now)
+	if err != nil || !first.Acquired || first.ID == 0 {
+		t.Fatalf("initial claim failed: claim=%#v err=%v", first, err)
+	}
+	if err := store.CompleteIdempotency(first.ID, []byte(`{"path":"first"}`)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.Exec("UPDATE idempotency_keys SET expires_at = ? WHERE id = ?", now.Add(-time.Minute).Format(time.RFC3339Nano), first.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	reclaimed, err := store.ClaimIdempotency(owner.ID, "credential", "request-key", "second-request", now)
+	if err != nil || !reclaimed.Acquired || reclaimed.ID == first.ID {
+		t.Fatalf("expired claim was not safely reclaimed: claim=%#v err=%v", reclaimed, err)
+	}
+	if err := store.CompleteIdempotency(reclaimed.ID, []byte(`{"path":"second"}`)); err != nil {
+		t.Fatal(err)
+	}
+	replayed, err := store.ClaimIdempotency(owner.ID, "credential", "request-key", "second-request", now)
+	if err != nil || !replayed.Completed || string(replayed.Result) != `{"path":"second"}` {
+		t.Fatalf("reclaimed result was not replayed: claim=%#v err=%v", replayed, err)
+	}
+
+	var storedKey, storedCredential string
+	if err := store.db.QueryRow("SELECT key_hash, credential_hash FROM idempotency_keys WHERE id = ?", reclaimed.ID).Scan(&storedKey, &storedCredential); err != nil {
+		t.Fatal(err)
+	}
+	if storedKey == "request-key" || storedCredential == "credential" {
+		t.Fatal("raw idempotency values were persisted")
 	}
 }

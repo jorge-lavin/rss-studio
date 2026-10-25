@@ -98,6 +98,13 @@ func writeAPIJSON(writer http.ResponseWriter, status int, value any) {
 	_ = json.NewEncoder(writer).Encode(value)
 }
 
+func writeAPIJSONBytes(writer http.ResponseWriter, status int, data []byte) {
+	writer.Header().Set("Content-Type", "application/json; charset=utf-8")
+	writer.Header().Set("Cache-Control", "no-store")
+	writer.WriteHeader(status)
+	_, _ = writer.Write(data)
+}
+
 func writeAPIError(writer http.ResponseWriter, request *http.Request, status int, code, message string) {
 	writeAPIJSON(writer, status, apiErrorResponse{
 		Error:     apiErrorBody{Code: code, Message: message},

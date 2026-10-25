@@ -18,11 +18,14 @@ var (
 // operation. Browser JWTs intentionally have implicit access to existing
 // operations; service tokens must carry each required scope explicitly.
 type Identity struct {
-	User         domain.User
-	TokenID      int64
-	TokenName    string
-	Scopes       []string
-	ServiceToken bool
+	User      domain.User
+	TokenID   int64
+	TokenName string
+	// CredentialHash binds request-scoped mutations without retaining the
+	// bearer credential itself.
+	CredentialHash string
+	Scopes         []string
+	ServiceToken   bool
 }
 
 type identityContextKey struct{}
