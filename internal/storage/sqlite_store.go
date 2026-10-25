@@ -1,8 +1,12 @@
 package storage
 
 import (
+	"crypto/rand"
+	"crypto/sha256"
 	"database/sql"
 	"embed"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -24,8 +28,10 @@ import (
 var migrationFS embed.FS
 
 var (
-	ErrUserNotFound      = errors.New("user not found")
-	ErrInvalidCredential = errors.New("invalid credentials")
+	ErrUserNotFound         = errors.New("user not found")
+	ErrInvalidCredential    = errors.New("invalid credentials")
+	ErrServiceTokenNotFound = errors.New("service token not found")
+	ErrInvalidServiceToken  = domain.ErrInvalidServiceToken
 )
 
 type SQLiteStore struct {
@@ -231,6 +237,199 @@ func (s *SQLiteStore) Authenticate(username, password string) (domain.User, erro
 		return domain.User{}, ErrInvalidCredential
 	}
 	return user, nil
+}
+
+func (s *SQLiteStore) CreateServiceToken(owner domain.User, name string, scopes []string, expiresAt time.Time) (domain.ServiceToken, string, error) {
+	userID, err := s.ownerID(owner)
+	if err != nil {
+		return domain.ServiceToken{}, "", err
+	}
+	name = strings.TrimSpace(name)
+	if name == "" || len(name) > 100 || expiresAt.IsZero() || !expiresAt.After(time.Now()) {
+		return domain.ServiceToken{}, "", ErrInvalidServiceToken
+	}
+	scopes, err = domain.ParseServiceTokenScopes(scopes)
+	if err != nil {
+		return domain.ServiceToken{}, "", err
+	}
+	raw, hash, err := newServiceToken()
+	if err != nil {
+		return domain.ServiceToken{}, "", fmt.Errorf("generate service token: %w", err)
+	}
+	createdAt := time.Now().UTC()
+	scopesJSON, err := json.Marshal(scopes)
+	if err != nil {
+		return domain.ServiceToken{}, "", fmt.Errorf("encode service token scopes: %w", err)
+	}
+	result, err := s.db.Exec(`
+		INSERT INTO service_tokens (user_id, name, token_hash, scopes, created_at, expires_at)
+		VALUES (?, ?, ?, ?, ?, ?)`,
+		userID, name, hash, string(scopesJSON), createdAt.Format(time.RFC3339Nano), expiresAt.UTC().Format(time.RFC3339Nano))
+	if err != nil {
+		return domain.ServiceToken{}, "", fmt.Errorf("create service token: %w", err)
+	}
+	id, err := result.LastInsertId()
+	if err != nil {
+		return domain.ServiceToken{}, "", fmt.Errorf("read service token id: %w", err)
+	}
+	return domain.ServiceToken{
+		ID: id, UserID: userID, Username: owner.Username, Name: name, Scopes: scopes,
+		CreatedAt: createdAt, ExpiresAt: expiresAt.UTC(),
+	}, raw, nil
+}
+
+func (s *SQLiteStore) ListServiceTokens(owner domain.User) ([]domain.ServiceToken, error) {
+	userID, err := s.ownerID(owner)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := s.db.Query(`
+		SELECT service_tokens.id, service_tokens.user_id, users.username, service_tokens.name,
+		       service_tokens.scopes, service_tokens.created_at, service_tokens.expires_at,
+		       service_tokens.revoked_at
+		FROM service_tokens
+		JOIN users ON users.id = service_tokens.user_id
+		WHERE service_tokens.user_id = ?
+		ORDER BY service_tokens.created_at DESC, service_tokens.id DESC`, userID)
+	if err != nil {
+		return nil, fmt.Errorf("list service tokens: %w", err)
+	}
+	defer rows.Close()
+
+	tokens := make([]domain.ServiceToken, 0)
+	for rows.Next() {
+		token, err := scanServiceToken(rows)
+		if err != nil {
+			return nil, fmt.Errorf("read service token: %w", err)
+		}
+		tokens = append(tokens, token)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate service tokens: %w", err)
+	}
+	return tokens, nil
+}
+
+func (s *SQLiteStore) RevokeServiceToken(owner domain.User, id int64) error {
+	userID, err := s.ownerID(owner)
+	if err != nil {
+		return err
+	}
+	revokedAt := time.Now().UTC().Format(time.RFC3339Nano)
+	result, err := s.db.Exec(
+		"UPDATE service_tokens SET revoked_at = ? WHERE id = ? AND user_id = ? AND revoked_at IS NULL",
+		revokedAt, id, userID)
+	if err != nil {
+		return fmt.Errorf("revoke service token: %w", err)
+	}
+	count, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("check revoked service token: %w", err)
+	}
+	if count == 0 {
+		return ErrServiceTokenNotFound
+	}
+	return nil
+}
+
+func (s *SQLiteStore) AuthenticateServiceToken(raw string, now time.Time) (domain.ServiceToken, error) {
+	if raw == "" || len(raw) > 4096 {
+		return domain.ServiceToken{}, ErrInvalidServiceToken
+	}
+	hash, err := hashServiceToken(raw)
+	if err != nil {
+		return domain.ServiceToken{}, ErrInvalidServiceToken
+	}
+	var token domain.ServiceToken
+	var scopesJSON, createdAt, expiresAt string
+	var revokedAt sql.NullString
+	err = s.db.QueryRow(`
+		SELECT service_tokens.id, service_tokens.user_id, users.username, service_tokens.name,
+		       service_tokens.scopes, service_tokens.created_at, service_tokens.expires_at,
+		       service_tokens.revoked_at
+		FROM service_tokens
+		JOIN users ON users.id = service_tokens.user_id
+		WHERE service_tokens.token_hash = ?
+		  AND service_tokens.revoked_at IS NULL`, hash).Scan(
+		&token.ID, &token.UserID, &token.Username, &token.Name, &scopesJSON, &createdAt, &expiresAt, &revokedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return domain.ServiceToken{}, ErrInvalidServiceToken
+	}
+	if err != nil {
+		return domain.ServiceToken{}, fmt.Errorf("authenticate service token: %w", err)
+	}
+	if err := decodeServiceToken(&token, scopesJSON, createdAt, expiresAt, revokedAt); err != nil {
+		return domain.ServiceToken{}, fmt.Errorf("decode service token: %w", err)
+	}
+	if !token.ExpiresAt.After(now.UTC()) {
+		return domain.ServiceToken{}, ErrInvalidServiceToken
+	}
+	return token, nil
+}
+
+func newServiceToken() (string, string, error) {
+	bytes := make([]byte, 32)
+	if _, err := rand.Read(bytes); err != nil {
+		return "", "", err
+	}
+	raw := "rss_" + base64.RawURLEncoding.EncodeToString(bytes)
+	hash, err := hashServiceToken(raw)
+	if err != nil {
+		return "", "", err
+	}
+	return raw, hash, nil
+}
+
+func hashServiceToken(raw string) (string, error) {
+	if raw == "" {
+		return "", ErrInvalidServiceToken
+	}
+	sum := sha256.Sum256([]byte(raw))
+	return hex.EncodeToString(sum[:]), nil
+}
+
+func scanServiceToken(row rowScanner) (domain.ServiceToken, error) {
+	var token domain.ServiceToken
+	var scopesJSON, createdAt, expiresAt string
+	var revokedAt sql.NullString
+	if err := row.Scan(
+		&token.ID, &token.UserID, &token.Username, &token.Name, &scopesJSON,
+		&createdAt, &expiresAt, &revokedAt,
+	); err != nil {
+		return domain.ServiceToken{}, err
+	}
+	if err := decodeServiceToken(&token, scopesJSON, createdAt, expiresAt, revokedAt); err != nil {
+		return domain.ServiceToken{}, err
+	}
+	return token, nil
+}
+
+func decodeServiceToken(token *domain.ServiceToken, scopesJSON, createdAt, expiresAt string, revokedAt sql.NullString) error {
+	var scopes []string
+	if err := json.Unmarshal([]byte(scopesJSON), &scopes); err != nil {
+		return fmt.Errorf("parse service token scopes: %w", err)
+	}
+	parsedScopes, err := domain.ParseServiceTokenScopes(scopes)
+	if err != nil {
+		return err
+	}
+	token.Scopes = parsedScopes
+	token.CreatedAt, err = time.Parse(time.RFC3339Nano, createdAt)
+	if err != nil {
+		return fmt.Errorf("parse service token creation time: %w", err)
+	}
+	token.ExpiresAt, err = time.Parse(time.RFC3339Nano, expiresAt)
+	if err != nil {
+		return fmt.Errorf("parse service token expiry time: %w", err)
+	}
+	if revokedAt.Valid {
+		revoked, err := time.Parse(time.RFC3339Nano, revokedAt.String)
+		if err != nil {
+			return fmt.Errorf("parse service token revocation time: %w", err)
+		}
+		token.RevokedAt = &revoked
+	}
+	return nil
 }
 
 func (s *SQLiteStore) List(owner domain.User) ([]domain.Feed, error) {

@@ -191,6 +191,97 @@ func TestHandlerCreatesAndServesFeed(t *testing.T) {
 	}
 }
 
+func TestServiceTokenManagementReturnsRawTokenOnceAndSupportsRevocation(t *testing.T) {
+	server, _ := newAuthenticatedServer(t)
+	ownerToken := loginToken(t, server)
+	request, err := http.NewRequest(http.MethodPost, server.URL+"/api/v1/auth/tokens", strings.NewReader(`{"name":"agent","scopes":["feeds:write","feeds:read"],"expires_in":3600}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Authorization", "Bearer "+ownerToken)
+	request.Header.Set("Content-Type", "application/json")
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var created struct {
+		ID     int64    `json:"id"`
+		Token  string   `json:"token"`
+		Scopes []string `json:"scopes"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&created); err != nil {
+		response.Body.Close()
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusCreated || created.ID == 0 || created.Token == "" {
+		t.Fatalf("service token creation failed: status=%d response=%#v", response.StatusCode, created)
+	}
+	if len(created.Scopes) != 2 || created.Scopes[0] != domain.ScopeFeedsRead || created.Scopes[1] != domain.ScopeFeedsWrite {
+		t.Fatalf("scopes were not canonicalized: %#v", created.Scopes)
+	}
+
+	request, err = http.NewRequest(http.MethodGet, server.URL+"/api/v1/auth/tokens", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Authorization", "Bearer "+ownerToken)
+	response, err = http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := io.ReadAll(response.Body)
+	response.Body.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.StatusCode != http.StatusOK || strings.Contains(string(body), created.Token) {
+		t.Fatalf("service token list leaked raw token: status=%d body=%s", response.StatusCode, body)
+	}
+
+	request, err = http.NewRequest(http.MethodGet, server.URL+"/api/v1/feeds", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Authorization", "Bearer "+created.Token)
+	response, err = http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("service token authentication failed: %d", response.StatusCode)
+	}
+
+	request, err = http.NewRequest(http.MethodPost, server.URL+"/api/v1/auth/tokens/"+strconv.FormatInt(created.ID, 10)+"/revoke", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Authorization", "Bearer "+ownerToken)
+	response, err = http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("service token revocation failed: %d", response.StatusCode)
+	}
+
+	request, err = http.NewRequest(http.MethodGet, server.URL+"/api/v1/feeds", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Authorization", "Bearer "+created.Token)
+	response, err = http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("revoked service token accepted: %d", response.StatusCode)
+	}
+}
+
 func TestHomeRendersSplitFeedWorkflow(t *testing.T) {
 	server, _ := newAuthenticatedServer(t)
 	token := loginToken(t, server)

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -22,8 +23,8 @@ func TestSQLiteStoreMigratesAndPersistsMultipleUsers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if version != 3 {
-		t.Fatalf("expected schema version 3, got %d", version)
+	if version != 4 {
+		t.Fatalf("expected schema version 4, got %d", version)
 	}
 	if err := store.Migrate(); err != nil {
 		t.Fatalf("rerunning migrations: %v", err)
@@ -182,5 +183,84 @@ func TestSQLiteStoreImportsAndRemovesLegacyFeedStore(t *testing.T) {
 	}
 	if feeds[0].Operator != domain.FilterContains {
 		t.Fatalf("expected legacy feeds to use contains operator, got %q", feeds[0].Operator)
+	}
+}
+
+func TestSQLiteStoreServiceTokensAreHashedScopedExpiringAndRevocable(t *testing.T) {
+	store, err := NewSQLiteStore(filepath.Join(t.TempDir(), "rss-studio.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if _, err := store.CreateUser("alice", "password"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CreateUser("bob", "password"); err != nil {
+		t.Fatal(err)
+	}
+	alice, err := store.User("alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bob, err := store.User("bob")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	expiresAt := time.Now().UTC().Add(time.Hour)
+	token, raw, err := store.CreateServiceToken(alice, "agent", []string{domain.ScopeFeedsDelete, domain.ScopeFeedsRead}, expiresAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if raw == "" || token.ID == 0 || !token.ExpiresAt.Equal(expiresAt.UTC()) {
+		t.Fatalf("unexpected created service token: %#v", token)
+	}
+	if strings.Contains(token.Name, raw) {
+		t.Fatal("raw token leaked into token metadata")
+	}
+	var storedHash, storedScopes string
+	if err := store.db.QueryRow("SELECT token_hash, scopes FROM service_tokens WHERE id = ?", token.ID).Scan(&storedHash, &storedScopes); err != nil {
+		t.Fatal(err)
+	}
+	if storedHash == raw || len(storedHash) != 64 || strings.Contains(storedScopes, raw) {
+		t.Fatalf("raw token was persisted: hash=%q scopes=%q", storedHash, storedScopes)
+	}
+
+	authenticated, err := store.AuthenticateServiceToken(raw, expiresAt.Add(-time.Minute))
+	if err != nil {
+		t.Fatalf("valid service token rejected: %v", err)
+	}
+	if authenticated.UserID != alice.ID || authenticated.Username != alice.Username || len(authenticated.Scopes) != 2 {
+		t.Fatalf("unexpected authenticated service token: %#v", authenticated)
+	}
+	if _, err := store.AuthenticateServiceToken(raw, expiresAt); !errors.Is(err, ErrInvalidServiceToken) {
+		t.Fatalf("expired service token accepted: %v", err)
+	}
+
+	aliceTokens, err := store.ListServiceTokens(alice)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(aliceTokens) != 1 || aliceTokens[0].ID != token.ID || aliceTokens[0].RevokedAt != nil {
+		t.Fatalf("unexpected alice token list: %#v", aliceTokens)
+	}
+	bobTokens, err := store.ListServiceTokens(bob)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(bobTokens) != 0 {
+		t.Fatalf("bob saw alice token: %#v", bobTokens)
+	}
+	if err := store.RevokeServiceToken(bob, token.ID); !errors.Is(err, ErrServiceTokenNotFound) {
+		t.Fatalf("expected cross-tenant revoke rejection, got %v", err)
+	}
+	if err := store.RevokeServiceToken(alice, token.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.AuthenticateServiceToken(raw, expiresAt.Add(-time.Minute)); !errors.Is(err, ErrInvalidServiceToken) {
+		t.Fatalf("revoked service token accepted: %v", err)
+	}
+	if err := store.RevokeServiceToken(alice, token.ID); !errors.Is(err, ErrServiceTokenNotFound) {
+		t.Fatalf("expected repeated revoke to fail safely, got %v", err)
 	}
 }

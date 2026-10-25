@@ -43,6 +43,11 @@ If an older deployment has `/data/feeds.json` and an existing account, startup
 imports its feeds into the first account and removes the legacy file after a
 successful import.
 
+The service-token migration is additive and runs in one transaction at startup.
+There is no destructive down migration: older binaries reject databases at the
+newer schema version, so rollbacks require restoring a pre-migration database
+backup or deploying a compatible forward migration first.
+
 To run the published image instead:
 
 ```sh
@@ -122,6 +127,25 @@ The response contains `outputs` entries with each output's `name`, `operator`,
 The existing single-output `POST /feeds` endpoint remains available. Its form
 fields are `name`, `source_url`, `operator`, and `keyword`; omitted operators
 default to `contains`.
+
+### Service tokens
+
+Authenticated owners can create and manage agent tokens through the versioned
+API. Creation requires `name`, `scopes`, and exactly one expiry: `expires_in`
+(seconds) or RFC3339 `expires_at`:
+
+```sh
+curl -sS -X POST http://localhost:8080/api/v1/auth/tokens \
+  -H "Authorization: Bearer $token" \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"feed-agent","scopes":["feeds:read","feeds:preview"],"expires_in":86400}'
+```
+
+Supported scopes are `feeds:read`, `feeds:preview`, `feeds:write`, and
+`feeds:delete`. The raw token is returned only by creation; `GET
+/api/v1/auth/tokens` returns metadata and scopes, and `POST
+/api/v1/auth/tokens/{id}/revoke` revokes one token. Tokens are bearer
+credentials, expire automatically, and are stored only as SHA-256 hashes.
 
 ## MCP
 

@@ -14,6 +14,7 @@ import (
 	"rss-studio/internal/application"
 	"rss-studio/internal/domain"
 	"rss-studio/internal/observability"
+	"rss-studio/internal/storage"
 	"rss-studio/internal/version"
 )
 
@@ -97,6 +98,27 @@ type splitResponseOutput struct {
 	URL      string `json:"url"`
 }
 
+type serviceTokenCreateRequest struct {
+	Name      string     `json:"name"`
+	Scopes    []string   `json:"scopes"`
+	ExpiresIn int64      `json:"expires_in"`
+	ExpiresAt *time.Time `json:"expires_at"`
+}
+
+type serviceTokenResponse struct {
+	ID        int64      `json:"id"`
+	Name      string     `json:"name"`
+	Scopes    []string   `json:"scopes"`
+	CreatedAt time.Time  `json:"created_at"`
+	ExpiresAt time.Time  `json:"expires_at"`
+	RevokedAt *time.Time `json:"revoked_at,omitempty"`
+}
+
+type createdServiceTokenResponse struct {
+	serviceTokenResponse
+	Token string `json:"token"`
+}
+
 const (
 	maxJSONRequestBody     = 1 << 20
 	maxAuthJSONRequestBody = 16 << 10
@@ -122,6 +144,10 @@ func NewHandler(service *application.Service, authenticators ...*Authenticator) 
 		mux.HandleFunc("POST /auth/register", handler.register)
 		mux.HandleFunc("POST /api/v1/auth/login", handler.apiLogin)
 		mux.HandleFunc("POST /api/v1/auth/register", handler.apiRegister)
+		mux.HandleFunc("GET /api/v1/auth/tokens", handler.apiListServiceTokens)
+		mux.HandleFunc("POST /api/v1/auth/tokens", handler.apiCreateServiceToken)
+		mux.HandleFunc("POST /api/v1/auth/tokens/{id}/revoke", handler.apiRevokeServiceToken)
+		mux.HandleFunc("DELETE /api/v1/auth/tokens/{id}", handler.apiRevokeServiceToken)
 		mux.HandleFunc("/api/v1/auth/login", handler.apiMethodNotAllowed)
 		mux.HandleFunc("/api/v1/auth/register", handler.apiMethodNotAllowed)
 		mux.HandleFunc("GET /api/v1/feeds", handler.apiListFeeds)
@@ -223,6 +249,104 @@ func (h *Handler) apiRegister(writer http.ResponseWriter, request *http.Request)
 	writeAPIJSON(writer, http.StatusCreated, struct {
 		Username string `json:"username"`
 	}{Username: strings.TrimSpace(credentials.Username)})
+}
+
+func (h *Handler) apiCreateServiceToken(writer http.ResponseWriter, request *http.Request) {
+	request.Body = http.MaxBytesReader(writer, request.Body, maxAuthJSONRequestBody)
+	var input serviceTokenCreateRequest
+	if inputErr := parseAPIJSON(request, &input); inputErr != nil {
+		writeAPIError(writer, request, http.StatusBadRequest, inputErr.Code, inputErr.Message)
+		return
+	}
+	if (input.ExpiresIn <= 0) == (input.ExpiresAt == nil) {
+		writeAPIError(writer, request, http.StatusBadRequest, "validation_error", "Exactly one token expiry is required.")
+		return
+	}
+	expiresAt := time.Time{}
+	if input.ExpiresAt != nil {
+		expiresAt = input.ExpiresAt.UTC()
+	} else {
+		maxDurationSeconds := int64((time.Duration(1<<63 - 1)) / time.Second)
+		if input.ExpiresIn > maxDurationSeconds {
+			writeAPIError(writer, request, http.StatusBadRequest, "validation_error", "Token expiry is invalid.")
+			return
+		}
+		expiresAt = h.auth.now().UTC().Add(time.Duration(input.ExpiresIn) * time.Second)
+	}
+	token, raw, err := h.auth.CreateServiceToken(h.requestUser(request), input.Name, input.Scopes, expiresAt)
+	if err != nil {
+		if errors.Is(err, domain.ErrInvalidServiceToken) || errors.Is(err, ErrServiceTokenUnavailable) {
+			status := http.StatusBadRequest
+			code := "validation_error"
+			message := "Token name, scopes, and expiry are invalid."
+			if errors.Is(err, ErrServiceTokenUnavailable) {
+				status = http.StatusNotImplemented
+				code = "service_tokens_unavailable"
+				message = "Service tokens are unavailable."
+			}
+			writeAPIError(writer, request, status, code, message)
+			return
+		}
+		log.Printf("create service token: %v", err)
+		writeAPIError(writer, request, http.StatusInternalServerError, "internal_error", "Could not create service token.")
+		return
+	}
+	writeAPIJSON(writer, http.StatusCreated, createdServiceTokenResponse{
+		serviceTokenResponse: serviceTokenResponseFor(token),
+		Token:                raw,
+	})
+}
+
+func (h *Handler) apiListServiceTokens(writer http.ResponseWriter, request *http.Request) {
+	tokens, err := h.auth.ListServiceTokens(h.requestUser(request))
+	if err != nil {
+		if errors.Is(err, ErrServiceTokenUnavailable) {
+			writeAPIError(writer, request, http.StatusNotImplemented, "service_tokens_unavailable", "Service tokens are unavailable.")
+			return
+		}
+		log.Printf("list service tokens: %v", err)
+		writeAPIError(writer, request, http.StatusInternalServerError, "internal_error", "Could not list service tokens.")
+		return
+	}
+	response := make([]serviceTokenResponse, len(tokens))
+	for i, token := range tokens {
+		response[i] = serviceTokenResponseFor(token)
+	}
+	writeAPIJSON(writer, http.StatusOK, struct {
+		Tokens []serviceTokenResponse `json:"tokens"`
+	}{Tokens: response})
+}
+
+func (h *Handler) apiRevokeServiceToken(writer http.ResponseWriter, request *http.Request) {
+	id, err := strconv.ParseInt(request.PathValue("id"), 10, 64)
+	if err != nil || id <= 0 {
+		writeAPIError(writer, request, http.StatusBadRequest, "validation_error", "Token ID is invalid.")
+		return
+	}
+	if err := h.auth.RevokeServiceToken(h.requestUser(request), id); err != nil {
+		if errors.Is(err, storage.ErrServiceTokenNotFound) {
+			writeAPIError(writer, request, http.StatusNotFound, "not_found", "Service token not found.")
+			return
+		}
+		if errors.Is(err, ErrServiceTokenUnavailable) {
+			writeAPIError(writer, request, http.StatusNotImplemented, "service_tokens_unavailable", "Service tokens are unavailable.")
+			return
+		}
+		log.Printf("revoke service token: %v", err)
+		writeAPIError(writer, request, http.StatusInternalServerError, "internal_error", "Could not revoke service token.")
+		return
+	}
+	writeAPIJSON(writer, http.StatusOK, struct {
+		Revoked bool  `json:"revoked"`
+		ID      int64 `json:"id"`
+	}{Revoked: true, ID: id})
+}
+
+func serviceTokenResponseFor(token domain.ServiceToken) serviceTokenResponse {
+	return serviceTokenResponse{
+		ID: token.ID, Name: token.Name, Scopes: token.Scopes,
+		CreatedAt: token.CreatedAt, ExpiresAt: token.ExpiresAt, RevokedAt: token.RevokedAt,
+	}
 }
 
 func (h *Handler) apiMethodNotAllowed(writer http.ResponseWriter, request *http.Request) {
@@ -533,7 +657,7 @@ func (h *Handler) authenticate(next http.Handler) http.Handler {
 			next.ServeHTTP(writer, request)
 			return
 		}
-		user, err := h.auth.UserFromRequest(request)
+		identity, err := h.auth.IdentityFromRequest(request)
 		if err != nil {
 			if isAPIRequest(request) {
 				writer.Header().Set("WWW-Authenticate", `Bearer realm="rss-studio"`)
@@ -548,7 +672,7 @@ func (h *Handler) authenticate(next http.Handler) http.Handler {
 			http.Error(writer, "Authentication required.", http.StatusUnauthorized)
 			return
 		}
-		request = request.WithContext(withUser(request.Context(), user))
+		request = request.WithContext(withIdentity(request.Context(), identity))
 		next.ServeHTTP(writer, request)
 	})
 }

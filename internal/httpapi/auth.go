@@ -26,12 +26,14 @@ var (
 	ErrInvalidCredentials      = errors.New("invalid credentials")
 	ErrInvalidToken            = errors.New("invalid token")
 	ErrRegistrationUnavailable = errors.New("registration unavailable")
+	ErrServiceTokenUnavailable = errors.New("service tokens unavailable")
 )
 
 type AuthConfig struct {
-	JWTSecret string
-	TokenTTL  time.Duration
-	UserStore UserStore
+	JWTSecret         string
+	TokenTTL          time.Duration
+	UserStore         UserStore
+	ServiceTokenStore ServiceTokenStore
 }
 
 type UserStore interface {
@@ -42,14 +44,30 @@ type UserRegistrar interface {
 	CreateUser(username, password string) (domain.User, error)
 }
 
-type Authenticator struct {
-	secret    []byte
-	ttl       time.Duration
-	now       func() time.Time
-	userStore UserStore
+type ServiceTokenStore interface {
+	CreateServiceToken(owner domain.User, name string, scopes []string, expiresAt time.Time) (domain.ServiceToken, string, error)
+	ListServiceTokens(owner domain.User) ([]domain.ServiceToken, error)
+	RevokeServiceToken(owner domain.User, id int64) error
+	AuthenticateServiceToken(raw string, now time.Time) (domain.ServiceToken, error)
 }
 
-type userContextKey struct{}
+type Authenticator struct {
+	secret        []byte
+	ttl           time.Duration
+	now           func() time.Time
+	userStore     UserStore
+	serviceTokens ServiceTokenStore
+}
+
+type identityContextKey struct{}
+
+type RequestIdentity struct {
+	User         domain.User
+	TokenID      int64
+	TokenName    string
+	Scopes       []string
+	ServiceToken bool
+}
 
 type jwtHeader struct {
 	Algorithm string `json:"alg"`
@@ -73,11 +91,16 @@ func NewAuthenticator(config AuthConfig) (*Authenticator, error) {
 	if config.TokenTTL <= 0 {
 		config.TokenTTL = defaultTokenTTL
 	}
+	serviceTokens := config.ServiceTokenStore
+	if serviceTokens == nil {
+		serviceTokens, _ = config.UserStore.(ServiceTokenStore)
+	}
 	return &Authenticator{
-		secret:    []byte(config.JWTSecret),
-		ttl:       config.TokenTTL,
-		now:       time.Now,
-		userStore: config.UserStore,
+		secret:        []byte(config.JWTSecret),
+		ttl:           config.TokenTTL,
+		now:           time.Now,
+		userStore:     config.UserStore,
+		serviceTokens: serviceTokens,
 	}, nil
 }
 
@@ -117,26 +140,38 @@ func (a *Authenticator) Register(username, password string) error {
 	return err
 }
 
+func (a *Authenticator) CreateServiceToken(owner domain.User, name string, scopes []string, expiresAt time.Time) (domain.ServiceToken, string, error) {
+	if a.serviceTokens == nil {
+		return domain.ServiceToken{}, "", ErrServiceTokenUnavailable
+	}
+	return a.serviceTokens.CreateServiceToken(owner, name, scopes, expiresAt)
+}
+
+func (a *Authenticator) ListServiceTokens(owner domain.User) ([]domain.ServiceToken, error) {
+	if a.serviceTokens == nil {
+		return nil, ErrServiceTokenUnavailable
+	}
+	return a.serviceTokens.ListServiceTokens(owner)
+}
+
+func (a *Authenticator) RevokeServiceToken(owner domain.User, id int64) error {
+	if a.serviceTokens == nil {
+		return ErrServiceTokenUnavailable
+	}
+	return a.serviceTokens.RevokeServiceToken(owner, id)
+}
+
 func (a *Authenticator) ValidateRequest(request *http.Request) error {
 	_, err := a.Subject(request)
 	return err
 }
 
 func (a *Authenticator) UserFromRequest(request *http.Request) (domain.User, error) {
-	subject, err := a.Subject(request)
+	identity, err := a.IdentityFromRequest(request)
 	if err != nil {
 		return domain.User{}, err
 	}
-	if lookup, ok := a.userStore.(interface {
-		User(string) (domain.User, error)
-	}); ok {
-		user, err := lookup.User(subject)
-		if err != nil {
-			return domain.User{}, ErrInvalidToken
-		}
-		return user, nil
-	}
-	return domain.User{Username: subject}, nil
+	return identity.User, nil
 }
 
 func requestToken(request *http.Request) (string, error) {
@@ -154,26 +189,86 @@ func requestToken(request *http.Request) (string, error) {
 	return cookie.Value, nil
 }
 
-func withUser(ctx context.Context, user domain.User) context.Context {
-	return context.WithValue(ctx, userContextKey{}, user)
+func withIdentity(ctx context.Context, identity RequestIdentity) context.Context {
+	identity.Scopes = append([]string(nil), identity.Scopes...)
+	return context.WithValue(ctx, identityContextKey{}, identity)
+}
+
+func IdentityFromContext(ctx context.Context) (RequestIdentity, bool) {
+	identity, ok := ctx.Value(identityContextKey{}).(RequestIdentity)
+	if ok {
+		identity.Scopes = append([]string(nil), identity.Scopes...)
+	}
+	return identity, ok
 }
 
 func userFromContext(ctx context.Context) (domain.User, bool) {
-	user, ok := ctx.Value(userContextKey{}).(domain.User)
-	return user, ok
+	identity, ok := IdentityFromContext(ctx)
+	return identity.User, ok
 }
 
 func (a *Authenticator) Subject(request *http.Request) (string, error) {
-	token, err := requestToken(request)
+	identity, err := a.IdentityFromRequest(request)
 	if err != nil {
 		return "", err
 	}
-	return a.TokenSubject(token)
+	return identity.User.Username, nil
 }
 
 func (a *Authenticator) ValidateToken(token string) error {
-	_, err := a.TokenSubject(token)
+	_, err := a.authenticateToken(token)
 	return err
+}
+
+func (a *Authenticator) IdentityFromRequest(request *http.Request) (RequestIdentity, error) {
+	token, err := requestToken(request)
+	if err != nil {
+		return RequestIdentity{}, err
+	}
+	return a.authenticateToken(token)
+}
+
+func (a *Authenticator) authenticateToken(token string) (RequestIdentity, error) {
+	if strings.Count(token, ".") == 2 {
+		if subject, err := a.TokenSubject(token); err == nil {
+			user, err := a.userForSubject(subject)
+			if err != nil {
+				return RequestIdentity{}, ErrInvalidToken
+			}
+			return RequestIdentity{User: user}, nil
+		}
+	}
+	if a.serviceTokens == nil {
+		return RequestIdentity{}, ErrInvalidToken
+	}
+	serviceToken, err := a.serviceTokens.AuthenticateServiceToken(token, a.now().UTC())
+	if err != nil || serviceToken.UserID <= 0 || serviceToken.Username == "" {
+		return RequestIdentity{}, ErrInvalidToken
+	}
+	user, err := a.userForSubject(serviceToken.Username)
+	if err != nil {
+		return RequestIdentity{}, ErrInvalidToken
+	}
+	if user.ID == 0 {
+		user.ID = serviceToken.UserID
+	}
+	return RequestIdentity{
+		User: user, TokenID: serviceToken.ID, TokenName: serviceToken.Name,
+		Scopes: serviceToken.Scopes, ServiceToken: true,
+	}, nil
+}
+
+func (a *Authenticator) userForSubject(subject string) (domain.User, error) {
+	if lookup, ok := a.userStore.(interface {
+		User(string) (domain.User, error)
+	}); ok {
+		user, err := lookup.User(subject)
+		if err != nil {
+			return domain.User{}, err
+		}
+		return user, nil
+	}
+	return domain.User{Username: subject}, nil
 }
 
 func (a *Authenticator) TokenSubject(token string) (string, error) {

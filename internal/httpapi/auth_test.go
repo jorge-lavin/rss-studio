@@ -114,6 +114,38 @@ func TestAuthenticatorUsesPersistentUserStore(t *testing.T) {
 	}
 }
 
+func TestAuthenticatorExposesServiceTokenIdentityAndScopes(t *testing.T) {
+	store, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "rss-studio.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	owner, err := store.CreateUser("admin", "password")
+	if err != nil {
+		t.Fatal(err)
+	}
+	auth, err := NewAuthenticator(AuthConfig{JWTSecret: strings.Repeat("x", 32), UserStore: store})
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, raw, err := store.CreateServiceToken(owner, "agent", []string{domain.ScopeFeedsDelete, domain.ScopeFeedsRead}, time.Now().UTC().Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest("GET", "/api/v1/feeds", nil)
+	request.Header.Set("Authorization", "Bearer "+raw)
+	identity, err := auth.IdentityFromRequest(request)
+	if err != nil {
+		t.Fatalf("service token rejected: %v", err)
+	}
+	if !identity.ServiceToken || identity.TokenID != created.ID || identity.User.ID != owner.ID {
+		t.Fatalf("unexpected service token identity: %#v", identity)
+	}
+	if len(identity.Scopes) != 2 || identity.Scopes[0] != domain.ScopeFeedsRead || identity.Scopes[1] != domain.ScopeFeedsDelete {
+		t.Fatalf("unexpected service token scopes: %#v", identity.Scopes)
+	}
+}
+
 func TestAuthenticatorRegistersUsersInPersistentStore(t *testing.T) {
 	store, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "rss-studio.db"))
 	if err != nil {
