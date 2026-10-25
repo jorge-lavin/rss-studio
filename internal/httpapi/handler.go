@@ -99,13 +99,100 @@ func NewHandler(service *application.Service, authenticators ...*Authenticator) 
 		mux.HandleFunc("GET /auth/register", handler.registerPage)
 		mux.HandleFunc("POST /auth/sign-up", handler.register)
 		mux.HandleFunc("POST /auth/register", handler.register)
+		mux.HandleFunc("POST /api/v1/auth/login", handler.apiLogin)
+		mux.HandleFunc("POST /api/v1/auth/register", handler.apiRegister)
+		mux.HandleFunc("/api/v1/auth/login", handler.apiMethodNotAllowed)
+		mux.HandleFunc("/api/v1/auth/register", handler.apiMethodNotAllowed)
 	}
+	mux.HandleFunc("/api/v1", handler.apiNotFound)
+	mux.HandleFunc("/api/v1/", handler.apiNotFound)
 	mux.HandleFunc("POST /feeds", handler.createFeed)
 	mux.HandleFunc("POST /feeds/split", handler.splitFeeds)
 	mux.HandleFunc("POST /preview", handler.preview)
 	mux.HandleFunc("GET /feeds/{path}", handler.serveFeed)
 	mux.HandleFunc("POST /feeds/{path}/delete", handler.deleteFeed)
 	return observability.HTTPHandler(handler.authenticate(mux))
+}
+
+func (h *Handler) apiLogin(writer http.ResponseWriter, request *http.Request) {
+	if allowed, retryAfter := h.loginLimiter.allow(requestClient(request)); !allowed {
+		seconds := int((retryAfter + time.Second - 1) / time.Second)
+		writer.Header().Set("Retry-After", strconv.Itoa(seconds))
+		writeAPIError(writer, request, http.StatusTooManyRequests, "rate_limited", "Too many login attempts. Try again later.")
+		return
+	}
+
+	request.Body = http.MaxBytesReader(writer, request.Body, maxAuthJSONRequestBody)
+	credentials, inputErr := parseAPICredentials(request)
+	if inputErr != nil {
+		writeAPIError(writer, request, http.StatusBadRequest, inputErr.Code, inputErr.Message)
+		return
+	}
+	token, expires, err := h.auth.IssueToken(credentials.Username, credentials.Password)
+	if err != nil {
+		writeAPIError(writer, request, http.StatusUnauthorized, "invalid_credentials", "Invalid credentials.")
+		return
+	}
+	writeAPIJSON(writer, http.StatusOK, struct {
+		AccessToken string `json:"access_token"`
+		TokenType   string `json:"token_type"`
+		ExpiresAt   int64  `json:"expires_at"`
+	}{
+		AccessToken: token,
+		TokenType:   "Bearer",
+		ExpiresAt:   expires.Unix(),
+	})
+}
+
+func (h *Handler) apiRegister(writer http.ResponseWriter, request *http.Request) {
+	if allowed, retryAfter := h.loginLimiter.allow(requestClient(request)); !allowed {
+		seconds := int((retryAfter + time.Second - 1) / time.Second)
+		writer.Header().Set("Retry-After", strconv.Itoa(seconds))
+		writeAPIError(writer, request, http.StatusTooManyRequests, "rate_limited", "Too many registration attempts. Try again later.")
+		return
+	}
+
+	request.Body = http.MaxBytesReader(writer, request.Body, maxAuthJSONRequestBody)
+	credentials, inputErr := parseAPICredentials(request)
+	if inputErr != nil {
+		writeAPIError(writer, request, http.StatusBadRequest, inputErr.Code, inputErr.Message)
+		return
+	}
+	if err := h.auth.Register(credentials.Username, credentials.Password); err != nil {
+		status := http.StatusInternalServerError
+		code := "internal_error"
+		message := "Could not create account."
+		switch {
+		case errors.Is(err, domain.ErrInvalidUser):
+			status = http.StatusBadRequest
+			code = "validation_error"
+			message = "Username and password are required."
+		case errors.Is(err, domain.ErrUsernameTaken):
+			status = http.StatusConflict
+			code = "username_taken"
+			message = "Username already exists."
+		case errors.Is(err, ErrRegistrationUnavailable):
+			status = http.StatusNotImplemented
+			code = "registration_unavailable"
+			message = "Registration is unavailable."
+		default:
+			log.Printf("register user: %v", err)
+		}
+		writeAPIError(writer, request, status, code, message)
+		return
+	}
+	writeAPIJSON(writer, http.StatusCreated, struct {
+		Username string `json:"username"`
+	}{Username: strings.TrimSpace(credentials.Username)})
+}
+
+func (h *Handler) apiMethodNotAllowed(writer http.ResponseWriter, request *http.Request) {
+	writer.Header().Set("Allow", http.MethodPost)
+	writeAPIError(writer, request, http.StatusMethodNotAllowed, "method_not_allowed", "Method not allowed.")
+}
+
+func (h *Handler) apiNotFound(writer http.ResponseWriter, request *http.Request) {
+	writeAPIError(writer, request, http.StatusNotFound, "not_found", "API endpoint not found.")
 }
 
 func (h *Handler) login(writer http.ResponseWriter, request *http.Request) {
@@ -292,6 +379,11 @@ func (h *Handler) authenticate(next http.Handler) http.Handler {
 		}
 		user, err := h.auth.UserFromRequest(request)
 		if err != nil {
+			if isAPIRequest(request) {
+				writer.Header().Set("WWW-Authenticate", `Bearer realm="rss-studio"`)
+				writeAPIError(writer, request, http.StatusUnauthorized, "authentication_required", "Authentication required.")
+				return
+			}
 			if request.Method == http.MethodGet && acceptsHTML(request) {
 				http.Redirect(writer, request, "/auth/login", http.StatusSeeOther)
 				return
@@ -312,6 +404,9 @@ func acceptsHTML(request *http.Request) bool {
 func isPublicRequest(request *http.Request) bool {
 	if request.URL.Path == "/auth/login" || request.URL.Path == "/auth/sign-in" || request.URL.Path == "/auth/register" || request.URL.Path == "/auth/sign-up" {
 		return request.Method == http.MethodGet || request.Method == http.MethodPost
+	}
+	if request.URL.Path == "/api/v1/auth/login" || request.URL.Path == "/api/v1/auth/register" {
+		return true
 	}
 	if request.URL.Path == "/auth/logout" {
 		return request.Method == http.MethodPost

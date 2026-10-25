@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -649,5 +650,109 @@ func TestAuthenticatedHandlerRateLimitsLoginAttempts(t *testing.T) {
 	}
 	if recorder.Header().Get("Retry-After") == "" {
 		t.Fatal("expected rate-limited login to include Retry-After")
+	}
+}
+
+func TestVersionedAuthEndpointsReturnJSONAndPropagateRequestIDs(t *testing.T) {
+	server, _ := newAuthenticatedServer(t)
+
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/auth/register", strings.NewReader(`{"username":"api-user","password":"api-password"}`))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("X-Request-ID", "client-request-1")
+	recorder := httptest.NewRecorder()
+	server.Config.Handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusCreated || recorder.Header().Get("Location") != "" {
+		t.Fatalf("expected JSON registration without redirect, got %d and %q", recorder.Code, recorder.Header().Get("Location"))
+	}
+	if recorder.Header().Get("X-Request-ID") != "client-request-1" {
+		t.Fatalf("expected request ID propagation, got %q", recorder.Header().Get("X-Request-ID"))
+	}
+	var registration struct {
+		Username string `json:"username"`
+	}
+	if err := json.NewDecoder(recorder.Body).Decode(&registration); err != nil {
+		t.Fatal(err)
+	}
+	if registration.Username != "api-user" {
+		t.Fatalf("unexpected registration response: %#v", registration)
+	}
+
+	request = httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", strings.NewReader(`{"username":"api-user","password":"api-password"}`))
+	request.Header.Set("Content-Type", "application/json")
+	recorder = httptest.NewRecorder()
+	server.Config.Handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK || recorder.Header().Get("Location") != "" {
+		t.Fatalf("expected JSON login without redirect, got %d and %q", recorder.Code, recorder.Header().Get("Location"))
+	}
+	if recorder.Header().Get("X-Request-ID") == "" {
+		t.Fatal("expected generated request ID")
+	}
+	var login struct {
+		AccessToken string `json:"access_token"`
+	}
+	if err := json.NewDecoder(recorder.Body).Decode(&login); err != nil {
+		t.Fatal(err)
+	}
+	if login.AccessToken == "" {
+		t.Fatal("expected access token")
+	}
+}
+
+func TestVersionedAuthEndpointsUseStableJSONErrors(t *testing.T) {
+	server, _ := newAuthenticatedServer(t)
+	tests := []struct {
+		name        string
+		path        string
+		body        string
+		status      int
+		code        string
+		contentType string
+	}{
+		{name: "malformed JSON", path: "/api/v1/auth/login", body: `{"username":`, status: http.StatusBadRequest, code: "invalid_json"},
+		{name: "unknown field", path: "/api/v1/auth/login", body: `{"username":"admin","password":"password","extra":true}`, status: http.StatusBadRequest, code: "unknown_field"},
+		{name: "invalid credentials", path: "/api/v1/auth/login", body: `{"username":"admin","password":"wrong"}`, status: http.StatusUnauthorized, code: "invalid_credentials"},
+		{name: "validation", path: "/api/v1/auth/register", body: `{"username":"","password":""}`, status: http.StatusBadRequest, code: "validation_error"},
+		{name: "unsupported content type", path: "/api/v1/auth/register", body: "username=new-user&password=new-password", status: http.StatusBadRequest, code: "unsupported_media_type", contentType: "application/x-www-form-urlencoded"},
+	}
+	for index, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			request := httptest.NewRequest(http.MethodPost, test.path, strings.NewReader(test.body))
+			request.RemoteAddr = "192.0.2." + strconv.Itoa(index+10) + ":1234"
+			contentType := test.contentType
+			if contentType == "" {
+				contentType = "application/json"
+			}
+			request.Header.Set("Content-Type", contentType)
+			request.Header.Set("Accept", "text/html")
+			recorder := httptest.NewRecorder()
+			server.Config.Handler.ServeHTTP(recorder, request)
+			if recorder.Code != test.status || recorder.Header().Get("Location") != "" || !strings.HasPrefix(recorder.Header().Get("Content-Type"), "application/json") {
+				t.Fatalf("unexpected API response: status=%d location=%q content-type=%q body=%s", recorder.Code, recorder.Header().Get("Location"), recorder.Header().Get("Content-Type"), recorder.Body.String())
+			}
+			var response struct {
+				Error struct {
+					Code    string `json:"code"`
+					Message string `json:"message"`
+				} `json:"error"`
+				RequestID string `json:"request_id"`
+			}
+			if err := json.NewDecoder(recorder.Body).Decode(&response); err != nil {
+				t.Fatal(err)
+			}
+			if response.Error.Code != test.code || response.Error.Message == "" || response.RequestID == "" || recorder.Header().Get("X-Request-ID") != response.RequestID {
+				t.Fatalf("unexpected API error: %#v, header request ID=%q", response, recorder.Header().Get("X-Request-ID"))
+			}
+		})
+	}
+}
+
+func TestVersionedAPIAuthenticationNeverRedirects(t *testing.T) {
+	server, _ := newAuthenticatedServer(t)
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/feeds", nil)
+	request.Header.Set("Accept", "text/html")
+	recorder := httptest.NewRecorder()
+	server.Config.Handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusUnauthorized || recorder.Header().Get("Location") != "" || !strings.HasPrefix(recorder.Header().Get("Content-Type"), "application/json") {
+		t.Fatalf("expected JSON API authentication error, got %d, location=%q, content-type=%q, body=%s", recorder.Code, recorder.Header().Get("Location"), recorder.Header().Get("Content-Type"), recorder.Body.String())
 	}
 }
