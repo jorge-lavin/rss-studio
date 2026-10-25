@@ -57,6 +57,7 @@ jobs:
             --context=dir://${{ github.workspace }}
             --dockerfile=${{ github.workspace }}/Dockerfile
             --destination=${{ env.IMAGE }}:${{ github.sha }}
+            --build-arg=VERSION=${{ github.sha }}
             --label=org.opencontainers.image.revision=${{ github.sha }}
             --no-push-cache
 
