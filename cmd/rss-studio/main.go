@@ -13,6 +13,7 @@ import (
 	"rss-studio/internal/application"
 	"rss-studio/internal/cache"
 	"rss-studio/internal/httpapi"
+	"rss-studio/internal/mcp"
 	"rss-studio/internal/observability"
 	"rss-studio/internal/rss"
 	"rss-studio/internal/source"
@@ -66,9 +67,12 @@ func main() {
 		source.NewHTTPSource(&http.Client{Timeout: 20 * time.Second}),
 		rss.FilterWithOperator,
 	)
+	mux := http.NewServeMux()
+	mux.Handle("/mcp", observability.HTTPHandler(mcp.NewHandler(service, auth)))
+	mux.Handle("/", httpapi.NewHandler(service, auth))
 	server := &http.Server{
 		Addr:              address,
-		Handler:           httpapi.NewHandler(service, auth),
+		Handler:           mux,
 		ReadHeaderTimeout: 5 * time.Second,
 		IdleTimeout:       60 * time.Second,
 	}

@@ -123,6 +123,17 @@ The existing single-output `POST /feeds` endpoint remains available. Its form
 fields are `name`, `source_url`, `operator`, and `keyword`; omitted operators
 default to `contains`.
 
+## MCP
+
+RSS Studio exposes a stateless Streamable HTTP MCP endpoint at `/mcp`. It uses
+the same bearer token as the JSON API; configure an MCP client with the URL
+`https://your-host.example/mcp` and the token returned by `/auth/login`.
+
+Available tools are `list_feeds`, `preview_feed`, `create_feed`,
+`create_split_feeds`, and `delete_feed`. Feed management stays scoped to the
+authenticated account. The endpoint supports MCP protocol versions
+`2024-11-05`, `2025-03-26`, `2025-06-18`, and `2025-11-25`.
+
 ## Observability
 
 RSS Studio records OpenTelemetry-compatible HTTP server spans. Each span includes
