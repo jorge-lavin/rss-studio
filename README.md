@@ -93,6 +93,24 @@ Releases use `vMAJOR.MINOR.PATCH` Git tags and publish matching
 `MAJOR.MINOR.PATCH` image tags plus `latest`. Main-branch builds publish only
 their commit-SHA image tag.
 
+### Why CI builds the image twice
+
+The `image` job runs after tests for pull requests and pushes to `main`. On pull
+requests it validates the Dockerfile without publishing; on `main` it publishes
+an immutable commit-SHA image. This keeps every main-branch build available for
+traceability, even when a commit does not produce a release.
+
+The `release` job runs only after that image succeeds and a release version has
+been determined. It builds again with the semantic version embedded in the
+binary, then publishes the version and `latest` tags. Building again also keeps
+release creation after successful image validation.
+
+The two builds could be consolidated, but only by changing one of these
+guarantees: determine the release version before building, or promote the
+commit-SHA image after building. Promotion would avoid the rebuild but would
+leave the application reporting its development/commit build version instead of
+the semantic release version. The duplicate build is therefore intentional.
+
 If no release tag exists, the first successful `main` build creates `v0.1.0`
 automatically. No manual bootstrap tag or release token is required; Forgejo's
 workflow token creates the release.
