@@ -256,7 +256,7 @@ func (h *Handler) createFeed(writer http.ResponseWriter, request *http.Request) 
 		h.renderHome(writer, request, "Could not read form.", http.StatusBadRequest)
 		return
 	}
-	_, err := h.service.CreateFeed(request.Context(), h.requestUser(request), request.FormValue("name"), request.FormValue("source_url"), request.FormValue("keyword"))
+	_, err := h.service.CreateFeedWithOperator(request.Context(), h.requestUser(request), request.FormValue("name"), request.FormValue("source_url"), domain.FilterOperator(request.FormValue("operator")), request.FormValue("keyword"))
 	if err != nil {
 		switch {
 		case errors.Is(err, application.ErrInvalidFeed):
@@ -396,7 +396,7 @@ var homeTemplate = template.Must(template.New("home").Parse(`<!doctype html>
         <span class="text-xs font-medium uppercase tracking-wider text-slate-400">New feed</span>
       </div>
       {{if .Error}}<div class="mb-6 flex items-start gap-3 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700 dark:border-rose-800 dark:bg-rose-950/50 dark:text-rose-300" role="alert"><span class="mt-0.5 font-bold">!</span><p>{{.Error}}</p></div>{{end}}
-      <form method="post" action="/feeds" class="grid gap-5 lg:grid-cols-[1fr_1.4fr_0.8fr_auto] lg:items-end">
+      <form method="post" action="/feeds" class="grid gap-5 lg:grid-cols-[1fr_1.4fr_0.8fr_0.8fr_auto] lg:items-end">
         <div>
           <label for="name" class="mb-2 block text-sm font-medium text-slate-700 dark:text-slate-300">Feed name</label>
           <input id="name" name="name" maxlength="120" placeholder="My tech episodes" required class="block w-full rounded-lg border border-slate-300 bg-white px-3.5 py-3 text-sm text-slate-900 shadow-sm outline-none transition placeholder:text-slate-400 focus:border-violet-600 focus:ring-4 focus:ring-violet-600/10 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 dark:placeholder:text-slate-500">
@@ -404,6 +404,15 @@ var homeTemplate = template.Must(template.New("home").Parse(`<!doctype html>
         <div>
           <label for="source_url" class="mb-2 block text-sm font-medium text-slate-700 dark:text-slate-300">Source RSS URL</label>
           <input id="source_url" name="source_url" type="url" maxlength="2048" placeholder="https://example.com/feed.xml" required class="block w-full rounded-lg border border-slate-300 bg-white px-3.5 py-3 text-sm text-slate-900 shadow-sm outline-none transition placeholder:text-slate-400 focus:border-violet-600 focus:ring-4 focus:ring-violet-600/10 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 dark:placeholder:text-slate-500">
+        </div>
+        <div>
+          <label for="operator" class="mb-2 block text-sm font-medium text-slate-700 dark:text-slate-300">Operator</label>
+          <select id="operator" name="operator" class="block w-full rounded-lg border border-slate-300 bg-white px-3.5 py-3 text-sm text-slate-900 shadow-sm outline-none transition focus:border-violet-600 focus:ring-4 focus:ring-violet-600/10 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100">
+            <option value="contains">Contains</option>
+            <option value="starts_with">Starts with</option>
+            <option value="ends_with">Ends with</option>
+            <option value="equals">Equals</option>
+          </select>
         </div>
         <div>
           <label for="keyword" class="mb-2 block text-sm font-medium text-slate-700 dark:text-slate-300">Match title</label>
@@ -435,7 +444,7 @@ var homeTemplate = template.Must(template.New("home").Parse(`<!doctype html>
             <div class="min-w-0">
               <div class="flex flex-wrap items-center gap-3">
                 <h3 class="text-base font-semibold text-slate-900 dark:text-slate-100">{{.Name}}</h3>
-                <span class="rounded-full bg-violet-50 px-2.5 py-1 text-xs font-medium text-violet-700 dark:bg-violet-950 dark:text-violet-300">Contains “{{.Keyword}}”</span>
+                <span class="rounded-full bg-violet-50 px-2.5 py-1 text-xs font-medium text-violet-700 dark:bg-violet-950 dark:text-violet-300">{{.Operator.Label}} “{{.Keyword}}”</span>
               </div>
               <p class="mt-2 truncate text-sm text-slate-500 dark:text-slate-400" title="{{.SourceURL}}">Source: {{.SourceURL}}</p>
               <a href="/feeds/{{.Path}}.xml" class="mt-3 block truncate text-sm font-medium text-violet-600 hover:text-violet-700 hover:underline dark:text-violet-400 dark:hover:text-violet-300" title="{{$.BaseURL}}/feeds/{{.Path}}.xml">{{$.BaseURL}}/feeds/{{.Path}}.xml</a>

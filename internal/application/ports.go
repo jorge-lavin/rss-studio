@@ -14,6 +14,10 @@ type FeedStore interface {
 	Delete(owner domain.User, path string) error
 }
 
+type OperatorFeedStore interface {
+	CreateWithOperator(owner domain.User, name, sourceURL string, operator domain.FilterOperator, keyword string) (domain.Feed, error)
+}
+
 type Source interface {
 	Head(ctx context.Context, sourceURL string) (time.Time, error)
 	Get(ctx context.Context, sourceURL string) ([]byte, time.Time, error)
@@ -31,3 +35,5 @@ type FeedCache interface {
 }
 
 type Filter func(source []byte, keyword, outputTitle string) ([]byte, int, error)
+
+type OperatorFilter func(source []byte, operator domain.FilterOperator, keyword, outputTitle string) ([]byte, int, error)

@@ -1,6 +1,7 @@
 # RSS Studio
 
-RSS Studio filters podcast feeds by episode title and publishes stable RSS
+RSS Studio filters podcast feeds by episode title using contains, starts with,
+ends with, or equals matching, and publishes stable RSS
 feeds while preserving original GUIDs, enclosures, and podcast metadata.
 
 This repository contains the application source, tests, Docker image, and CI.

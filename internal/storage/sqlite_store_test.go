@@ -22,8 +22,8 @@ func TestSQLiteStoreMigratesAndPersistsMultipleUsers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if version != 2 {
-		t.Fatalf("expected schema version 2, got %d", version)
+	if version != 3 {
+		t.Fatalf("expected schema version 3, got %d", version)
 	}
 	if err := store.Migrate(); err != nil {
 		t.Fatalf("rerunning migrations: %v", err)
@@ -98,7 +98,7 @@ func TestSQLiteStoreScopesFeedsByUserAndPersistsPath(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	aliceFeed, err := store.Create(alice, "News Feed", "https://example.test/alice.xml", "alice")
+	aliceFeed, err := store.CreateWithOperator(alice, "News Feed", "https://example.test/alice.xml", domain.FilterStartsWith, "alice")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -132,7 +132,7 @@ func TestSQLiteStoreScopesFeedsByUserAndPersistsPath(t *testing.T) {
 	if err != nil || !found {
 		t.Fatalf("stored feed not found: found=%v err=%v", found, err)
 	}
-	if stored.Path != aliceFeed.Path || stored.SourceURL != aliceFeed.SourceURL {
+	if stored.Path != aliceFeed.Path || stored.SourceURL != aliceFeed.SourceURL || stored.Operator != domain.FilterStartsWith {
 		t.Fatalf("unexpected stored feed: %#v", stored)
 	}
 }
@@ -179,5 +179,8 @@ func TestSQLiteStoreImportsAndRemovesLegacyFeedStore(t *testing.T) {
 	}
 	if len(feeds) != 1 || feeds[0].Path != "news-feed" || !feeds[0].CreatedAt.Equal(createdAt) {
 		t.Fatalf("unexpected imported feeds: %#v", feeds)
+	}
+	if feeds[0].Operator != domain.FilterContains {
+		t.Fatalf("expected legacy feeds to use contains operator, got %q", feeds[0].Operator)
 	}
 }

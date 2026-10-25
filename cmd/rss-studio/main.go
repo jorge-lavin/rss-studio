@@ -60,11 +60,11 @@ func main() {
 		log.Fatalf("configure authentication: %v", err)
 	}
 
-	service := application.NewService(
+	service := application.NewServiceWithOperator(
 		database,
 		cache.NewFileCache(filepath.Join(dataDirectory, "cache")),
 		source.NewHTTPSource(&http.Client{Timeout: 20 * time.Second}),
-		rss.Filter,
+		rss.FilterWithOperator,
 	)
 	server := &http.Server{
 		Addr:              address,

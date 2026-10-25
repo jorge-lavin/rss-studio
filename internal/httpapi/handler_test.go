@@ -13,6 +13,7 @@ import (
 
 	"rss-studio/internal/application"
 	"rss-studio/internal/cache"
+	"rss-studio/internal/domain"
 	"rss-studio/internal/httpapi"
 	"rss-studio/internal/rss"
 	"rss-studio/internal/storage"
@@ -45,7 +46,7 @@ func newAuthenticatedServer(t *testing.T) (*httptest.Server, *storage.SQLiteStor
 		store.Close()
 		t.Fatal(err)
 	}
-	service := application.NewService(store, cache.NewFileCache(t.TempDir()), sourceStub{}, rss.Filter)
+	service := application.NewServiceWithOperator(store, cache.NewFileCache(t.TempDir()), sourceStub{}, rss.FilterWithOperator)
 	server := httptest.NewServer(httpapi.NewHandler(service, auth))
 	t.Cleanup(func() {
 		server.Close()
@@ -86,7 +87,7 @@ func TestHandlerCreatesAndServesFeed(t *testing.T) {
 	server, _ := newAuthenticatedServer(t)
 	token := loginToken(t, server)
 
-	request, err := http.NewRequest(http.MethodPost, server.URL+"/feeds", strings.NewReader("name=Foo+feed&source_url=https%3A%2F%2Fexample.test%2Frss&keyword=foo"))
+	request, err := http.NewRequest(http.MethodPost, server.URL+"/feeds", strings.NewReader("name=Foo+feed&source_url=https%3A%2F%2Fexample.test%2Frss&operator=starts_with&keyword=Keep"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -124,6 +125,9 @@ func TestHandlerCreatesAndServesFeed(t *testing.T) {
 	}
 	if !strings.Contains(string(homeBody), `id="theme-toggle"`) || !strings.Contains(string(homeBody), `darkMode: "class"`) || !strings.Contains(string(homeBody), `rss-studio-theme`) {
 		t.Fatalf("home page does not include dark-mode toggle: %s", homeBody)
+	}
+	if !strings.Contains(string(homeBody), domain.FilterStartsWith.Label()+" “Keep”") {
+		t.Fatalf("home page does not show selected filter operator: %s", homeBody)
 	}
 	assertTailwindUsesClassDarkMode(t, string(homeBody))
 
@@ -205,7 +209,7 @@ func TestAuthenticatedHandlerIsolatesFeedsByUser(t *testing.T) {
 	if _, err := store.CreateUser("admin", "password"); err != nil {
 		t.Fatal(err)
 	}
-	service := application.NewService(store, cache.NewFileCache(t.TempDir()), sourceStub{}, rss.Filter)
+	service := application.NewServiceWithOperator(store, cache.NewFileCache(t.TempDir()), sourceStub{}, rss.FilterWithOperator)
 	auth, err := httpapi.NewAuthenticator(httpapi.AuthConfig{JWTSecret: strings.Repeat("x", 32), UserStore: store})
 	if err != nil {
 		t.Fatal(err)
@@ -267,7 +271,7 @@ func TestAuthenticatedHandlerSupportsBrowserLogin(t *testing.T) {
 	if _, err := store.CreateUser("admin", "password"); err != nil {
 		t.Fatal(err)
 	}
-	service := application.NewService(store, cache.NewFileCache(t.TempDir()), sourceStub{}, rss.Filter)
+	service := application.NewServiceWithOperator(store, cache.NewFileCache(t.TempDir()), sourceStub{}, rss.FilterWithOperator)
 	auth, err := httpapi.NewAuthenticator(httpapi.AuthConfig{
 		JWTSecret: strings.Repeat("x", 32),
 		UserStore: store,
@@ -351,7 +355,7 @@ func TestAuthenticatedHandlerRateLimitsLoginAttempts(t *testing.T) {
 	if _, err := store.CreateUser("admin", "password"); err != nil {
 		t.Fatal(err)
 	}
-	service := application.NewService(store, cache.NewFileCache(t.TempDir()), sourceStub{}, rss.Filter)
+	service := application.NewServiceWithOperator(store, cache.NewFileCache(t.TempDir()), sourceStub{}, rss.FilterWithOperator)
 	auth, err := httpapi.NewAuthenticator(httpapi.AuthConfig{
 		JWTSecret: strings.Repeat("x", 32),
 		UserStore: store,

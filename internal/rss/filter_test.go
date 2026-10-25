@@ -5,6 +5,8 @@ import (
 	"testing"
 
 	"github.com/beevik/etree"
+
+	"rss-studio/internal/domain"
 )
 
 func TestFilterKeepsMatchingItems(t *testing.T) {
@@ -39,5 +41,29 @@ func TestFilterRejectsAtom(t *testing.T) {
 	_, _, err := Filter([]byte(`<feed xmlns="http://www.w3.org/2005/Atom"></feed>`), "foo", "Feed")
 	if err == nil {
 		t.Fatal("expected non-RSS feed to fail")
+	}
+}
+
+func TestFilterOperators(t *testing.T) {
+	source := []byte(`<rss version="2.0"><channel><title>Source</title><item><title>AI weekly</title></item><item><title>Weekly AI</title></item><item><title>AI</title></item><item><title>Other show</title></item></channel></rss>`)
+	tests := []struct {
+		operator domain.FilterOperator
+		want     int
+	}{
+		{domain.FilterContains, 3},
+		{domain.FilterStartsWith, 2},
+		{domain.FilterEndsWith, 2},
+		{domain.FilterEquals, 1},
+	}
+	for _, test := range tests {
+		t.Run(test.operator.Label(), func(t *testing.T) {
+			result, count, err := FilterWithOperator(source, test.operator, "ai", "Filtered")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if count != test.want {
+				t.Fatalf("expected %d matches, got %d: %s", test.want, count, result)
+			}
+		})
 	}
 }

@@ -24,10 +24,11 @@ var (
 const refreshCheckInterval = 5 * time.Minute
 
 type Service struct {
-	store  FeedStore
-	cache  FeedCache
-	source Source
-	filter Filter
+	store          FeedStore
+	cache          FeedCache
+	source         Source
+	filter         Filter
+	operatorFilter OperatorFilter
 
 	refreshMu  sync.Mutex
 	stateMu    sync.Mutex
@@ -36,13 +37,22 @@ type Service struct {
 }
 
 func NewService(store FeedStore, cache FeedCache, source Source, filter Filter) *Service {
+	return newService(store, cache, source, filter, nil)
+}
+
+func NewServiceWithOperator(store FeedStore, cache FeedCache, source Source, filter OperatorFilter) *Service {
+	return newService(store, cache, source, nil, filter)
+}
+
+func newService(store FeedStore, cache FeedCache, source Source, filter Filter, operatorFilter OperatorFilter) *Service {
 	return &Service{
-		store:      store,
-		cache:      cache,
-		source:     source,
-		filter:     filter,
-		refreshing: make(map[string]bool),
-		checkedAt:  make(map[string]time.Time),
+		store:          store,
+		cache:          cache,
+		source:         source,
+		filter:         filter,
+		operatorFilter: operatorFilter,
+		refreshing:     make(map[string]bool),
+		checkedAt:      make(map[string]time.Time),
 	}
 }
 
@@ -51,14 +61,31 @@ func (s *Service) ListFeeds(owner domain.User) ([]domain.Feed, error) {
 }
 
 func (s *Service) CreateFeed(ctx context.Context, owner domain.User, name, sourceURL, keyword string) (domain.Feed, error) {
+	return s.CreateFeedWithOperator(ctx, owner, name, sourceURL, domain.FilterContains, keyword)
+}
+
+func (s *Service) CreateFeedWithOperator(ctx context.Context, owner domain.User, name, sourceURL string, operator domain.FilterOperator, keyword string) (domain.Feed, error) {
 	name = strings.TrimSpace(name)
 	sourceURL = strings.TrimSpace(sourceURL)
+	operator = domain.FilterOperator(strings.TrimSpace(string(operator)))
 	keyword = strings.TrimSpace(keyword)
-	if err := validateFeed(name, sourceURL, keyword); err != nil {
+	if operator == "" {
+		operator = domain.FilterContains
+	}
+	if err := validateFeed(name, sourceURL, operator, keyword); err != nil {
 		return domain.Feed{}, err
 	}
 
-	feed, err := s.store.Create(owner, name, sourceURL, keyword)
+	var feed domain.Feed
+	var err error
+	if operatorStore, ok := s.store.(OperatorFeedStore); ok {
+		feed, err = operatorStore.CreateWithOperator(owner, name, sourceURL, operator, keyword)
+	} else if operator == domain.FilterContains {
+		feed, err = s.store.Create(owner, name, sourceURL, keyword)
+		feed.Operator = operator
+	} else {
+		return domain.Feed{}, fmt.Errorf("%w: operator-aware feed storage is unavailable", ErrInvalidFeed)
+	}
 	if err != nil {
 		return domain.Feed{}, err
 	}
@@ -130,7 +157,13 @@ func (s *Service) refreshFeed(ctx context.Context, feed domain.Feed, force bool)
 	if err != nil {
 		return err
 	}
-	filtered, matched, err := s.filter(sourceData, feed.Keyword, feed.Name)
+	var filtered []byte
+	var matched int
+	if s.operatorFilter != nil {
+		filtered, matched, err = s.operatorFilter(sourceData, feed.Operator, feed.Keyword, feed.Name)
+	} else {
+		filtered, matched, err = s.filter(sourceData, feed.Keyword, feed.Name)
+	}
 	if err != nil {
 		return err
 	}
@@ -196,9 +229,12 @@ func (s *Service) triggerRefresh(feed domain.Feed) {
 	}()
 }
 
-func validateFeed(name, sourceURL, keyword string) error {
-	if name == "" || sourceURL == "" || keyword == "" {
-		return fmt.Errorf("%w: name, source URL, and keyword are required", ErrInvalidFeed)
+func validateFeed(name, sourceURL string, operator domain.FilterOperator, keyword string) error {
+	if name == "" || sourceURL == "" || operator == "" || keyword == "" {
+		return fmt.Errorf("%w: name, source URL, operator, and keyword are required", ErrInvalidFeed)
+	}
+	if !operator.Valid() {
+		return fmt.Errorf("%w: unsupported filter operator", ErrInvalidFeed)
 	}
 	if len(name) > 120 || len(sourceURL) > 2048 || len(keyword) > 200 {
 		return fmt.Errorf("%w: one or more fields are too long", ErrInvalidFeed)

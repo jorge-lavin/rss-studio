@@ -239,7 +239,7 @@ func (s *SQLiteStore) List(owner domain.User) ([]domain.Feed, error) {
 		return nil, err
 	}
 	rows, err := s.db.Query(`
-		SELECT id, user_id, name, slug, path, source_url, keyword, created_at
+		SELECT id, user_id, name, slug, path, source_url, filter_operator, keyword, created_at
 		FROM feeds
 		WHERE user_id = ?
 		ORDER BY created_at DESC, id DESC`, userID)
@@ -264,7 +264,7 @@ func (s *SQLiteStore) List(owner domain.User) ([]domain.Feed, error) {
 
 func (s *SQLiteStore) Get(path string) (domain.Feed, bool, error) {
 	feed, err := scanFeed(s.db.QueryRow(`
-		SELECT id, user_id, name, slug, path, source_url, keyword, created_at
+		SELECT id, user_id, name, slug, path, source_url, filter_operator, keyword, created_at
 		FROM feeds
 		WHERE path = ?`, path))
 	if errors.Is(err, sql.ErrNoRows) {
@@ -277,6 +277,10 @@ func (s *SQLiteStore) Get(path string) (domain.Feed, bool, error) {
 }
 
 func (s *SQLiteStore) Create(owner domain.User, name, sourceURL, keyword string) (domain.Feed, error) {
+	return s.CreateWithOperator(owner, name, sourceURL, domain.FilterContains, keyword)
+}
+
+func (s *SQLiteStore) CreateWithOperator(owner domain.User, name, sourceURL string, operator domain.FilterOperator, keyword string) (domain.Feed, error) {
 	userID, err := s.ownerID(owner)
 	if err != nil {
 		return domain.Feed{}, err
@@ -301,9 +305,9 @@ func (s *SQLiteStore) Create(owner domain.User, name, sourceURL, keyword string)
 	}
 	createdAt := time.Now().UTC()
 	result, err := tx.Exec(`
-		INSERT INTO feeds (user_id, name, slug, path, source_url, keyword, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		userID, name, slug, path, sourceURL, keyword, createdAt.Format(time.RFC3339Nano))
+		INSERT INTO feeds (user_id, name, slug, path, source_url, filter_operator, keyword, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		userID, name, slug, path, sourceURL, operator, keyword, createdAt.Format(time.RFC3339Nano))
 	if err != nil {
 		return domain.Feed{}, fmt.Errorf("create feed: %w", err)
 	}
@@ -314,7 +318,7 @@ func (s *SQLiteStore) Create(owner domain.User, name, sourceURL, keyword string)
 	if err := tx.Commit(); err != nil {
 		return domain.Feed{}, fmt.Errorf("commit feed creation: %w", err)
 	}
-	return domain.Feed{ID: id, TenantID: userID, Name: name, Slug: slug, Path: path, SourceURL: sourceURL, Keyword: keyword, CreatedAt: createdAt}, nil
+	return domain.Feed{ID: id, TenantID: userID, Name: name, Slug: slug, Path: path, SourceURL: sourceURL, Operator: operator, Keyword: keyword, CreatedAt: createdAt}, nil
 }
 
 func (s *SQLiteStore) Delete(owner domain.User, path string) error {
@@ -391,9 +395,9 @@ func (s *SQLiteStore) ImportLegacyFeeds(path string, owner domain.User) error {
 			return fmt.Errorf("choose legacy feed path: %w", err)
 		}
 		if _, err := tx.Exec(`
-			INSERT INTO feeds (user_id, name, slug, path, source_url, keyword, created_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?)`,
-			userID, record.Name, slug, feedPath, record.SourceURL, record.Keyword, createdAt.UTC().Format(time.RFC3339Nano)); err != nil {
+			INSERT INTO feeds (user_id, name, slug, path, source_url, filter_operator, keyword, created_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+			userID, record.Name, slug, feedPath, record.SourceURL, domain.FilterContains, record.Keyword, createdAt.UTC().Format(time.RFC3339Nano)); err != nil {
 			return fmt.Errorf("import legacy feed: %w", err)
 		}
 	}
@@ -459,7 +463,7 @@ type rowScanner interface {
 func scanFeed(row rowScanner) (domain.Feed, error) {
 	var feed domain.Feed
 	var createdAt string
-	if err := row.Scan(&feed.ID, &feed.TenantID, &feed.Name, &feed.Slug, &feed.Path, &feed.SourceURL, &feed.Keyword, &createdAt); err != nil {
+	if err := row.Scan(&feed.ID, &feed.TenantID, &feed.Name, &feed.Slug, &feed.Path, &feed.SourceURL, &feed.Operator, &feed.Keyword, &createdAt); err != nil {
 		return domain.Feed{}, err
 	}
 	var err error
