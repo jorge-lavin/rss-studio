@@ -827,7 +827,7 @@ components:
           items: { $ref: '#/components/schemas/OutputRequest' }
     Feed:
       type: object
-      required: [name, path, url, source_url, operator, keyword, created_at]
+      required: [name, path, url, source_url, operator, keyword, status, created_at]
       properties:
         name: { type: string }
         path:
@@ -842,6 +842,10 @@ components:
           type: string
           enum: [contains, starts_with, ends_with, equals]
         keyword: { type: string }
+        status:
+          type: string
+          enum: [ready, refreshing]
+          description: Current background refresh state for this feed's source.
         created_at: { type: string, format: date-time }
     PreviewResponse:
       type: object
@@ -873,7 +877,7 @@ components:
           items: { $ref: '#/components/schemas/SplitOutput' }
     SplitOutput:
       type: object
-      required: [name, operator, keyword, path, url]
+      required: [name, operator, keyword, path, url, status]
       properties:
         name: { type: string }
         operator:
@@ -882,6 +886,9 @@ components:
         keyword: { type: string }
         path: { type: string }
         url: { type: string, format: uri }
+        status:
+          type: string
+          enum: [ready, refreshing]
     DeleteFeedResponse:
       type: object
       required: [deleted, path]

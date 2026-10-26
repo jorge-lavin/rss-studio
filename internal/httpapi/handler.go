@@ -86,6 +86,7 @@ type feedListResponseFeed struct {
 	SourceURL string    `json:"source_url"`
 	Operator  string    `json:"operator"`
 	Keyword   string    `json:"keyword"`
+	Status    string    `json:"status"`
 	CreatedAt time.Time `json:"created_at"`
 }
 
@@ -99,6 +100,7 @@ type splitResponseOutput struct {
 	Keyword  string `json:"keyword"`
 	Path     string `json:"path"`
 	URL      string `json:"url"`
+	Status   string `json:"status"`
 }
 
 type serviceTokenCreateRequest struct {
@@ -425,7 +427,7 @@ func (h *Handler) apiListFeeds(writer http.ResponseWriter, request *http.Request
 
 	response := feedListResponse{Feeds: make([]feedListResponseFeed, len(feeds))}
 	for i, feed := range feeds {
-		response.Feeds[i] = feedListResponseFeedFor(request, feed)
+		response.Feeds[i] = h.feedListResponseFeedFor(request, feed)
 	}
 	writeAPIJSON(writer, http.StatusOK, response)
 }
@@ -453,7 +455,7 @@ func (h *Handler) apiCreateFeed(writer http.ResponseWriter, request *http.Reques
 		if err != nil {
 			return nil, err
 		}
-		return feedListResponseFeedFor(request, feed), nil
+		return h.feedListResponseFeedFor(request, feed), nil
 	})
 	if err != nil {
 		h.writeAPIFeedError(writer, request, err, "Could not create feed.")
@@ -521,7 +523,7 @@ func (h *Handler) apiSplitFeeds(writer http.ResponseWriter, request *http.Reques
 		if err != nil {
 			return nil, err
 		}
-		return splitResponseFor(request, feeds), nil
+		return h.splitResponseFor(request, feeds), nil
 	})
 	if err != nil {
 		h.writeAPIFeedError(writer, request, err, "Could not publish feeds.")
@@ -1035,12 +1037,12 @@ func previewResponseFor(results []application.PreviewResult) previewResponse {
 	return response
 }
 
-func feedListResponseFeedFor(request *http.Request, feed domain.Feed) feedListResponseFeed {
+func (h *Handler) feedListResponseFeedFor(request *http.Request, feed domain.Feed) feedListResponseFeed {
 	path := "/feeds/" + feed.Path + ".xml"
 	return feedListResponseFeed{
 		Name: feed.Name, Path: path, URL: baseURL(request) + path,
 		SourceURL: feed.SourceURL, Operator: string(feed.Operator), Keyword: feed.Keyword,
-		CreatedAt: feed.CreatedAt,
+		Status: string(h.service.RefreshStatus(feed)), CreatedAt: feed.CreatedAt,
 	}
 }
 
@@ -1076,7 +1078,7 @@ func (h *Handler) splitFeeds(writer http.ResponseWriter, request *http.Request) 
 		return
 	}
 
-	response := splitResponseFor(request, feeds)
+	response := h.splitResponseFor(request, feeds)
 	writer.Header().Set("Content-Type", "application/json; charset=utf-8")
 	writer.Header().Set("Cache-Control", "no-store")
 	writer.WriteHeader(http.StatusCreated)
@@ -1085,7 +1087,7 @@ func (h *Handler) splitFeeds(writer http.ResponseWriter, request *http.Request) 
 	}
 }
 
-func splitResponseFor(request *http.Request, feeds []domain.Feed) splitResponse {
+func (h *Handler) splitResponseFor(request *http.Request, feeds []domain.Feed) splitResponse {
 	response := splitResponse{Outputs: make([]splitResponseOutput, len(feeds))}
 	for i, feed := range feeds {
 		path := "/feeds/" + feed.Path + ".xml"
@@ -1095,6 +1097,7 @@ func splitResponseFor(request *http.Request, feeds []domain.Feed) splitResponse 
 			Keyword:  feed.Keyword,
 			Path:     path,
 			URL:      baseURL(request) + path,
+			Status:   string(h.service.RefreshStatus(feed)),
 		}
 	}
 	return response

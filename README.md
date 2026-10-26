@@ -141,11 +141,13 @@ are limited to 120 characters, source URLs to 2048 characters, keywords to 200
 characters, and source URLs must be HTTP or HTTPS without user information.
 
 `GET /api/v1/feeds` returns `{ "feeds": [...] }`. Each feed has `name`, `path`,
-`url`, `source_url`, `operator`, `keyword`, and RFC3339 `created_at`. Create
+`url`, `source_url`, `operator`, `keyword`, `status`, and RFC3339 `created_at`.
+`status` is `ready` or `refreshing` and reports background refresh state for the
+feed's source. Create
 returns one feed object with HTTP 201. Preview returns
 `{ "outputs": [{"name","operator","keyword","count","sample_titles"}] }`;
 sample titles contain at most five entries. Split accepts one to 32 outputs and
-returns `{ "outputs": [{"name","operator","keyword","path","url"}] }`
+returns `{ "outputs": [{"name","operator","keyword","path","url","status"}] }`
 with HTTP 201. Delete returns `{ "deleted": true, "path": "opaque-id" }`;
 new feed paths use 64-character cryptographic hashes and exclude the feed name.
 

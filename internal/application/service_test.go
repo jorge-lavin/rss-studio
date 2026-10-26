@@ -152,6 +152,21 @@ func TestServiceCreatesAndCachesFeed(t *testing.T) {
 	}
 }
 
+func TestServiceReportsRefreshStatus(t *testing.T) {
+	service := NewService(nil, nil, nil, nil)
+	feed := domain.Feed{TenantID: 1, SourceURL: "https://example.test/rss"}
+	if got := service.RefreshStatus(feed); got != RefreshStatusReady {
+		t.Fatalf("unexpected initial refresh status: %q", got)
+	}
+
+	service.stateMu.Lock()
+	service.refreshing[refreshKey{tenantID: feed.TenantID, sourceURL: feed.SourceURL}] = true
+	service.stateMu.Unlock()
+	if got := service.RefreshStatus(feed); got != RefreshStatusRefreshing {
+		t.Fatalf("unexpected active refresh status: %q", got)
+	}
+}
+
 func TestServiceKeepsCacheWhenHeadHasNoLastModified(t *testing.T) {
 	store, owner := testSQLiteStore(t)
 	source := &sourceStub{}

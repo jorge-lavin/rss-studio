@@ -1042,12 +1042,13 @@ func TestVersionedCreateReturnsFeedMetadata(t *testing.T) {
 		SourceURL string    `json:"source_url"`
 		Operator  string    `json:"operator"`
 		Keyword   string    `json:"keyword"`
+		Status    string    `json:"status"`
 		CreatedAt time.Time `json:"created_at"`
 	}
 	if err := json.NewDecoder(recorder.Body).Decode(&feed); err != nil {
 		t.Fatal(err)
 	}
-	if feed.Name != "Foo feed" || !isOpaqueFeedPath(feed.Path) || feed.URL != "http://example.com"+feed.Path || feed.SourceURL != "https://example.test/rss" || feed.Operator != "starts_with" || feed.Keyword != "Keep" || feed.CreatedAt.IsZero() {
+	if feed.Name != "Foo feed" || !isOpaqueFeedPath(feed.Path) || feed.URL != "http://example.com"+feed.Path || feed.SourceURL != "https://example.test/rss" || feed.Operator != "starts_with" || feed.Keyword != "Keep" || feed.Status != "ready" || feed.CreatedAt.IsZero() {
 		t.Fatalf("unexpected created feed metadata: %#v", feed)
 	}
 }

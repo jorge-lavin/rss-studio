@@ -38,6 +38,13 @@ const (
 	MaxSplitAggregateBytes = 128 << 20
 )
 
+type RefreshStatus string
+
+const (
+	RefreshStatusReady      RefreshStatus = "ready"
+	RefreshStatusRefreshing RefreshStatus = "refreshing"
+)
+
 // MaxSplitOutputs limits work and persisted rows created by one split request.
 const MaxSplitOutputs = 32
 
@@ -184,6 +191,17 @@ func (s *Service) ExecuteIdempotent(ctx context.Context, owner domain.User, cred
 
 func (s *Service) ListFeeds(owner domain.User) ([]domain.Feed, error) {
 	return s.store.List(owner)
+}
+
+func (s *Service) RefreshStatus(feed domain.Feed) RefreshStatus {
+	key := refreshKey{tenantID: feed.TenantID, sourceURL: feed.SourceURL}
+	s.stateMu.Lock()
+	refreshing := s.refreshing[key]
+	s.stateMu.Unlock()
+	if refreshing {
+		return RefreshStatusRefreshing
+	}
+	return RefreshStatusReady
 }
 
 // RateLimitStore exposes the persistent policy counter when the backing store
