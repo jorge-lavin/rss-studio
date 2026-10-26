@@ -1128,6 +1128,17 @@ func (h *Handler) serveFeed(writer http.ResponseWriter, request *http.Request) {
 		}
 		return
 	}
+	decision, err := h.apiLimiter.allowPublicFeed(request.URL.Path)
+	if err != nil {
+		log.Printf("public feed rate limit unavailable")
+		writeAPIError(writer, request, http.StatusServiceUnavailable, "rate_limit_unavailable", "Rate limiting is temporarily unavailable.")
+		return
+	}
+	setRateLimitHeaders(writer, decision)
+	if !decision.Allowed {
+		rateLimitError(writer, request, decision)
+		return
+	}
 	writer.Header().Set("Content-Type", "application/rss+xml; charset=utf-8")
 	writer.Header().Set("Cache-Control", "public, max-age=300")
 	writer.Write(data)

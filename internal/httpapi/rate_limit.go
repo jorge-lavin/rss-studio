@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"errors"
 	"net"
 	"net/http"
 	"strconv"
@@ -97,6 +98,16 @@ func (l *apiRateLimiter) allow(identity policy.Identity, operation string) (poli
 		return policy.RateLimitDecision{Allowed: true}, nil
 	}
 	return l.store.CheckRateLimits(spec.Operation, spec.Limit, spec.Window, policy.RateLimitBuckets(identity), l.now().UTC())
+}
+
+func (l *apiRateLimiter) allowPublicFeed(feedPath string) (policy.RateLimitDecision, error) {
+	spec, ok := policy.RateLimitSpecFor(policy.OperationFeedsPublic)
+	if !ok || l == nil || l.store == nil {
+		return policy.RateLimitDecision{}, errors.New("rate limit storage unavailable")
+	}
+	return l.store.CheckRateLimits(spec.Operation, spec.Limit, spec.Window, []policy.RateLimitBucket{
+		policy.PublicFeedRateLimitBucket(feedPath),
+	}, l.now().UTC())
 }
 
 func rateLimitSeconds(duration time.Duration) int {
