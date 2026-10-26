@@ -442,6 +442,37 @@ func TestAuthJSONEndpointsRejectOversizedBodies(t *testing.T) {
 	}
 }
 
+func TestBrowserFormEndpointsRejectOversizedBodies(t *testing.T) {
+	server, _ := newAuthenticatedServer(t)
+	token := loginToken(t, server)
+	oversized := strings.Repeat("x", 64<<10)
+	tests := []struct {
+		name       string
+		path       string
+		body       string
+		authorized bool
+	}{
+		{name: "login", path: "/auth/login", body: "username=admin&password=" + oversized},
+		{name: "registration", path: "/auth/register", body: "username=new-user&password=" + oversized},
+		{name: "create", path: "/feeds", body: "name=Foo&source_url=https%3A%2F%2Fexample.test%2Frss&operator=contains&keyword=" + oversized, authorized: true},
+		{name: "delete", path: "/feeds/missing/delete", body: oversized + "x", authorized: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			request := httptest.NewRequest(http.MethodPost, test.path, strings.NewReader(test.body))
+			request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			if test.authorized {
+				request.Header.Set("Authorization", "Bearer "+token)
+			}
+			recorder := httptest.NewRecorder()
+			server.Config.Handler.ServeHTTP(recorder, request)
+			if recorder.Code != http.StatusBadRequest || strings.Contains(recorder.Body.String(), oversized) {
+				t.Fatalf("expected safe oversized browser %s response, got %d: %s", test.name, recorder.Code, recorder.Body.String())
+			}
+		})
+	}
+}
+
 func TestAuthenticatedHandlerProtectsManagementAndLeavesFeedsPublic(t *testing.T) {
 	server, _ := newAuthenticatedServer(t)
 
@@ -1622,6 +1653,40 @@ func TestVersionedPreviewRejectsOversizedBody(t *testing.T) {
 	server.Config.Handler.ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusBadRequest || !strings.HasPrefix(recorder.Header().Get("Content-Type"), "application/json") {
 		t.Fatalf("expected oversized API preview to return JSON 400, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestVersionedJSONPostEndpointsRejectOversizedBodiesWithStableErrors(t *testing.T) {
+	server, _ := newAuthenticatedServer(t)
+	token := loginToken(t, server)
+	authBody := `{"username":"admin","password":"password"}` + strings.Repeat(" ", 16<<10)
+	jsonBody := `{"name":"Foo","source_url":"https://example.test/rss","keyword":"foo"}` + strings.Repeat(" ", 1<<20)
+	previewBody := `{"source_url":"https://example.test/rss","outputs":[{"name":"Foo","keyword":"foo"}]}` + strings.Repeat(" ", 1<<20)
+	tests := []struct {
+		name   string
+		path   string
+		body   string
+		bearer bool
+	}{
+		{name: "login", path: "/api/v1/auth/login", body: authBody},
+		{name: "registration", path: "/api/v1/auth/register", body: authBody},
+		{name: "service token", path: "/api/v1/auth/tokens", body: `{"name":"agent","scopes":["feeds:read"],"expires_in":3600}` + strings.Repeat(" ", 16<<10), bearer: true},
+		{name: "create", path: "/api/v1/feeds", body: jsonBody, bearer: true},
+		{name: "preview", path: "/api/v1/feeds/preview", body: previewBody, bearer: true},
+		{name: "split", path: "/api/v1/feeds/split", body: previewBody, bearer: true},
+	}
+	for index, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			request := httptest.NewRequest(http.MethodPost, test.path, strings.NewReader(test.body))
+			request.RemoteAddr = "192.0.2." + strconv.Itoa(index+10) + ":1234"
+			request.Header.Set("Content-Type", "application/json")
+			if test.bearer {
+				request.Header.Set("Authorization", "Bearer "+token)
+			}
+			recorder := httptest.NewRecorder()
+			server.Config.Handler.ServeHTTP(recorder, request)
+			assertAPIError(t, recorder, http.StatusBadRequest, "invalid_json")
+		})
 	}
 }
 

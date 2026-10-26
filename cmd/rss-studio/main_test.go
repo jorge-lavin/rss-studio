@@ -1,6 +1,23 @@
 package main
 
-import "testing"
+import (
+	"net/http"
+	"testing"
+	"time"
+)
+
+func TestHTTPServerUsesResourceLimits(t *testing.T) {
+	server := newHTTPServer(":8080", http.NewServeMux())
+	if server.ReadTimeout != 30*time.Second || server.WriteTimeout != 30*time.Second {
+		t.Fatalf("server read/write timeouts = %s/%s; want 30s/30s", server.ReadTimeout, server.WriteTimeout)
+	}
+	if server.ReadHeaderTimeout != 5*time.Second || server.IdleTimeout != 60*time.Second {
+		t.Fatalf("server header/idle timeouts = %s/%s; want 5s/60s", server.ReadHeaderTimeout, server.IdleTimeout)
+	}
+	if server.MaxHeaderBytes != 64<<10 {
+		t.Fatalf("server max header bytes = %d; want %d", server.MaxHeaderBytes, 64<<10)
+	}
+}
 
 func TestMCPEnabledFromEnvDefaultsToCompatibility(t *testing.T) {
 	t.Setenv("RSS_STUDIO_MCP_ENABLED", "")

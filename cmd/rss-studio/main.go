@@ -22,6 +22,15 @@ import (
 	"rss-studio/internal/storage"
 )
 
+const (
+	// 30s leaves margin after the source client's 20s upstream deadline.
+	serverReadTimeout       = 30 * time.Second
+	serverWriteTimeout      = 30 * time.Second
+	serverReadHeaderTimeout = 5 * time.Second
+	serverIdleTimeout       = 60 * time.Second
+	serverMaxHeaderBytes    = 64 << 10
+)
+
 func main() {
 	shutdownObservability, err := observability.Setup(context.Background(), "rss-studio")
 	if err != nil {
@@ -85,16 +94,23 @@ func main() {
 		mux.HandleFunc("/mcp", http.NotFound)
 	}
 	mux.Handle("/", httpapi.NewHandler(service, auth))
-	server := &http.Server{
-		Addr:              address,
-		Handler:           mux,
-		ReadHeaderTimeout: 5 * time.Second,
-		IdleTimeout:       60 * time.Second,
-	}
+	server := newHTTPServer(address, mux)
 
 	log.Printf("RSS Studio listening on %s", address)
 	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Fatal(err)
+	}
+}
+
+func newHTTPServer(address string, handler http.Handler) *http.Server {
+	return &http.Server{
+		Addr:              address,
+		Handler:           handler,
+		ReadTimeout:       serverReadTimeout,
+		WriteTimeout:      serverWriteTimeout,
+		ReadHeaderTimeout: serverReadHeaderTimeout,
+		IdleTimeout:       serverIdleTimeout,
+		MaxHeaderBytes:    serverMaxHeaderBytes,
 	}
 }
 

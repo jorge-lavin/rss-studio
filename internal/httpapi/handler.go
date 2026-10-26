@@ -127,6 +127,7 @@ type createdServiceTokenResponse struct {
 const (
 	maxJSONRequestBody     = 1 << 20
 	maxAuthJSONRequestBody = 16 << 10
+	maxFormRequestBody     = 64 << 10
 	maxIdempotencyKey      = 255
 )
 
@@ -638,9 +639,7 @@ func (h *Handler) login(writer http.ResponseWriter, request *http.Request) {
 		return
 	}
 
-	if isJSONRequest(request) {
-		request.Body = http.MaxBytesReader(writer, request.Body, maxAuthJSONRequestBody)
-	}
+	request.Body = http.MaxBytesReader(writer, request.Body, maxAuthJSONRequestBody)
 	credentials, err := parseCredentials(request)
 	if err != nil {
 		http.Error(writer, "Invalid login request.", http.StatusBadRequest)
@@ -708,9 +707,7 @@ func (h *Handler) register(writer http.ResponseWriter, request *http.Request) {
 		return
 	}
 
-	if isJSONRequest(request) {
-		request.Body = http.MaxBytesReader(writer, request.Body, maxAuthJSONRequestBody)
-	}
+	request.Body = http.MaxBytesReader(writer, request.Body, maxAuthJSONRequestBody)
 	credentials, err := parseCredentials(request)
 	if err != nil {
 		http.Error(writer, "Invalid registration request.", http.StatusBadRequest)
@@ -961,6 +958,7 @@ func (h *Handler) home(writer http.ResponseWriter, request *http.Request) {
 }
 
 func (h *Handler) createFeed(writer http.ResponseWriter, request *http.Request) {
+	request.Body = http.MaxBytesReader(writer, request.Body, maxFormRequestBody)
 	if err := request.ParseForm(); err != nil {
 		h.renderHome(writer, request, "Could not read form.", http.StatusBadRequest)
 		return
@@ -1150,6 +1148,11 @@ func (h *Handler) serveFeed(writer http.ResponseWriter, request *http.Request) {
 }
 
 func (h *Handler) deleteFeed(writer http.ResponseWriter, request *http.Request) {
+	request.Body = http.MaxBytesReader(writer, request.Body, maxFormRequestBody)
+	if _, err := io.Copy(io.Discard, request.Body); err != nil {
+		http.Error(writer, "Could not read request.", http.StatusBadRequest)
+		return
+	}
 	if err := h.service.DeleteFeedContext(request.Context(), h.requestUser(request), request.PathValue("path")); err != nil {
 		if errors.Is(err, application.ErrFeedNotFound) {
 			http.NotFound(writer, request)
