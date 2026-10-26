@@ -1,9 +1,9 @@
 module rss-studio
 
-go 1.23.0
+go 1.27.0
 
 require (
-	github.com/beevik/etree v1.5.0
+	github.com/beevik/etree v1.7.0
 	go.opentelemetry.io/otel v1.34.0
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp v1.34.0
 	go.opentelemetry.io/otel/sdk v1.34.0

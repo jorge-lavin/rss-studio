@@ -1,6 +1,7 @@
 package rss
 
 import (
+	"errors"
 	"reflect"
 	"strings"
 	"testing"
@@ -42,6 +43,24 @@ func TestFilterRejectsAtom(t *testing.T) {
 	_, _, err := Filter([]byte(`<feed xmlns="http://www.w3.org/2005/Atom"></feed>`), "foo", "Feed")
 	if err == nil {
 		t.Fatal("expected non-RSS feed to fail")
+	}
+}
+
+func TestFilterRejectsHostileXMLDepth(t *testing.T) {
+	source := `<rss version="2.0"><channel><title>Source</title>` +
+		strings.Repeat("<nested>", maxXMLDepth+1) +
+		strings.Repeat("</nested>", maxXMLDepth+1) +
+		`</channel></rss>`
+
+	_, _, err := Filter([]byte(source), "foo", "Feed")
+	if err == nil {
+		t.Fatal("expected excessive XML depth to fail")
+	}
+	if !errors.Is(err, etree.ErrMaxDepth) {
+		t.Fatalf("expected etree max-depth error, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "XML depth exceeds limit of 256") {
+		t.Fatalf("expected explicit depth limit error, got %v", err)
 	}
 }
 

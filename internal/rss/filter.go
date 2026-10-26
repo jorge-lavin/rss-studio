@@ -1,12 +1,18 @@
 package rss
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 
 	"github.com/beevik/etree"
 
 	"rss-studio/internal/domain"
+)
+
+const (
+	maxSourceFeedBytes = 25 << 20
+	maxXMLDepth        = 256
 )
 
 // FilterRule names one filtered output and its title keyword.
@@ -103,8 +109,18 @@ func FilterWithOperator(source []byte, operator domain.FilterOperator, keyword, 
 }
 
 func parseDocument(source []byte) (*etree.Document, error) {
+	if len(source) > maxSourceFeedBytes {
+		return nil, fmt.Errorf("parse source feed: input exceeds %d-byte limit", maxSourceFeedBytes)
+	}
 	document := etree.NewDocument()
+	document.ReadSettings = etree.ReadSettings{
+		MaxDepth:      maxXMLDepth,
+		ValidateInput: true,
+	}
 	if err := document.ReadFromBytes(source); err != nil {
+		if errors.Is(err, etree.ErrMaxDepth) {
+			return nil, fmt.Errorf("parse source feed: XML depth exceeds limit of %d: %w", maxXMLDepth, err)
+		}
 		return nil, fmt.Errorf("parse source feed: %w", err)
 	}
 	if document.FindElement("/rss/channel") == nil {
