@@ -25,8 +25,8 @@ func TestSQLiteStoreMigratesAndPersistsMultipleUsers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if version != 7 {
-		t.Fatalf("expected schema version 7, got %d", version)
+	if version != 8 {
+		t.Fatalf("expected schema version 8, got %d", version)
 	}
 	if err := store.Migrate(); err != nil {
 		t.Fatalf("rerunning migrations: %v", err)
@@ -380,7 +380,7 @@ func TestSQLiteStoreUpgradePreservesUsersAndFeeds(t *testing.T) {
 	}
 	defer upgraded.Close()
 	version, err := upgraded.SchemaVersion()
-	if err != nil || version != 7 {
+	if err != nil || version != 8 {
 		t.Fatalf("unexpected upgraded schema version: version=%d err=%v", version, err)
 	}
 	if _, err := upgraded.Authenticate("alice", "password"); err != nil {
@@ -578,5 +578,126 @@ func TestSQLiteStoreQuotaConcurrentReservationsAreAtomic(t *testing.T) {
 	}
 	if err := store.RefundQuota(held); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestSQLiteStoreBoundsBrowserSessionsWithoutTouchingServiceTokens(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "rss-studio.db")
+	store, err := NewSQLiteStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner, err := store.CreateUser("alice", "password")
+	if err != nil {
+		store.Close()
+		t.Fatal(err)
+	}
+	_, integrationToken, err := store.CreateServiceToken(owner, "integration", []string{domain.ScopeFeedsRead}, time.Now().UTC().Add(time.Hour))
+	if err != nil {
+		store.Close()
+		t.Fatal(err)
+	}
+	for i := 0; i < maxBrowserSessions+3; i++ {
+		if _, _, err := store.CreateBrowserSession(owner, time.Now().UTC().Add(time.Hour)); err != nil {
+			store.Close()
+			t.Fatal(err)
+		}
+	}
+	var browserCount int
+	if err := store.db.QueryRow("SELECT COUNT(*) FROM browser_sessions WHERE user_id = ?", owner.ID).Scan(&browserCount); err != nil {
+		store.Close()
+		t.Fatal(err)
+	}
+	if browserCount != maxBrowserSessions {
+		store.Close()
+		t.Fatalf("browser sessions were not bounded: got %d, want %d", browserCount, maxBrowserSessions)
+	}
+	if _, err := store.AuthenticateServiceToken(integrationToken, time.Now().UTC()); err != nil {
+		store.Close()
+		t.Fatalf("valid integration token was affected by browser cleanup: %v", err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err = NewSQLiteStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if _, err := store.AuthenticateServiceToken(integrationToken, time.Now().UTC()); err != nil {
+		t.Fatalf("valid integration token was not preserved after reopen: %v", err)
+	}
+}
+
+func TestSQLiteStoreCleansOnlyTerminalBrowserSessions(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "rss-studio.db")
+	store, err := NewSQLiteStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner, err := store.CreateUser("alice", "password")
+	if err != nil {
+		store.Close()
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	oldExpired, _, err := store.CreateBrowserSession(owner, now.Add(time.Hour))
+	if err != nil {
+		store.Close()
+		t.Fatal(err)
+	}
+	oldRevoked, _, err := store.CreateBrowserSession(owner, now.Add(time.Hour))
+	if err != nil {
+		store.Close()
+		t.Fatal(err)
+	}
+	recentRevoked, _, err := store.CreateBrowserSession(owner, now.Add(time.Hour))
+	if err != nil {
+		store.Close()
+		t.Fatal(err)
+	}
+	active, _, err := store.CreateBrowserSession(owner, now.Add(time.Hour))
+	if err != nil {
+		store.Close()
+		t.Fatal(err)
+	}
+	if err := store.RevokeBrowserSession(owner, oldRevoked); err != nil {
+		store.Close()
+		t.Fatal(err)
+	}
+	if err := store.RevokeBrowserSession(owner, recentRevoked); err != nil {
+		store.Close()
+		t.Fatal(err)
+	}
+	if _, err := store.db.Exec("UPDATE browser_sessions SET expires_at = ? WHERE token_hash = ?", now.Add(-browserSessionRetention-time.Hour).Format(time.RFC3339Nano), hashBrowserSession(oldExpired)); err != nil {
+		store.Close()
+		t.Fatal(err)
+	}
+	if _, err := store.db.Exec("UPDATE browser_sessions SET revoked_at = ? WHERE token_hash = ?", now.Add(-browserSessionRetention-time.Hour).Format(time.RFC3339Nano), hashBrowserSession(oldRevoked)); err != nil {
+		store.Close()
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err = NewSQLiteStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	var count int
+	if err := store.db.QueryRow("SELECT COUNT(*) FROM browser_sessions WHERE token_hash IN (?, ?)", hashBrowserSession(oldExpired), hashBrowserSession(oldRevoked)).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Fatalf("old terminal browser sessions were retained: %d", count)
+	}
+	if _, _, err := store.AuthenticateBrowserSession(active, now); err != nil {
+		t.Fatalf("active browser session was removed: %v", err)
+	}
+	if _, _, err := store.AuthenticateBrowserSession(recentRevoked, now); !errors.Is(err, ErrInvalidBrowserSession) {
+		t.Fatalf("recent revoked browser session accepted: %v", err)
 	}
 }

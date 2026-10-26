@@ -223,3 +223,52 @@ func TestAuthenticatorRejectsInvalidTokens(t *testing.T) {
 		t.Fatalf("expired token accepted: %v", err)
 	}
 }
+
+func TestAuthenticatorKeepsBrowserSessionsSeparateFromServiceTokens(t *testing.T) {
+	store, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "rss-studio.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	owner, err := store.CreateUser("admin", "password")
+	if err != nil {
+		t.Fatal(err)
+	}
+	auth, err := NewAuthenticator(AuthConfig{UserStore: store})
+	if err != nil {
+		t.Fatal(err)
+	}
+	serviceToken, _, err := auth.IssueToken("admin", "password")
+	if err != nil {
+		t.Fatal(err)
+	}
+	browserToken, _, err := auth.IssueBrowserToken("admin", "password")
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodGet, "/", nil)
+	request.AddCookie(&http.Cookie{Name: authCookieName, Value: browserToken})
+	identity, err := auth.IdentityFromRequest(request)
+	if err != nil {
+		t.Fatalf("browser session rejected: %v", err)
+	}
+	if identity.ServiceToken || identity.TokenName != browserSessionName || identity.User.ID != owner.ID {
+		t.Fatalf("unexpected browser identity: %#v", identity)
+	}
+	if err := auth.RevokeBrowserSession(owner, browserToken); err != nil {
+		t.Fatal(err)
+	}
+	if err := auth.ValidateToken(serviceToken); err != nil {
+		t.Fatalf("browser logout revoked service token: %v", err)
+	}
+	if _, err := auth.IdentityFromRequest(request); !errors.Is(err, ErrInvalidToken) {
+		t.Fatalf("revoked browser session accepted: %v", err)
+	}
+	tokens, err := auth.ListServiceTokens(owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tokens) != 1 || tokens[0].Name != loginServiceTokenName {
+		t.Fatalf("browser session was stored as integration token: %#v", tokens)
+	}
+}

@@ -1,12 +1,16 @@
 package httpapi
 
 import (
+	"crypto/rand"
+	"crypto/subtle"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"html/template"
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -23,6 +27,7 @@ import (
 type Handler struct {
 	service      *application.Service
 	auth         *Authenticator
+	now          func() time.Time
 	loginLimiter *loginRateLimiter
 	apiLimiter   *apiRateLimiter
 }
@@ -33,11 +38,13 @@ type homePageData struct {
 	Version       string
 	Error         string
 	Authenticated bool
+	CSRFToken     string
 }
 
 type authPageData struct {
 	Error        string
 	Registration bool
+	CSRFToken    string
 }
 
 type authCredentials struct {
@@ -129,6 +136,10 @@ const (
 	maxAuthJSONRequestBody = 16 << 10
 	maxFormRequestBody     = 64 << 10
 	maxIdempotencyKey      = 255
+	csrfCookieName         = "rss_studio_csrf"
+	csrfFormField          = "csrf_token"
+	csrfHeaderName         = "X-CSRF-Token"
+	csrfTokenBytes         = 32
 )
 
 func NewHandler(service *application.Service, authenticators ...*Authenticator) http.Handler {
@@ -143,7 +154,7 @@ func NewHandlerWithClock(service *application.Service, now func() time.Time, aut
 		auth = authenticators[0]
 	}
 	handler := &Handler{
-		service: service, auth: auth, loginLimiter: newLoginRateLimiterWithClock(now),
+		service: service, auth: auth, now: now, loginLimiter: newLoginRateLimiterWithClock(now),
 		apiLimiter: newAPIRateLimiter(service.RateLimitStore(), now),
 	}
 	mux := http.NewServeMux()
@@ -628,28 +639,36 @@ func previewRulesFor(outputs []previewOutput) []application.PreviewRule {
 }
 
 func (h *Handler) login(writer http.ResponseWriter, request *http.Request) {
+	noStore(writer)
+	request.Body = http.MaxBytesReader(writer, request.Body, maxAuthJSONRequestBody)
+	if !isJSONRequest(request) && !h.requireBrowserCSRF(writer, request) {
+		return
+	}
 	if allowed, retryAfter := h.loginLimiter.allow(requestClient(request)); !allowed {
 		seconds := int((retryAfter + time.Second - 1) / time.Second)
 		writer.Header().Set("Retry-After", strconv.Itoa(seconds))
 		if !isJSONRequest(request) {
-			h.renderLogin(writer, "Too many login attempts. Try again later.", http.StatusTooManyRequests)
+			h.renderLogin(writer, request, "Too many login attempts. Try again later.", http.StatusTooManyRequests)
 			return
 		}
 		http.Error(writer, "Too many login attempts. Try again later.", http.StatusTooManyRequests)
 		return
 	}
 
-	request.Body = http.MaxBytesReader(writer, request.Body, maxAuthJSONRequestBody)
 	credentials, err := parseCredentials(request)
 	if err != nil {
 		http.Error(writer, "Invalid login request.", http.StatusBadRequest)
 		return
 	}
 
-	token, expires, err := h.auth.IssueToken(credentials.Username, credentials.Password)
+	issueToken := h.auth.IssueToken
+	if !isJSONRequest(request) {
+		issueToken = h.auth.IssueBrowserToken
+	}
+	token, expires, err := issueToken(credentials.Username, credentials.Password)
 	if err != nil {
 		if !isJSONRequest(request) {
-			h.renderLogin(writer, "Invalid credentials.", http.StatusUnauthorized)
+			h.renderLogin(writer, request, "Invalid credentials.", http.StatusUnauthorized)
 			return
 		}
 		http.Error(writer, "Invalid credentials.", http.StatusUnauthorized)
@@ -682,6 +701,20 @@ func (h *Handler) login(writer http.ResponseWriter, request *http.Request) {
 }
 
 func (h *Handler) logout(writer http.ResponseWriter, request *http.Request) {
+	noStore(writer)
+	if !h.requireBrowserCSRF(writer, request) {
+		return
+	}
+	cookie, err := request.Cookie(authCookieName)
+	if err != nil || cookie.Value == "" {
+		http.Error(writer, "Authentication required.", http.StatusUnauthorized)
+		return
+	}
+	if err := h.auth.RevokeBrowserSession(h.requestUser(request), cookie.Value); err != nil {
+		log.Printf("revoke browser session: %v", err)
+		http.Error(writer, "Could not log out.", http.StatusInternalServerError)
+		return
+	}
 	http.SetCookie(writer, &http.Cookie{
 		Name:     authCookieName,
 		Value:    "",
@@ -696,18 +729,22 @@ func (h *Handler) logout(writer http.ResponseWriter, request *http.Request) {
 }
 
 func (h *Handler) register(writer http.ResponseWriter, request *http.Request) {
+	noStore(writer)
+	request.Body = http.MaxBytesReader(writer, request.Body, maxAuthJSONRequestBody)
+	if !isJSONRequest(request) && !h.requireBrowserCSRF(writer, request) {
+		return
+	}
 	if allowed, retryAfter := h.loginLimiter.allow(requestClient(request)); !allowed {
 		seconds := int((retryAfter + time.Second - 1) / time.Second)
 		writer.Header().Set("Retry-After", strconv.Itoa(seconds))
 		if !isJSONRequest(request) {
-			h.renderRegister(writer, "Too many registration attempts. Try again later.", http.StatusTooManyRequests)
+			h.renderRegister(writer, request, "Too many registration attempts. Try again later.", http.StatusTooManyRequests)
 			return
 		}
 		http.Error(writer, "Too many registration attempts. Try again later.", http.StatusTooManyRequests)
 		return
 	}
 
-	request.Body = http.MaxBytesReader(writer, request.Body, maxAuthJSONRequestBody)
 	credentials, err := parseCredentials(request)
 	if err != nil {
 		http.Error(writer, "Invalid registration request.", http.StatusBadRequest)
@@ -729,7 +766,7 @@ func (h *Handler) register(writer http.ResponseWriter, request *http.Request) {
 			log.Printf("register user: %v", err)
 		}
 		if !isJSONRequest(request) {
-			h.renderRegister(writer, message, status)
+			h.renderRegister(writer, request, message, status)
 			return
 		}
 		http.Error(writer, message, status)
@@ -769,25 +806,29 @@ func parseCredentials(request *http.Request) (authCredentials, error) {
 }
 
 func (h *Handler) loginPage(writer http.ResponseWriter, request *http.Request) {
-	h.renderLogin(writer, "", http.StatusOK)
+	h.renderLogin(writer, request, "", http.StatusOK)
 }
 
 func (h *Handler) registerPage(writer http.ResponseWriter, request *http.Request) {
-	h.renderRegister(writer, "", http.StatusOK)
+	h.renderRegister(writer, request, "", http.StatusOK)
 }
 
-func (h *Handler) renderLogin(writer http.ResponseWriter, message string, status int) {
+func (h *Handler) renderLogin(writer http.ResponseWriter, request *http.Request, message string, status int) {
+	noStore(writer)
+	token := h.csrfToken(writer, request)
 	writer.Header().Set("Content-Type", "text/html; charset=utf-8")
 	writer.WriteHeader(status)
-	if err := authTemplate.Execute(writer, authPageData{Error: message}); err != nil {
+	if err := authTemplate.Execute(writer, authPageData{Error: message, CSRFToken: token}); err != nil {
 		log.Printf("render login: %v", err)
 	}
 }
 
-func (h *Handler) renderRegister(writer http.ResponseWriter, message string, status int) {
+func (h *Handler) renderRegister(writer http.ResponseWriter, request *http.Request, message string, status int) {
+	noStore(writer)
+	token := h.csrfToken(writer, request)
 	writer.Header().Set("Content-Type", "text/html; charset=utf-8")
 	writer.WriteHeader(status)
-	if err := authTemplate.Execute(writer, authPageData{Error: message, Registration: true}); err != nil {
+	if err := authTemplate.Execute(writer, authPageData{Error: message, Registration: true, CSRFToken: token}); err != nil {
 		log.Printf("render login: %v", err)
 	}
 }
@@ -805,7 +846,11 @@ func (h *Handler) authenticate(next http.Handler) http.Handler {
 			next.ServeHTTP(writer, request)
 			return
 		}
+		noStore(writer)
 		identity, err := h.auth.IdentityFromRequest(request)
+		if request.Method == http.MethodPost && request.URL.Path == "/auth/logout" {
+			identity, err = h.auth.BrowserIdentityFromRequest(request)
+		}
 		if err != nil {
 			if isAPIRequest(request) {
 				writer.Header().Set("WWW-Authenticate", `Bearer realm="rss-studio"`)
@@ -827,19 +872,24 @@ func (h *Handler) authenticate(next http.Handler) http.Handler {
 		}
 		policyStarted := time.Now()
 		if requiredScope, requiresScope := requiredScopeForRequest(request); requiresScope {
-			if err := policy.Authorize(identity, requiredScope); err != nil {
-				if !hasOperation {
-					operation = "request"
+			if !isBrowserSessionIdentity(identity) {
+				if err := policy.Authorize(identity, requiredScope); err != nil {
+					if !hasOperation {
+						operation = "request"
+					}
+					observability.Record(request.Context(), observability.Event{
+						Event:      observability.EventPolicy,
+						Operation:  operation,
+						Result:     "denied",
+						DurationMS: time.Since(policyStarted).Milliseconds(),
+					})
+					writePolicyError(writer, request, err)
+					return
 				}
-				observability.Record(request.Context(), observability.Event{
-					Event:      observability.EventPolicy,
-					Operation:  operation,
-					Result:     "denied",
-					DurationMS: time.Since(policyStarted).Milliseconds(),
-				})
-				writePolicyError(writer, request, err)
-				return
 			}
+		}
+		if isBrowserSessionIdentity(identity) && isAPIRequest(request) && request.Method != http.MethodGet && request.Method != http.MethodHead && !h.requireBrowserCSRF(writer, request) {
+			return
 		}
 		if isAPIRequest(request) {
 			if hasOperation {
@@ -947,9 +997,6 @@ func isPublicRequest(request *http.Request) bool {
 	if request.URL.Path == "/api/v1/auth/login" || request.URL.Path == "/api/v1/auth/register" {
 		return true
 	}
-	if request.URL.Path == "/auth/logout" {
-		return request.Method == http.MethodPost
-	}
 	return request.Method == http.MethodGet && strings.HasPrefix(request.URL.Path, "/feeds/") && strings.HasSuffix(request.URL.Path, ".xml")
 }
 
@@ -959,6 +1006,9 @@ func (h *Handler) home(writer http.ResponseWriter, request *http.Request) {
 
 func (h *Handler) createFeed(writer http.ResponseWriter, request *http.Request) {
 	request.Body = http.MaxBytesReader(writer, request.Body, maxFormRequestBody)
+	if !h.requireBrowserCSRF(writer, request) {
+		return
+	}
 	if err := request.ParseForm(); err != nil {
 		h.renderHome(writer, request, "Could not read form.", http.StatusBadRequest)
 		return
@@ -986,6 +1036,9 @@ func (h *Handler) createFeed(writer http.ResponseWriter, request *http.Request) 
 func (h *Handler) preview(writer http.ResponseWriter, request *http.Request) {
 	var input previewRequest
 	request.Body = http.MaxBytesReader(writer, request.Body, maxJSONRequestBody)
+	if !h.requireBrowserCSRF(writer, request) {
+		return
+	}
 	decoder := json.NewDecoder(request.Body)
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&input); err != nil || decoder.Decode(&struct{}{}) != io.EOF {
@@ -1049,6 +1102,9 @@ func (h *Handler) feedListResponseFeedFor(request *http.Request, feed domain.Fee
 func (h *Handler) splitFeeds(writer http.ResponseWriter, request *http.Request) {
 	var input previewRequest
 	request.Body = http.MaxBytesReader(writer, request.Body, maxJSONRequestBody)
+	if !h.requireBrowserCSRF(writer, request) {
+		return
+	}
 	decoder := json.NewDecoder(request.Body)
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&input); err != nil || decoder.Decode(&struct{}{}) != io.EOF {
@@ -1149,6 +1205,9 @@ func (h *Handler) serveFeed(writer http.ResponseWriter, request *http.Request) {
 
 func (h *Handler) deleteFeed(writer http.ResponseWriter, request *http.Request) {
 	request.Body = http.MaxBytesReader(writer, request.Body, maxFormRequestBody)
+	if !h.requireBrowserCSRF(writer, request) {
+		return
+	}
 	if _, err := io.Copy(io.Discard, request.Body); err != nil {
 		http.Error(writer, "Could not read request.", http.StatusBadRequest)
 		return
@@ -1184,6 +1243,7 @@ func feedPath(value string) string {
 }
 
 func (h *Handler) renderHome(writer http.ResponseWriter, request *http.Request, message string, status int) {
+	noStore(writer)
 	feeds, err := h.service.ListFeeds(h.requestUser(request))
 	if err != nil {
 		log.Printf("list feeds: %v", err)
@@ -1194,9 +1254,10 @@ func (h *Handler) renderHome(writer http.ResponseWriter, request *http.Request, 
 			status = http.StatusInternalServerError
 		}
 	}
+	token := h.csrfToken(writer, request)
 	writer.Header().Set("Content-Type", "text/html; charset=utf-8")
 	writer.WriteHeader(status)
-	if err := homeTemplate.Execute(writer, homePageData{Feeds: feeds, BaseURL: baseURL(request), Version: version.Version, Error: message, Authenticated: h.auth != nil}); err != nil {
+	if err := homeTemplate.Execute(writer, homePageData{Feeds: feeds, BaseURL: baseURL(request), Version: version.Version, Error: message, Authenticated: h.auth != nil, CSRFToken: token}); err != nil {
 		log.Printf("render home: %v", err)
 	}
 }
@@ -1217,6 +1278,131 @@ func baseURL(request *http.Request) string {
 		}
 	}
 	return scheme + "://" + request.Host
+}
+
+func noStore(writer http.ResponseWriter) {
+	writer.Header().Set("Cache-Control", "no-store")
+}
+
+func isBrowserSessionIdentity(identity RequestIdentity) bool {
+	return !identity.ServiceToken && identity.TokenName == browserSessionName
+}
+
+func (h *Handler) csrfToken(writer http.ResponseWriter, request *http.Request) string {
+	if cookie, err := request.Cookie(csrfCookieName); err == nil && validCSRFToken(cookie.Value) {
+		return cookie.Value
+	}
+	token, err := newCSRFToken()
+	if err != nil {
+		log.Printf("generate csrf token: %v", err)
+		return ""
+	}
+	http.SetCookie(writer, &http.Cookie{
+		Name:     csrfCookieName,
+		Value:    token,
+		Path:     "/",
+		Expires:  h.now().UTC().Add(defaultTokenTTL),
+		HttpOnly: false,
+		Secure:   request.TLS != nil || strings.EqualFold(request.Header.Get("X-Forwarded-Proto"), "https"),
+		SameSite: http.SameSiteLaxMode,
+	})
+	return token
+}
+
+func newCSRFToken() (string, error) {
+	bytes := make([]byte, csrfTokenBytes)
+	if _, err := rand.Read(bytes); err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(bytes), nil
+}
+
+func validCSRFToken(token string) bool {
+	return token != "" && len(token) <= 256
+}
+
+func (h *Handler) requireBrowserCSRF(writer http.ResponseWriter, request *http.Request) bool {
+	if h.auth == nil || !requiresBrowserCSRF(request) {
+		return true
+	}
+	if !sameOriginRequest(request) {
+		h.rejectCSRF(writer, request)
+		return false
+	}
+	cookie, err := request.Cookie(csrfCookieName)
+	if err != nil || !validCSRFToken(cookie.Value) {
+		h.rejectCSRF(writer, request)
+		return false
+	}
+	submitted := request.Header.Get(csrfHeaderName)
+	if request.Header.Get(csrfHeaderName) != "" && !isJSONRequest(request) {
+		if err := request.ParseForm(); err != nil {
+			h.rejectCSRF(writer, request)
+			return false
+		}
+		if formToken := request.PostForm.Get(csrfFormField); formToken != "" && formToken != submitted {
+			h.rejectCSRF(writer, request)
+			return false
+		}
+	} else if submitted == "" && !isJSONRequest(request) {
+		if err := request.ParseForm(); err != nil {
+			h.rejectCSRF(writer, request)
+			return false
+		}
+		submitted = request.PostForm.Get(csrfFormField)
+	}
+	if !validCSRFToken(submitted) || subtle.ConstantTimeCompare([]byte(cookie.Value), []byte(submitted)) != 1 {
+		h.rejectCSRF(writer, request)
+		return false
+	}
+	return true
+}
+
+func requiresBrowserCSRF(request *http.Request) bool {
+	if request.Method == http.MethodGet || request.Method == http.MethodHead || request.Method == http.MethodOptions {
+		return false
+	}
+	if request.URL.Path != "/auth/logout" && request.Header.Get("Authorization") != "" {
+		return false
+	}
+	if isJSONRequest(request) && (request.URL.Path == "/auth/login" || request.URL.Path == "/auth/sign-in" || request.URL.Path == "/auth/register" || request.URL.Path == "/auth/sign-up") {
+		return false
+	}
+	return true
+}
+
+func (h *Handler) rejectCSRF(writer http.ResponseWriter, request *http.Request) {
+	noStore(writer)
+	if isJSONRequest(request) {
+		writeJSONError(writer, "Invalid CSRF token.", http.StatusForbidden)
+		return
+	}
+	http.Error(writer, "Invalid CSRF token.", http.StatusForbidden)
+}
+
+func sameOriginRequest(request *http.Request) bool {
+	if strings.EqualFold(request.Header.Get("Sec-Fetch-Site"), "cross-site") {
+		return false
+	}
+	origin := request.Header.Get("Origin")
+	if origin == "" {
+		origin = request.Header.Get("Referer")
+	}
+	if origin == "" {
+		return true
+	}
+	parsed, err := url.Parse(origin)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return false
+	}
+	scheme := request.Header.Get("X-Forwarded-Proto")
+	if scheme == "" {
+		scheme = "http"
+		if request.TLS != nil {
+			scheme = "https"
+		}
+	}
+	return strings.EqualFold(parsed.Scheme, scheme) && strings.EqualFold(parsed.Host, request.Host)
 }
 
 var homeTemplate = template.Must(template.New("home").Parse(`<!doctype html>
@@ -1252,7 +1438,7 @@ var homeTemplate = template.Must(template.New("home").Parse(`<!doctype html>
         </a>
         <div class="flex items-center gap-4">
           <a href="/api" class="text-xs font-medium text-slate-300 transition hover:text-white">API</a>
-          {{if .Authenticated}}<form method="post" action="/auth/logout"><button type="submit" class="inline-flex items-center gap-2 rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-xs font-medium text-slate-300 transition hover:bg-white/10 focus:outline-none focus:ring-4 focus:ring-violet-400/30">Logout</button></form>{{end}}
+          {{if .Authenticated}}<form method="post" action="/auth/logout"><input type="hidden" name="csrf_token" value="{{.CSRFToken}}"><button type="submit" class="inline-flex items-center gap-2 rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-xs font-medium text-slate-300 transition hover:bg-white/10 focus:outline-none focus:ring-4 focus:ring-violet-400/30">Logout</button></form>{{end}}
           <button id="theme-toggle" type="button" aria-pressed="false" aria-label="Switch to dark mode" class="inline-flex items-center gap-2 rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-xs font-medium text-slate-300 transition hover:bg-white/10 focus:outline-none focus:ring-4 focus:ring-violet-400/30">
             <span data-theme-icon aria-hidden="true">☾</span><span data-theme-label>Dark mode</span>
           </button>
@@ -1270,7 +1456,7 @@ var homeTemplate = template.Must(template.New("home").Parse(`<!doctype html>
         <span class="text-xs font-medium uppercase tracking-wider text-slate-400">New feed</span>
       </div>
       {{if .Error}}<div class="mb-6 flex items-start gap-3 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700 dark:border-rose-800 dark:bg-rose-950/50 dark:text-rose-300" role="alert"><span class="mt-0.5 font-bold">!</span><p>{{.Error}}</p></div>{{end}}
-      <form id="create-feed-form" method="post" action="/feeds" class="grid gap-5 lg:grid-cols-[1fr_1.4fr_0.8fr_0.8fr_auto] lg:items-end">
+      <form id="create-feed-form" method="post" action="/feeds" class="grid gap-5 lg:grid-cols-[1fr_1.4fr_0.8fr_0.8fr_auto] lg:items-end"><input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
         <div>
           <label for="name" class="mb-2 block text-sm font-medium text-slate-700 dark:text-slate-300">Feed name</label>
           <input id="name" name="name" maxlength="120" placeholder="My tech episodes" required class="block w-full rounded-lg border border-slate-300 bg-white px-3.5 py-3 text-sm text-slate-900 shadow-sm outline-none transition placeholder:text-slate-400 focus:border-violet-600 focus:ring-4 focus:ring-violet-600/10 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 dark:placeholder:text-slate-500">
@@ -1305,7 +1491,7 @@ var homeTemplate = template.Must(template.New("home").Parse(`<!doctype html>
         </div>
         <span class="text-xs font-medium uppercase tracking-wider text-slate-400">Batch feeds</span>
       </div>
-      <form id="split-form" method="post" action="/feeds/split" class="space-y-6">
+      <form id="split-form" method="post" action="/feeds/split" class="space-y-6"><input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
         <div>
           <label for="split-source-url" class="mb-2 block text-sm font-medium text-slate-700 dark:text-slate-300">Source RSS URL</label>
           <input id="split-source-url" name="source_url" type="url" maxlength="2048" placeholder="https://example.com/feed.xml" required class="block w-full rounded-lg border border-slate-300 bg-white px-3.5 py-3 text-sm text-slate-900 shadow-sm outline-none transition placeholder:text-slate-400 focus:border-violet-600 focus:ring-4 focus:ring-violet-600/10 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 dark:placeholder:text-slate-500">
@@ -1398,7 +1584,7 @@ var homeTemplate = template.Must(template.New("home").Parse(`<!doctype html>
             </div>
             <div class="flex shrink-0 items-center gap-4 border-t border-slate-100 pt-4 dark:border-slate-800 lg:border-0 lg:pt-0">
               <a href="/feeds/{{.Path}}.xml" class="text-sm font-semibold text-slate-700 hover:text-slate-950 dark:text-slate-300 dark:hover:text-slate-100">Open feed <span aria-hidden="true">↗</span></a>
-               <form data-feed-delete method="post" action="/feeds/{{.Path}}/delete"><button class="text-sm font-medium text-rose-600 hover:text-rose-700 dark:text-rose-400 dark:hover:text-rose-300" type="submit">Delete</button></form>
+               <form data-feed-delete method="post" action="/feeds/{{.Path}}/delete"><input type="hidden" name="csrf_token" value="{{$.CSRFToken}}"><button class="text-sm font-medium text-rose-600 hover:text-rose-700 dark:text-rose-400 dark:hover:text-rose-300" type="submit">Delete</button></form>
             </div>
           </div>
         </article>
@@ -1434,6 +1620,8 @@ var homeTemplate = template.Must(template.New("home").Parse(`<!doctype html>
     window.rssStudioRequest = async (endpoint, options = {}) => {
       const headers = { ...(options.headers || {}), Accept: "application/json" };
       if (options.body) headers["Content-Type"] = "application/json";
+      const csrfToken = document.querySelector('input[name="csrf_token"]')?.value;
+      if (csrfToken) headers["X-CSRF-Token"] = csrfToken;
       const response = await fetch(endpoint, { ...options, credentials: "same-origin", headers });
       const data = await response.json().catch(() => null);
       if (!response.ok) {
@@ -1690,7 +1878,7 @@ var homeTemplate = template.Must(template.New("home").Parse(`<!doctype html>
       });
       status.appendChild(list);
     };
-    const send = async (endpoint, message, render) => {
+     const send = async (endpoint, message, render) => {
       if (busy || !form.reportValidity()) return;
       setBusy(true);
       showMessage(message, false);
@@ -1769,7 +1957,7 @@ var authTemplate = template.Must(template.New("auth").Parse(`<!doctype html>
       <p class="mt-1 text-sm text-slate-500 dark:text-slate-400">{{if .Registration}}Create an account to manage your filtered feeds.{{else}}Login to manage your filtered feeds.{{end}}</p>
     </div>
     {{if .Error}}<div class="mb-6 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700 dark:border-rose-800 dark:bg-rose-950/50 dark:text-rose-300" role="alert">{{.Error}}</div>{{end}}
-    <form method="post" action="{{if .Registration}}/auth/sign-up{{else}}/auth/login{{end}}" class="space-y-5">
+    <form method="post" action="{{if .Registration}}/auth/sign-up{{else}}/auth/login{{end}}" class="space-y-5"><input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
       <div>
         <label for="username" class="mb-2 block text-sm font-medium text-slate-700 dark:text-slate-300">Username</label>
         <input id="username" name="username" autocomplete="username" required autofocus class="block w-full rounded-lg border border-slate-300 bg-white px-3.5 py-3 text-sm text-slate-900 shadow-sm outline-none transition focus:border-violet-600 focus:ring-4 focus:ring-violet-600/10 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100">

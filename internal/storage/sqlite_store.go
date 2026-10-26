@@ -30,10 +30,12 @@ import (
 var migrationFS embed.FS
 
 var (
-	ErrUserNotFound         = errors.New("user not found")
-	ErrInvalidCredential    = errors.New("invalid credentials")
-	ErrServiceTokenNotFound = errors.New("service token not found")
-	ErrInvalidServiceToken  = domain.ErrInvalidServiceToken
+	ErrUserNotFound           = errors.New("user not found")
+	ErrInvalidCredential      = errors.New("invalid credentials")
+	ErrServiceTokenNotFound   = errors.New("service token not found")
+	ErrInvalidServiceToken    = domain.ErrInvalidServiceToken
+	ErrBrowserSessionNotFound = errors.New("browser session not found")
+	ErrInvalidBrowserSession  = errors.New("invalid browser session")
 )
 
 const (
@@ -41,6 +43,10 @@ const (
 	idempotencyDone       = "done"
 	idempotencyTTL        = 24 * time.Hour
 	serviceTokenRetention = 30 * 24 * time.Hour
+	// Browser sessions retain terminal rows for 30 days and keep at most 10
+	// rows per user, preferring active rows. Cleanup only touches browser_sessions.
+	browserSessionRetention = 30 * 24 * time.Hour
+	maxBrowserSessions      = 10
 )
 
 type IdempotencyClaim = idempotency.Claim
@@ -100,6 +106,9 @@ func NewSQLiteStore(path string) (*SQLiteStore, error) {
 	}
 	if err := store.cleanupServiceTokens(time.Now().UTC()); err != nil {
 		return nil, fmt.Errorf("cleanup service tokens: %w", err)
+	}
+	if err := store.cleanupBrowserSessions(time.Now().UTC()); err != nil {
+		return nil, fmt.Errorf("cleanup browser sessions: %w", err)
 	}
 	closeOnError = false
 	return store, nil
@@ -738,6 +747,137 @@ func (s *SQLiteStore) Authenticate(username, password string) (domain.User, erro
 	return user, nil
 }
 
+func (s *SQLiteStore) CreateBrowserSession(owner domain.User, expiresAt time.Time) (string, time.Time, error) {
+	userID, err := s.ownerID(owner)
+	if err != nil {
+		return "", time.Time{}, err
+	}
+	now := time.Now().UTC()
+	if expiresAt.IsZero() || !expiresAt.After(now) {
+		return "", time.Time{}, ErrInvalidBrowserSession
+	}
+	raw, hash, err := newBrowserSessionToken()
+	if err != nil {
+		return "", time.Time{}, fmt.Errorf("generate browser session: %w", err)
+	}
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return "", time.Time{}, fmt.Errorf("begin browser session creation: %w", err)
+	}
+	defer tx.Rollback()
+	result, err := tx.Exec(`
+		INSERT INTO browser_sessions (user_id, token_hash, created_at, expires_at)
+		VALUES (?, ?, ?, ?)`, userID, hash, now.Format(time.RFC3339Nano), expiresAt.UTC().Format(time.RFC3339Nano))
+	if err != nil {
+		return "", time.Time{}, fmt.Errorf("create browser session: %w", err)
+	}
+	if _, err := result.LastInsertId(); err != nil {
+		return "", time.Time{}, fmt.Errorf("read browser session id: %w", err)
+	}
+	if err := cleanupBrowserSessionsTx(tx, now); err != nil {
+		return "", time.Time{}, fmt.Errorf("cleanup browser sessions: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return "", time.Time{}, fmt.Errorf("commit browser session creation: %w", err)
+	}
+	return raw, expiresAt.UTC(), nil
+}
+
+func (s *SQLiteStore) AuthenticateBrowserSession(raw string, now time.Time) (domain.User, int64, error) {
+	if raw == "" || len(raw) > 4096 {
+		return domain.User{}, 0, ErrInvalidBrowserSession
+	}
+	hash := hashBrowserSession(raw)
+	var user domain.User
+	var createdAt string
+	var expiresAt string
+	var id int64
+	err := s.db.QueryRow(`
+		SELECT browser_sessions.id, users.id, users.username, users.password_hash,
+		       users.created_at, browser_sessions.expires_at
+		FROM browser_sessions
+		JOIN users ON users.id = browser_sessions.user_id
+		WHERE browser_sessions.token_hash = ?
+		  AND browser_sessions.revoked_at IS NULL`, hash).Scan(
+		&id, &user.ID, &user.Username, &user.PasswordHash, &createdAt, &expiresAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return domain.User{}, 0, ErrInvalidBrowserSession
+	}
+	if err != nil {
+		return domain.User{}, 0, fmt.Errorf("authenticate browser session: %w", err)
+	}
+	user.CreatedAt, err = time.Parse(time.RFC3339Nano, createdAt)
+	if err != nil {
+		return domain.User{}, 0, fmt.Errorf("parse browser session user creation time: %w", err)
+	}
+	expires, err := time.Parse(time.RFC3339Nano, expiresAt)
+	if err != nil {
+		return domain.User{}, 0, fmt.Errorf("parse browser session expiry: %w", err)
+	}
+	if !expires.After(now.UTC()) {
+		return domain.User{}, 0, ErrInvalidBrowserSession
+	}
+	return user, id, nil
+}
+
+func (s *SQLiteStore) RevokeBrowserSession(owner domain.User, raw string) error {
+	userID, err := s.ownerID(owner)
+	if err != nil {
+		return err
+	}
+	if raw == "" || len(raw) > 4096 {
+		return ErrBrowserSessionNotFound
+	}
+	result, err := s.db.Exec(`
+		UPDATE browser_sessions
+		SET revoked_at = ?
+		WHERE user_id = ? AND token_hash = ? AND revoked_at IS NULL`,
+		time.Now().UTC().Format(time.RFC3339Nano), userID, hashBrowserSession(raw))
+	if err != nil {
+		return fmt.Errorf("revoke browser session: %w", err)
+	}
+	count, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("check revoked browser session: %w", err)
+	}
+	if count == 0 {
+		return ErrBrowserSessionNotFound
+	}
+	return nil
+}
+
+func (s *SQLiteStore) cleanupBrowserSessions(now time.Time) error {
+	return cleanupBrowserSessionsDB(s.db, now.UTC())
+}
+
+func cleanupBrowserSessionsDB(db interface {
+	Exec(query string, args ...any) (sql.Result, error)
+}, now time.Time) error {
+	cutoff := now.Add(-browserSessionRetention).Format(time.RFC3339Nano)
+	if _, err := db.Exec(`
+		DELETE FROM browser_sessions
+		WHERE (revoked_at IS NOT NULL AND revoked_at <= ?)
+		   OR (revoked_at IS NULL AND expires_at <= ?)`, cutoff, cutoff); err != nil {
+		return err
+	}
+	_, err := db.Exec(`
+		DELETE FROM browser_sessions
+		WHERE id NOT IN (
+			SELECT retained.id
+			FROM browser_sessions AS retained
+			WHERE retained.user_id = browser_sessions.user_id
+			ORDER BY CASE WHEN retained.revoked_at IS NULL AND retained.expires_at > ? THEN 0 ELSE 1 END,
+			         retained.created_at DESC, retained.id DESC
+			LIMIT ?
+		)`, now.Format(time.RFC3339Nano), maxBrowserSessions)
+	return err
+}
+
+func cleanupBrowserSessionsTx(tx *sql.Tx, now time.Time) error {
+	return cleanupBrowserSessionsDB(tx, now.UTC())
+}
+
 func (s *SQLiteStore) CreateServiceToken(owner domain.User, name string, scopes []string, expiresAt time.Time) (domain.ServiceToken, string, error) {
 	userID, err := s.ownerID(owner)
 	if err != nil {
@@ -891,6 +1031,20 @@ func newServiceToken() (string, string, error) {
 		return "", "", err
 	}
 	return raw, hash, nil
+}
+
+func newBrowserSessionToken() (string, string, error) {
+	bytes := make([]byte, 32)
+	if _, err := rand.Read(bytes); err != nil {
+		return "", "", err
+	}
+	raw := "rss_browser_" + base64.RawURLEncoding.EncodeToString(bytes)
+	return raw, hashBrowserSession(raw), nil
+}
+
+func hashBrowserSession(raw string) string {
+	sum := sha256.Sum256([]byte(raw))
+	return hex.EncodeToString(sum[:])
 }
 
 func hashServiceToken(raw string) (string, error) {

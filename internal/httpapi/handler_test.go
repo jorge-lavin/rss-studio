@@ -151,6 +151,35 @@ func assertTailwindUsesClassDarkMode(t *testing.T, page string) {
 	}
 }
 
+func csrfFromPage(t *testing.T, handler http.Handler, path string) (*http.Cookie, string) {
+	t.Helper()
+	request := httptest.NewRequest(http.MethodGet, path, nil)
+	request.Header.Set("Accept", "text/html")
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	var cookie *http.Cookie
+	for _, candidate := range recorder.Result().Cookies() {
+		if candidate.Name == "rss_studio_csrf" {
+			cookie = candidate
+			break
+		}
+	}
+	if cookie == nil {
+		t.Fatalf("CSRF cookie missing from %s", path)
+	}
+	const marker = `name="csrf_token" value="`
+	start := strings.Index(recorder.Body.String(), marker)
+	if start < 0 {
+		t.Fatalf("CSRF form field missing from %s", path)
+	}
+	start += len(marker)
+	end := strings.IndexByte(recorder.Body.String()[start:], '"')
+	if end < 0 {
+		t.Fatalf("CSRF form field malformed on %s", path)
+	}
+	return cookie, recorder.Body.String()[start : start+end]
+}
+
 func TestHandlerCreatesAndServesFeed(t *testing.T) {
 	server, store := newAuthenticatedServer(t)
 	token := loginToken(t, server)
@@ -466,7 +495,11 @@ func TestBrowserFormEndpointsRejectOversizedBodies(t *testing.T) {
 			}
 			recorder := httptest.NewRecorder()
 			server.Config.Handler.ServeHTTP(recorder, request)
-			if recorder.Code != http.StatusBadRequest || strings.Contains(recorder.Body.String(), oversized) {
+			wantStatus := http.StatusBadRequest
+			if !test.authorized {
+				wantStatus = http.StatusForbidden
+			}
+			if recorder.Code != wantStatus || strings.Contains(recorder.Body.String(), oversized) {
 				t.Fatalf("expected safe oversized browser %s response, got %d: %s", test.name, recorder.Code, recorder.Body.String())
 			}
 		})
@@ -830,33 +863,39 @@ func TestAuthenticatedHandlerSupportsServiceTokenLogin(t *testing.T) {
 		t.Fatalf("login page does not include dark-mode toggle: %s", recorder.Body.String())
 	}
 	assertTailwindUsesClassDarkMode(t, recorder.Body.String())
+	csrfCookie := recorder.Result().Cookies()[0]
+	csrfToken := strings.Split(strings.Split(recorder.Body.String(), `name="csrf_token" value="`)[1], `"`)[0]
 
 	request = httptest.NewRequest(http.MethodGet, "/auth/sign-up", nil)
 	request.Header.Set("Accept", "text/html")
+	request.AddCookie(csrfCookie)
 	recorder = httptest.NewRecorder()
 	handler.ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `action="/auth/sign-up"`) {
 		t.Fatalf("expected sign-up page to be publicly reachable, got %d", recorder.Code)
 	}
 
-	request = httptest.NewRequest(http.MethodPost, "/auth/sign-up", strings.NewReader("username=new-user&password=new-password"))
+	request = httptest.NewRequest(http.MethodPost, "/auth/sign-up", strings.NewReader("username=new-user&password=new-password&csrf_token="+csrfToken))
 	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	request.AddCookie(csrfCookie)
 	recorder = httptest.NewRecorder()
 	handler.ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusSeeOther || recorder.Header().Get("Location") != "/auth/login" {
 		t.Fatalf("expected registration to redirect to login, got %d and %q", recorder.Code, recorder.Header().Get("Location"))
 	}
 
-	request = httptest.NewRequest(http.MethodPost, "/auth/login", strings.NewReader("username=unknown&password=wrong"))
+	request = httptest.NewRequest(http.MethodPost, "/auth/login", strings.NewReader("username=unknown&password=wrong&csrf_token="+csrfToken))
 	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	request.AddCookie(csrfCookie)
 	recorder = httptest.NewRecorder()
 	handler.ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusUnauthorized || !strings.Contains(recorder.Body.String(), "Invalid credentials.") {
 		t.Fatalf("expected unknown credentials to be rejected, got %d: %s", recorder.Code, recorder.Body.String())
 	}
 
-	request = httptest.NewRequest(http.MethodPost, "/auth/login", strings.NewReader("username=new-user&password=new-password"))
+	request = httptest.NewRequest(http.MethodPost, "/auth/login", strings.NewReader("username=new-user&password=new-password&csrf_token="+csrfToken))
 	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	request.AddCookie(csrfCookie)
 	recorder = httptest.NewRecorder()
 	handler.ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusSeeOther || recorder.Header().Get("Location") != "/" {
@@ -869,6 +908,7 @@ func TestAuthenticatedHandlerSupportsServiceTokenLogin(t *testing.T) {
 
 	request = httptest.NewRequest(http.MethodGet, "/", nil)
 	request.AddCookie(cookies[0])
+	request.AddCookie(csrfCookie)
 	recorder = httptest.NewRecorder()
 	handler.ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusOK {
@@ -878,8 +918,10 @@ func TestAuthenticatedHandlerSupportsServiceTokenLogin(t *testing.T) {
 		t.Fatalf("authenticated home page does not include logout button: %s", recorder.Body.String())
 	}
 
-	request = httptest.NewRequest(http.MethodPost, "/auth/logout", nil)
+	request = httptest.NewRequest(http.MethodPost, "/auth/logout", strings.NewReader("csrf_token="+csrfToken))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	request.AddCookie(cookies[0])
+	request.AddCookie(csrfCookie)
 	recorder = httptest.NewRecorder()
 	handler.ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusSeeOther || recorder.Header().Get("Location") != "/auth/login" {
@@ -896,6 +938,193 @@ func TestAuthenticatedHandlerSupportsServiceTokenLogin(t *testing.T) {
 	handler.ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusSeeOther || recorder.Header().Get("Location") != "/auth/login" {
 		t.Fatalf("expected logged-out home request to redirect to login, got %d and %q", recorder.Code, recorder.Header().Get("Location"))
+	}
+}
+
+func TestBrowserSessionsProtectMutationsAndRevokeOnlyCurrentSession(t *testing.T) {
+	server, store := newAuthenticatedServer(t)
+	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	apiToken := loginToken(t, server)
+	csrfCookie, csrfToken := csrfFromPage(t, server.Config.Handler, "/auth/login")
+
+	request, err := http.NewRequest(http.MethodPost, server.URL+"/auth/login", strings.NewReader("username=admin&password=password"))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	response, err := client.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusForbidden || response.Header.Get("Cache-Control") != "no-store" {
+		t.Fatalf("missing login CSRF was accepted or cacheable: status=%d cache=%q", response.StatusCode, response.Header.Get("Cache-Control"))
+	}
+
+	request, err = http.NewRequest(http.MethodPost, server.URL+"/auth/login", strings.NewReader("username=admin&password=password&csrf_token=wrong"))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	request.AddCookie(csrfCookie)
+	response, err = client.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusForbidden {
+		t.Fatalf("invalid login CSRF was accepted: %d", response.StatusCode)
+	}
+
+	request, err = http.NewRequest(http.MethodPost, server.URL+"/auth/login", strings.NewReader("username=admin&password=password&csrf_token="+csrfToken))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	request.Header.Set("Origin", "https://evil.example")
+	request.AddCookie(csrfCookie)
+	response, err = client.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusForbidden {
+		t.Fatalf("cross-site login CSRF was accepted: %d", response.StatusCode)
+	}
+
+	request, err = http.NewRequest(http.MethodPost, server.URL+"/auth/login", strings.NewReader("username=admin&password=password&csrf_token="+csrfToken))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	request.AddCookie(csrfCookie)
+	response, err = client.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusSeeOther || response.Header.Get("Cache-Control") != "no-store" {
+		t.Fatalf("browser login failed: status=%d cache=%q", response.StatusCode, response.Header.Get("Cache-Control"))
+	}
+	var authCookie *http.Cookie
+	for _, cookie := range response.Cookies() {
+		if cookie.Name == "rss_studio_token" {
+			authCookie = cookie
+		}
+	}
+	if authCookie == nil || !authCookie.HttpOnly || authCookie.Path != "/" || authCookie.SameSite != http.SameSiteLaxMode || authCookie.Expires.IsZero() || authCookie.Secure {
+		t.Fatalf("browser auth cookie flags are unsafe: %#v", authCookie)
+	}
+
+	request, err = http.NewRequest(http.MethodGet, server.URL+"/", nil)
+	request.AddCookie(authCookie)
+	request.AddCookie(csrfCookie)
+	response, err = client.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusOK || response.Header.Get("Cache-Control") != "no-store" {
+		t.Fatalf("authenticated home response was cacheable or failed: status=%d cache=%q", response.StatusCode, response.Header.Get("Cache-Control"))
+	}
+
+	request, err = http.NewRequest(http.MethodPost, server.URL+"/feeds", strings.NewReader("name=Browser+feed&source_url=https%3A%2F%2Fexample.test%2Frss&operator=contains&keyword=Keep&csrf_token="+csrfToken))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	request.AddCookie(authCookie)
+	request.AddCookie(csrfCookie)
+	response, err = client.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusSeeOther {
+		t.Fatalf("browser feed creation failed: %d", response.StatusCode)
+	}
+
+	request, err = http.NewRequest(http.MethodPost, server.URL+"/preview", strings.NewReader(`{"source_url":"https://example.test/rss","outputs":[{"name":"Foo","keyword":"foo"}]}`))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("X-CSRF-Token", csrfToken)
+	request.AddCookie(authCookie)
+	request.AddCookie(csrfCookie)
+	response, err = client.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("browser preview with header CSRF failed: %d", response.StatusCode)
+	}
+
+	request, err = http.NewRequest(http.MethodPost, server.URL+"/feeds/split", strings.NewReader(`{"source_url":"https://example.test/rss","outputs":[{"name":"Split","keyword":"foo"}]}`))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("X-CSRF-Token", csrfToken)
+	request.AddCookie(authCookie)
+	request.AddCookie(csrfCookie)
+	response, err = client.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusCreated {
+		t.Fatalf("browser split with header CSRF failed: %d", response.StatusCode)
+	}
+
+	owner, err := store.User("admin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	feeds, err := store.List(owner)
+	if err != nil || len(feeds) == 0 {
+		t.Fatalf("expected browser-created feeds: feeds=%#v err=%v", feeds, err)
+	}
+	publicResponse, err := client.Get(server.URL + "/feeds/" + feeds[0].Path + ".xml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	publicResponse.Body.Close()
+	if publicResponse.StatusCode != http.StatusOK || publicResponse.Header.Get("Cache-Control") != "public, max-age=300" {
+		t.Fatalf("public RSS cache policy changed: status=%d cache=%q", publicResponse.StatusCode, publicResponse.Header.Get("Cache-Control"))
+	}
+	request, err = http.NewRequest(http.MethodPost, server.URL+"/feeds/"+feeds[0].Path+"/delete", strings.NewReader("csrf_token="+csrfToken))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	request.AddCookie(authCookie)
+	request.AddCookie(csrfCookie)
+	response, err = client.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusSeeOther {
+		t.Fatalf("browser feed deletion failed: %d", response.StatusCode)
+	}
+
+	request, err = http.NewRequest(http.MethodPost, server.URL+"/auth/logout", strings.NewReader("csrf_token="+csrfToken))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	request.AddCookie(authCookie)
+	request.AddCookie(csrfCookie)
+	response, err = client.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusSeeOther || response.Header.Get("Cache-Control") != "no-store" {
+		t.Fatalf("browser logout failed: status=%d cache=%q", response.StatusCode, response.Header.Get("Cache-Control"))
+	}
+	cleared := response.Cookies()
+	if len(cleared) != 1 || cleared[0].Name != "rss_studio_token" || cleared[0].MaxAge != -1 || !cleared[0].HttpOnly || cleared[0].Path != "/" || cleared[0].SameSite != http.SameSiteLaxMode {
+		t.Fatalf("logout did not preserve cookie protections: %#v", cleared)
+	}
+
+	request, err = http.NewRequest(http.MethodPost, server.URL+"/auth/logout", strings.NewReader("csrf_token="+csrfToken))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	request.AddCookie(authCookie)
+	request.AddCookie(csrfCookie)
+	response, err = client.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("replayed browser logout token was accepted: %d", response.StatusCode)
+	}
+
+	request, err = http.NewRequest(http.MethodGet, server.URL+"/api/v1/feeds", nil)
+	request.Header.Set("Authorization", "Bearer "+apiToken)
+	response, err = client.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusOK || response.Header.Get("Cache-Control") != "no-store" {
+		t.Fatalf("bearer API token was affected by browser logout: status=%d cache=%q", response.StatusCode, response.Header.Get("Cache-Control"))
 	}
 }
 
@@ -919,6 +1148,7 @@ func TestAuthenticatedHandlerRateLimitsLoginAttempts(t *testing.T) {
 
 	for attempt := 1; attempt <= 5; attempt++ {
 		request := httptest.NewRequest(http.MethodPost, "/auth/login", strings.NewReader(`{"username":"admin","password":"wrong"}`))
+		request.Header.Set("Content-Type", "application/json")
 		request.RemoteAddr = "192.0.2.1:1234"
 		recorder := httptest.NewRecorder()
 		handler.ServeHTTP(recorder, request)
@@ -928,6 +1158,7 @@ func TestAuthenticatedHandlerRateLimitsLoginAttempts(t *testing.T) {
 	}
 
 	request := httptest.NewRequest(http.MethodPost, "/auth/login", strings.NewReader(`{"username":"admin","password":"wrong"}`))
+	request.Header.Set("Content-Type", "application/json")
 	request.RemoteAddr = "192.0.2.1:5678"
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, request)

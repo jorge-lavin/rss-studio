@@ -18,20 +18,23 @@ const (
 	defaultTokenTTL       = 24 * time.Hour
 	authCookieName        = "rss_studio_token"
 	loginServiceTokenName = "login"
+	browserSessionName    = "browser"
 )
 
 var (
-	ErrInvalidAuthConfig       = errors.New("invalid authentication configuration")
-	ErrInvalidCredentials      = errors.New("invalid credentials")
-	ErrInvalidToken            = errors.New("invalid token")
-	ErrRegistrationUnavailable = errors.New("registration unavailable")
-	ErrServiceTokenUnavailable = errors.New("service tokens unavailable")
+	ErrInvalidAuthConfig         = errors.New("invalid authentication configuration")
+	ErrInvalidCredentials        = errors.New("invalid credentials")
+	ErrInvalidToken              = errors.New("invalid token")
+	ErrRegistrationUnavailable   = errors.New("registration unavailable")
+	ErrServiceTokenUnavailable   = errors.New("service tokens unavailable")
+	ErrBrowserSessionUnavailable = errors.New("browser sessions unavailable")
 )
 
 type AuthConfig struct {
-	TokenTTL          time.Duration
-	UserStore         UserStore
-	ServiceTokenStore ServiceTokenStore
+	TokenTTL            time.Duration
+	UserStore           UserStore
+	ServiceTokenStore   ServiceTokenStore
+	BrowserSessionStore BrowserSessionStore
 }
 
 type UserStore interface {
@@ -49,11 +52,18 @@ type ServiceTokenStore interface {
 	AuthenticateServiceToken(raw string, now time.Time) (domain.ServiceToken, error)
 }
 
+type BrowserSessionStore interface {
+	CreateBrowserSession(owner domain.User, expiresAt time.Time) (string, time.Time, error)
+	AuthenticateBrowserSession(raw string, now time.Time) (domain.User, int64, error)
+	RevokeBrowserSession(owner domain.User, raw string) error
+}
+
 type Authenticator struct {
-	ttl           time.Duration
-	now           func() time.Time
-	userStore     UserStore
-	serviceTokens ServiceTokenStore
+	ttl             time.Duration
+	now             func() time.Time
+	userStore       UserStore
+	serviceTokens   ServiceTokenStore
+	browserSessions BrowserSessionStore
 }
 
 // RequestIdentity remains exported from httpapi for existing callers while
@@ -74,11 +84,16 @@ func NewAuthenticator(config AuthConfig) (*Authenticator, error) {
 	if serviceTokens == nil {
 		return nil, fmt.Errorf("%w: service token store is required", ErrInvalidAuthConfig)
 	}
+	browserSessions := config.BrowserSessionStore
+	if browserSessions == nil {
+		browserSessions, _ = config.UserStore.(BrowserSessionStore)
+	}
 	return &Authenticator{
-		ttl:           config.TokenTTL,
-		now:           time.Now,
-		userStore:     config.UserStore,
-		serviceTokens: serviceTokens,
+		ttl:             config.TokenTTL,
+		now:             time.Now,
+		userStore:       config.UserStore,
+		serviceTokens:   serviceTokens,
+		browserSessions: browserSessions,
 	}, nil
 }
 
@@ -95,6 +110,22 @@ func (a *Authenticator) IssueToken(username, password string) (string, time.Time
 	// Login intentionally preserves the former full-session behavior. Long-lived
 	// integrations should use separately created, narrowly scoped tokens.
 	_, token, err := a.serviceTokens.CreateServiceToken(user, loginServiceTokenName, domain.AllServiceTokenScopes(), expires)
+	if err != nil {
+		return "", time.Time{}, err
+	}
+	return token, expires, nil
+}
+
+func (a *Authenticator) IssueBrowserToken(username, password string) (string, time.Time, error) {
+	user, err := a.userStore.Authenticate(username, password)
+	if err != nil {
+		return "", time.Time{}, ErrInvalidCredentials
+	}
+	if a.browserSessions == nil {
+		return "", time.Time{}, ErrBrowserSessionUnavailable
+	}
+	expires := a.now().UTC().Add(a.ttl)
+	token, expires, err := a.browserSessions.CreateBrowserSession(user, expires)
 	if err != nil {
 		return "", time.Time{}, err
 	}
@@ -129,6 +160,13 @@ func (a *Authenticator) RevokeServiceToken(owner domain.User, id int64) error {
 		return ErrServiceTokenUnavailable
 	}
 	return a.serviceTokens.RevokeServiceToken(owner, id)
+}
+
+func (a *Authenticator) RevokeBrowserSession(owner domain.User, raw string) error {
+	if a.browserSessions == nil {
+		return ErrBrowserSessionUnavailable
+	}
+	return a.browserSessions.RevokeBrowserSession(owner, raw)
 }
 
 func (a *Authenticator) ValidateRequest(request *http.Request) error {
@@ -186,16 +224,41 @@ func (a *Authenticator) ValidateToken(token string) error {
 }
 
 func (a *Authenticator) IdentityFromRequest(request *http.Request) (RequestIdentity, error) {
-	token, err := requestToken(request)
-	if err != nil {
-		return RequestIdentity{}, err
+	if request.Header.Get("Authorization") != "" {
+		token, err := requestToken(request)
+		if err != nil {
+			return RequestIdentity{}, err
+		}
+		identity, err := a.authenticateToken(token)
+		if err != nil {
+			return RequestIdentity{}, err
+		}
+		identity.CredentialHash = hashCredential(token)
+		return identity, nil
 	}
-	identity, err := a.authenticateToken(token)
-	if err != nil {
-		return RequestIdentity{}, err
+	return a.browserIdentityFromRequest(request)
+}
+
+func (a *Authenticator) BrowserIdentityFromRequest(request *http.Request) (RequestIdentity, error) {
+	return a.browserIdentityFromRequest(request)
+}
+
+func (a *Authenticator) browserIdentityFromRequest(request *http.Request) (RequestIdentity, error) {
+	if a.browserSessions == nil {
+		return RequestIdentity{}, ErrInvalidToken
 	}
-	identity.CredentialHash = hashCredential(token)
-	return identity, nil
+	cookie, err := request.Cookie(authCookieName)
+	if err != nil || cookie.Value == "" {
+		return RequestIdentity{}, ErrInvalidToken
+	}
+	user, id, err := a.browserSessions.AuthenticateBrowserSession(cookie.Value, a.now().UTC())
+	if err != nil || user.ID <= 0 || user.Username == "" || id <= 0 {
+		return RequestIdentity{}, ErrInvalidToken
+	}
+	return RequestIdentity{
+		User: user, TokenID: id, TokenName: browserSessionName,
+		CredentialHash: hashCredential(cookie.Value),
+	}, nil
 }
 
 func hashCredential(value string) string {
