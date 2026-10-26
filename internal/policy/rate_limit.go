@@ -14,19 +14,21 @@ import (
 type RateLimitClass string
 
 const (
-	RateLimitCheapRead RateLimitClass = "cheap_read"
-	RateLimitDelete    RateLimitClass = "delete"
-	RateLimitPreview   RateLimitClass = "preview"
-	RateLimitCreate    RateLimitClass = "create"
+	RateLimitCheapRead  RateLimitClass = "cheap_read"
+	RateLimitDelete     RateLimitClass = "delete"
+	RateLimitPreview    RateLimitClass = "preview"
+	RateLimitCreate     RateLimitClass = "create"
+	RateLimitPublicFeed RateLimitClass = "public_feed"
 )
 
 const (
-	CheapReadRateLimit = 120
-	DeleteRateLimit    = 10
-	PreviewRateLimit   = 20
-	CreateRateLimit    = 10
-	SplitRateLimit     = 5
-	RateLimitWindow    = time.Minute
+	CheapReadRateLimit  = 120
+	DeleteRateLimit     = 10
+	PreviewRateLimit    = 20
+	CreateRateLimit     = 10
+	SplitRateLimit      = 5
+	PublicFeedRateLimit = 60
+	RateLimitWindow     = time.Minute
 )
 
 const (
@@ -35,6 +37,7 @@ const (
 	OperationFeedsCreate  = "feeds.create"
 	OperationFeedsSplit   = "feeds.split"
 	OperationFeedsDelete  = "feeds.delete"
+	OperationFeedsPublic  = "feeds.public"
 	OperationTokensList   = "auth.tokens.list"
 	OperationTokensCreate = "auth.tokens.create"
 	OperationTokensRevoke = "auth.tokens.revoke"
@@ -62,6 +65,8 @@ func RateLimitSpecFor(operation string) (RateLimitSpec, bool) {
 		spec.Class, spec.Limit = RateLimitCreate, CreateRateLimit
 	case OperationFeedsSplit:
 		spec.Class, spec.Limit = RateLimitCreate, SplitRateLimit
+	case OperationFeedsPublic:
+		spec.Class, spec.Limit = RateLimitPublicFeed, PublicFeedRateLimit
 	default:
 		return RateLimitSpec{}, false
 	}
@@ -112,6 +117,12 @@ func RateLimitBuckets(identity Identity) []RateLimitBucket {
 		buckets = append(buckets, RateLimitBucket{Key: "token:" + hashRateLimitKey(identity.CredentialHash)})
 	}
 	return buckets
+}
+
+// PublicFeedRateLimitBucket returns a bucket keyed by the hashed public feed
+// path, without retaining the path in rate-limit storage.
+func PublicFeedRateLimitBucket(feedPath string) RateLimitBucket {
+	return RateLimitBucket{Key: "public-feed:" + hashRateLimitKey(feedPath)}
 }
 
 func hashRateLimitKey(value string) string {
