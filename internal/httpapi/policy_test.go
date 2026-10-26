@@ -105,12 +105,18 @@ func TestVersionedAPIScopeFailuresAreStableAndIndependent(t *testing.T) {
 	}
 }
 
-func TestServiceTokensCannotManageServiceTokens(t *testing.T) {
+func TestServiceTokensNeedManagementScope(t *testing.T) {
 	server, store := newAuthenticatedServer(t)
 	raw := serviceTokenForScopes(t, store, []string{domain.ScopeFeedsRead, domain.ScopeFeedsWrite, domain.ScopeFeedsDelete, domain.ScopeFeedsPreview})
 	status, headers, body := doScopedAPIRequest(t, server.URL, http.MethodGet, "/api/v1/auth/tokens", raw, "")
 	if status != http.StatusForbidden || headers.Get("Location") != "" {
 		t.Fatalf("service token token-management access returned %d: %s", status, body)
+	}
+
+	raw = serviceTokenForScopes(t, store, []string{domain.ScopeTokensManage})
+	status, _, body = doScopedAPIRequest(t, server.URL, http.MethodGet, "/api/v1/auth/tokens", raw, "")
+	if status != http.StatusOK || !bytes.Contains(body, []byte(`"tokens"`)) {
+		t.Fatalf("management-scoped service token was denied: %d: %s", status, body)
 	}
 }
 

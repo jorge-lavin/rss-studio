@@ -97,7 +97,6 @@ func newAuthenticatedServerWithSourceAndClock(t *testing.T, feedSource applicati
 		t.Fatal(err)
 	}
 	auth, err := httpapi.NewAuthenticator(httpapi.AuthConfig{
-		JWTSecret: strings.Repeat("x", 32),
 		UserStore: store,
 	})
 	if err != nil {
@@ -269,7 +268,7 @@ func TestRateRejectionAuditEventUsesAccountIdentity(t *testing.T) {
 			continue
 		}
 		found = true
-		if event.Operation != "feeds.preview" || event.ActorID == 0 || event.TokenID != 0 || event.Result != "rejected" {
+		if event.Operation != "feeds.preview" || event.ActorID == 0 || event.TokenID == 0 || event.Result != "rejected" {
 			t.Fatalf("unexpected rate rejection audit event: %#v", event)
 		}
 	}
@@ -673,7 +672,7 @@ func TestAuthenticatedHandlerIsolatesFeedsByUser(t *testing.T) {
 		t.Fatal(err)
 	}
 	service := application.NewServiceWithOperator(store, cache.NewFileCache(t.TempDir()), sourceStub{}, rss.FilterWithOperator)
-	auth, err := httpapi.NewAuthenticator(httpapi.AuthConfig{JWTSecret: strings.Repeat("x", 32), UserStore: store})
+	auth, err := httpapi.NewAuthenticator(httpapi.AuthConfig{UserStore: store})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -739,7 +738,7 @@ func TestAuthenticatedHandlerIsolatesFeedsByUser(t *testing.T) {
 	}
 }
 
-func TestAuthenticatedHandlerSupportsBrowserLogin(t *testing.T) {
+func TestAuthenticatedHandlerSupportsServiceTokenLogin(t *testing.T) {
 	store, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "rss-studio.db"))
 	if err != nil {
 		t.Fatal(err)
@@ -750,7 +749,6 @@ func TestAuthenticatedHandlerSupportsBrowserLogin(t *testing.T) {
 	}
 	service := application.NewServiceWithOperator(store, cache.NewFileCache(t.TempDir()), sourceStub{}, rss.FilterWithOperator)
 	auth, err := httpapi.NewAuthenticator(httpapi.AuthConfig{
-		JWTSecret: strings.Repeat("x", 32),
 		UserStore: store,
 	})
 	if err != nil {
@@ -857,7 +855,6 @@ func TestAuthenticatedHandlerRateLimitsLoginAttempts(t *testing.T) {
 	}
 	service := application.NewServiceWithOperator(store, cache.NewFileCache(t.TempDir()), sourceStub{}, rss.FilterWithOperator)
 	auth, err := httpapi.NewAuthenticator(httpapi.AuthConfig{
-		JWTSecret: strings.Repeat("x", 32),
 		UserStore: store,
 	})
 	if err != nil {
@@ -1244,7 +1241,7 @@ func TestVersionedSplitReturnsErrorAfterRollback(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	auth, err := httpapi.NewAuthenticator(httpapi.AuthConfig{JWTSecret: strings.Repeat("x", 32), UserStore: store})
+	auth, err := httpapi.NewAuthenticator(httpapi.AuthConfig{UserStore: store})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1280,7 +1277,7 @@ func TestVersionedCreateIdempotencyReleasesKeyAfterFailure(t *testing.T) {
 	if _, err := store.CreateUser("admin", "password"); err != nil {
 		t.Fatal(err)
 	}
-	auth, err := httpapi.NewAuthenticator(httpapi.AuthConfig{JWTSecret: strings.Repeat("x", 32), UserStore: store})
+	auth, err := httpapi.NewAuthenticator(httpapi.AuthConfig{UserStore: store})
 	if err != nil {
 		t.Fatal(err)
 	}

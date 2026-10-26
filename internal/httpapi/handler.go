@@ -820,15 +820,15 @@ func (h *Handler) authenticate(next http.Handler) http.Handler {
 			return
 		}
 		request = request.WithContext(withIdentity(request.Context(), identity))
-		if isAPIRequest(request) {
-			operation, hasOperation := operationNameForRequest(request)
-			if hasOperation {
-				observability.SetOperationAttributes(request.Context(), operation, identity.User.ID, identity.TokenID)
-			}
-			policyStarted := time.Now()
-			if err := authorizeAPIRequest(identity, request); err != nil {
+		operation, hasOperation := operationNameForRequest(request)
+		if hasOperation {
+			observability.SetOperationAttributes(request.Context(), operation, identity.User.ID, identity.TokenID)
+		}
+		policyStarted := time.Now()
+		if requiredScope, requiresScope := requiredScopeForRequest(request); requiresScope {
+			if err := policy.Authorize(identity, requiredScope); err != nil {
 				if !hasOperation {
-					operation = "api.request"
+					operation = "request"
 				}
 				observability.Record(request.Context(), observability.Event{
 					Event:      observability.EventPolicy,
@@ -836,9 +836,11 @@ func (h *Handler) authenticate(next http.Handler) http.Handler {
 					Result:     "denied",
 					DurationMS: time.Since(policyStarted).Milliseconds(),
 				})
-				writeAPIPolicyError(writer, request, err)
+				writePolicyError(writer, request, err)
 				return
 			}
+		}
+		if isAPIRequest(request) {
 			if hasOperation {
 				observability.Record(request.Context(), observability.Event{
 					Event:      observability.EventPolicy,
@@ -878,22 +880,37 @@ func (h *Handler) authenticate(next http.Handler) http.Handler {
 	})
 }
 
-func authorizeAPIRequest(identity RequestIdentity, request *http.Request) error {
+func requiredScopeForRequest(request *http.Request) (string, bool) {
+	if isAPIRequest(request) {
+		switch {
+		case strings.HasPrefix(request.URL.Path, "/api/v1/auth/tokens"):
+			return domain.ScopeTokensManage, true
+		case request.Method == http.MethodGet && request.URL.Path == "/api/v1/feeds":
+			return domain.ScopeFeedsRead, true
+		case request.Method == http.MethodPost && request.URL.Path == "/api/v1/feeds":
+			return domain.ScopeFeedsWrite, true
+		case request.Method == http.MethodPost && request.URL.Path == "/api/v1/feeds/preview":
+			return domain.ScopeFeedsPreview, true
+		case request.Method == http.MethodPost && request.URL.Path == "/api/v1/feeds/split":
+			return domain.ScopeFeedsWrite, true
+		case request.Method == http.MethodDelete && strings.HasPrefix(request.URL.Path, "/api/v1/feeds/"):
+			return domain.ScopeFeedsDelete, true
+		}
+		return "", false
+	}
 	switch {
-	case strings.HasPrefix(request.URL.Path, "/api/v1/auth/tokens"):
-		return policy.RequireBrowser(identity)
-	case request.Method == http.MethodGet && request.URL.Path == "/api/v1/feeds":
-		return policy.Authorize(identity, domain.ScopeFeedsRead)
-	case request.Method == http.MethodPost && request.URL.Path == "/api/v1/feeds":
-		return policy.Authorize(identity, domain.ScopeFeedsWrite)
-	case request.Method == http.MethodPost && request.URL.Path == "/api/v1/feeds/preview":
-		return policy.Authorize(identity, domain.ScopeFeedsPreview)
-	case request.Method == http.MethodPost && request.URL.Path == "/api/v1/feeds/split":
-		return policy.Authorize(identity, domain.ScopeFeedsWrite)
-	case request.Method == http.MethodDelete && strings.HasPrefix(request.URL.Path, "/api/v1/feeds/"):
-		return policy.Authorize(identity, domain.ScopeFeedsDelete)
+	case request.Method == http.MethodGet && request.URL.Path == "/":
+		return domain.ScopeFeedsRead, true
+	case request.Method == http.MethodPost && request.URL.Path == "/feeds":
+		return domain.ScopeFeedsWrite, true
+	case request.Method == http.MethodPost && request.URL.Path == "/feeds/split":
+		return domain.ScopeFeedsWrite, true
+	case request.Method == http.MethodPost && request.URL.Path == "/preview":
+		return domain.ScopeFeedsPreview, true
+	case request.Method == http.MethodPost && strings.HasPrefix(request.URL.Path, "/feeds/") && strings.HasSuffix(request.URL.Path, "/delete"):
+		return domain.ScopeFeedsDelete, true
 	default:
-		return nil
+		return "", false
 	}
 }
 
@@ -902,11 +919,17 @@ func writeAPIPolicyError(writer http.ResponseWriter, request *http.Request, err 
 	case errors.Is(err, policy.ErrInsufficientScope):
 		writer.Header().Set("WWW-Authenticate", `Bearer realm="rss-studio", error="insufficient_scope"`)
 		writeAPIError(writer, request, http.StatusForbidden, "insufficient_scope", "Insufficient scope.")
-	case errors.Is(err, policy.ErrBrowserOnly):
-		writeAPIError(writer, request, http.StatusForbidden, "forbidden", "This credential cannot access this endpoint.")
 	default:
 		writeAPIError(writer, request, http.StatusForbidden, "forbidden", "This credential cannot access this endpoint.")
 	}
+}
+
+func writePolicyError(writer http.ResponseWriter, request *http.Request, err error) {
+	if isAPIRequest(request) {
+		writeAPIPolicyError(writer, request, err)
+		return
+	}
+	http.Error(writer, "This credential cannot access this endpoint.", http.StatusForbidden)
 }
 
 func acceptsHTML(request *http.Request) bool {

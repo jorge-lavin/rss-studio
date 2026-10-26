@@ -14,6 +14,7 @@ const (
 	ScopeFeedsPreview = "feeds:preview"
 	ScopeFeedsWrite   = "feeds:write"
 	ScopeFeedsDelete  = "feeds:delete"
+	ScopeTokensManage = "tokens:manage"
 )
 
 var serviceTokenScopes = []string{
@@ -21,6 +22,13 @@ var serviceTokenScopes = []string{
 	ScopeFeedsPreview,
 	ScopeFeedsWrite,
 	ScopeFeedsDelete,
+	ScopeTokensManage,
+}
+
+// AllServiceTokenScopes returns a fresh list suitable for issuing a fully
+// privileged bootstrap token.
+func AllServiceTokenScopes() []string {
+	return append([]string(nil), serviceTokenScopes...)
 }
 
 type ServiceToken struct {

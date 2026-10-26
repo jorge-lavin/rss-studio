@@ -56,8 +56,8 @@ func main() {
 		log.Fatalf("read feed owner: %v", err)
 	}
 	auth, err := httpapi.NewAuthenticator(httpapi.AuthConfig{
-		JWTSecret: os.Getenv("RSS_STUDIO_JWT_SECRET"),
-		UserStore: database,
+		UserStore:         database,
+		ServiceTokenStore: database,
 	})
 	if err != nil {
 		log.Fatalf("configure authentication: %v", err)

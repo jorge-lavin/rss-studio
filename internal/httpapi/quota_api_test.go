@@ -26,7 +26,7 @@ func TestVersionedAPIQuotaResponseIsStableAndValidationDoesNotConsume(t *testing
 		t.Fatal(err)
 	}
 	auth, err := httpapi.NewAuthenticator(httpapi.AuthConfig{
-		JWTSecret: strings.Repeat("x", 32), UserStore: store,
+		UserStore: store,
 	})
 	if err != nil {
 		t.Fatal(err)

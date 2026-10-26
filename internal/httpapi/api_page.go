@@ -77,7 +77,7 @@ var apiTemplate = template.Must(template.New("api").Parse(`<!doctype html>
       </div>
       <div class="mt-8 grid gap-4 border-t border-slate-100 pt-6 text-sm dark:border-slate-800 sm:grid-cols-3">
         <div><p class="font-semibold">JSON everywhere</p><p class="mt-1 text-slate-500 dark:text-slate-400">Requests and responses use application/json.</p></div>
-        <div><p class="font-semibold">Bearer auth</p><p class="mt-1 text-slate-500 dark:text-slate-400">Use a browser JWT or scoped service token.</p></div>
+        <div><p class="font-semibold">Bearer auth</p><p class="mt-1 text-slate-500 dark:text-slate-400">Use a scoped service token.</p></div>
         <div><p class="font-semibold">Public RSS</p><p class="mt-1 text-slate-500 dark:text-slate-400">Published feed URLs need no API credential.</p></div>
       </div>
     </section>
@@ -141,12 +141,12 @@ curl -fsS '{{.BaseURL}}/api/v1/feeds' \
           <div class="border-b border-slate-100 px-5 py-4 dark:border-slate-800 sm:px-6"><h3 class="font-semibold">Authentication</h3><p class="mt-1 text-sm text-slate-500 dark:text-slate-400">Public endpoints for account access.</p></div>
           <div class="divide-y divide-slate-100 dark:divide-slate-800">
             <div class="flex flex-col gap-2 px-5 py-4 sm:flex-row sm:items-center sm:gap-4 sm:px-6"><span class="w-16 rounded-md bg-violet-50 px-2 py-1 text-center text-xs font-bold text-violet-700 dark:bg-violet-950 dark:text-violet-300">POST</span><code class="text-sm font-semibold">/auth/register</code><span class="text-sm text-slate-500 dark:text-slate-400">Create an account.</span></div>
-            <div class="flex flex-col gap-2 px-5 py-4 sm:flex-row sm:items-center sm:gap-4 sm:px-6"><span class="w-16 rounded-md bg-violet-50 px-2 py-1 text-center text-xs font-bold text-violet-700 dark:bg-violet-950 dark:text-violet-300">POST</span><code class="text-sm font-semibold">/auth/login</code><span class="text-sm text-slate-500 dark:text-slate-400">Issue a browser JWT.</span></div>
+            <div class="flex flex-col gap-2 px-5 py-4 sm:flex-row sm:items-center sm:gap-4 sm:px-6"><span class="w-16 rounded-md bg-violet-50 px-2 py-1 text-center text-xs font-bold text-violet-700 dark:bg-violet-950 dark:text-violet-300">POST</span><code class="text-sm font-semibold">/auth/login</code><span class="text-sm text-slate-500 dark:text-slate-400">Issue a scoped service token.</span></div>
           </div>
         </article>
 
         <article class="overflow-hidden rounded-2xl bg-white shadow-xl shadow-slate-900/5 ring-1 ring-slate-200 dark:bg-slate-900 dark:ring-slate-800">
-          <div class="border-b border-slate-100 px-5 py-4 dark:border-slate-800 sm:px-6"><h3 class="font-semibold">Service tokens</h3><p class="mt-1 text-sm text-slate-500 dark:text-slate-400">Browser JWT only. Service tokens cannot manage tokens.</p></div>
+          <div class="border-b border-slate-100 px-5 py-4 dark:border-slate-800 sm:px-6"><h3 class="font-semibold">Service tokens</h3><p class="mt-1 text-sm text-slate-500 dark:text-slate-400">Requires a service token with <code>tokens:manage</code>.</p></div>
           <div class="divide-y divide-slate-100 dark:divide-slate-800">
             <div class="flex flex-col gap-2 px-5 py-4 sm:flex-row sm:items-center sm:gap-4 sm:px-6"><span class="w-16 rounded-md bg-sky-50 px-2 py-1 text-center text-xs font-bold text-sky-700 dark:bg-sky-950 dark:text-sky-300">GET</span><code class="text-sm font-semibold">/auth/tokens</code><span class="text-sm text-slate-500 dark:text-slate-400">List token metadata.</span></div>
             <div class="flex flex-col gap-2 px-5 py-4 sm:flex-row sm:items-center sm:gap-4 sm:px-6"><span class="w-16 rounded-md bg-violet-50 px-2 py-1 text-center text-xs font-bold text-violet-700 dark:bg-violet-950 dark:text-violet-300">POST</span><code class="text-sm font-semibold">/auth/tokens</code><span class="text-sm text-slate-500 dark:text-slate-400">Create a token with scopes and expiry.</span></div>

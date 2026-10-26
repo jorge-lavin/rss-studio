@@ -11,12 +11,10 @@ import (
 
 var (
 	ErrInsufficientScope = errors.New("insufficient scope")
-	ErrBrowserOnly       = errors.New("browser authentication required")
 )
 
 // Identity identifies the authenticated tenant and credential used for an
-// operation. Browser JWTs intentionally have implicit access to existing
-// operations; service tokens must carry each required scope explicitly.
+// operation. Service tokens must carry each required scope explicitly.
 type Identity struct {
 	User      domain.User
 	TokenID   int64
@@ -47,11 +45,13 @@ func IdentityFromContext(ctx context.Context) (Identity, bool) {
 }
 
 // Authorize applies one shared policy decision for API endpoints and future
-// adapters. Browser JWTs retain existing access; service tokens do not inherit
-// scopes they were not granted.
+// adapters. Unscoped identities cannot authorize operations.
 func Authorize(identity Identity, requiredScope string) error {
-	if !identity.ServiceToken || requiredScope == "" {
+	if requiredScope == "" {
 		return nil
+	}
+	if !identity.ServiceToken {
+		return ErrInsufficientScope
 	}
 	for _, scope := range identity.Scopes {
 		if scope == requiredScope {
@@ -59,13 +59,4 @@ func Authorize(identity Identity, requiredScope string) error {
 		}
 	}
 	return ErrInsufficientScope
-}
-
-// RequireBrowser rejects service-token identities for account-management
-// operations that must remain available only to browser JWTs.
-func RequireBrowser(identity Identity) error {
-	if identity.ServiceToken {
-		return ErrBrowserOnly
-	}
-	return nil
 }

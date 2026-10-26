@@ -13,6 +13,13 @@ import (
 	"rss-studio/internal/policy"
 )
 
+func TestAuthorizeRequiresServiceToken(t *testing.T) {
+	identity := policy.Identity{User: domain.User{Username: "admin"}}
+	if err := policy.Authorize(identity, domain.ScopeFeedsDelete); !errors.Is(err, policy.ErrInsufficientScope) {
+		t.Fatalf("unscoped identity returned %v", err)
+	}
+}
+
 func TestPublicFeedRateLimitSpec(t *testing.T) {
 	spec, ok := policy.RateLimitSpecFor(policy.OperationFeedsPublic)
 	if !ok {
@@ -67,13 +74,6 @@ func TestPublicFeedRateLimitBucketHashesPathAndSeparatesFeeds(t *testing.T) {
 		if bucket.Key == authenticatedBucket.Key {
 			t.Fatal("public feed bucket overlapped authenticated bucket")
 		}
-	}
-}
-
-func TestAuthorizeTreatsBrowserJWTAsAlreadyAuthorized(t *testing.T) {
-	identity := policy.Identity{User: domain.User{Username: "admin"}}
-	if err := policy.Authorize(identity, domain.ScopeFeedsDelete); err != nil {
-		t.Fatalf("browser JWT was denied: %v", err)
 	}
 }
 

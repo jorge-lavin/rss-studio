@@ -13,7 +13,6 @@ Host-specific deployment configuration is maintained separately in the
 The included Compose file builds and runs the application locally:
 
 ```sh
-export RSS_STUDIO_JWT_SECRET="$(openssl rand -base64 32)"
 docker compose up -d --build
 ```
 
@@ -32,8 +31,8 @@ token=$(curl -s http://localhost:8080/api/v1/auth/login \
 curl -H "Authorization: Bearer $token" http://localhost:8080/api/v1/feeds
 ```
 
-Generated RSS URLs remain public so RSS readers can fetch them without JWT
-support. Feed definitions persist in SQLite and are isolated per account, while
+Generated RSS URLs remain public so RSS readers can fetch them without
+credentials. Feed definitions persist in SQLite and are isolated per account, while
 generated feeds persist in tenant-scoped cache folders in the `rss-studio-data`
 Docker volume. The same volume contains the SQLite database at
 `/data/rss-studio.db`; its migrations run automatically at startup.
@@ -59,7 +58,6 @@ docker run -d \
   --name rss-studio \
   --restart unless-stopped \
   -p 8080:8080 \
-  -e RSS_STUDIO_JWT_SECRET='replace-with-at-least-32-random-bytes' \
   -v rss-studio-data:/data \
   ghcr.io/jorge-lavin/rss-studio:latest
 ```
@@ -79,23 +77,22 @@ rejected. API errors never redirect to the browser UI.
 
 | Method and path | Result | Credential / scope |
 | --- | --- | --- |
-| `POST /api/v1/auth/login` | Issue browser JWT | Public |
+| `POST /api/v1/auth/login` | Issue service token | Public credential exchange |
 | `POST /api/v1/auth/register` | Create account | Public |
-| `GET /api/v1/auth/tokens` | List token metadata | Browser JWT only |
-| `POST /api/v1/auth/tokens` | Create service token | Browser JWT only |
-| `POST /api/v1/auth/tokens/{id}/revoke` | Revoke service token | Browser JWT only |
-| `DELETE /api/v1/auth/tokens/{id}` | Revoke service token alias | Browser JWT only |
-| `GET /api/v1/feeds` | List tenant feeds | Browser JWT or `feeds:read` |
-| `POST /api/v1/feeds` | Publish one feed | Browser JWT or `feeds:write` |
-| `POST /api/v1/feeds/preview` | Preview outputs | Browser JWT or `feeds:preview` |
-| `POST /api/v1/feeds/split` | Publish up to 32 outputs | Browser JWT or `feeds:write` |
-| `DELETE /api/v1/feeds/{path}` | Delete tenant feed | Browser JWT or `feeds:delete` |
+| `GET /api/v1/auth/tokens` | List token metadata | Service token with `tokens:manage` |
+| `POST /api/v1/auth/tokens` | Create service token | Service token with `tokens:manage` |
+| `POST /api/v1/auth/tokens/{id}/revoke` | Revoke service token | Service token with `tokens:manage` |
+| `DELETE /api/v1/auth/tokens/{id}` | Revoke service token alias | Service token with `tokens:manage` |
+| `GET /api/v1/feeds` | List tenant feeds | Service token with `feeds:read` |
+| `POST /api/v1/feeds` | Publish one feed | Service token with `feeds:write` |
+| `POST /api/v1/feeds/preview` | Preview outputs | Service token with `feeds:preview` |
+| `POST /api/v1/feeds/split` | Publish up to 32 outputs | Service token with `feeds:write` |
+| `DELETE /api/v1/feeds/{path}` | Delete tenant feed | Service token with `feeds:delete` |
 
-Send credentials as `Authorization: Bearer <value>`. Browser JWTs are HS256
-tokens with a 24-hour default lifetime. Service tokens are separate, expiring,
-revocable bearer credentials. Browser JWTs have implicit API scopes; service
-tokens have only explicitly granted scopes and cannot access token-management
-endpoints. Tenant isolation applies to every feed and token operation.
+Send credentials as `Authorization: Bearer <service-token>`. Service tokens are
+expiring, revocable bearer credentials. Every management operation requires the
+scope granted to its service token; `tokens:manage` controls token management.
+Tenant isolation applies to every feed and token operation.
 
 ### Accounts and service tokens
 
@@ -126,8 +123,9 @@ jq '{id,name,scopes,created_at,expires_at}' <<<"$token_json"
 curl -fsS "$BASE_URL/api/v1/auth/tokens" -H "Authorization: Bearer $token" | jq
 ```
 
-Supported scopes are `feeds:read`, `feeds:preview`, `feeds:write`, and
-`feeds:delete`. Duplicate scopes are removed and returned in canonical order.
+Supported scopes are `feeds:read`, `feeds:preview`, `feeds:write`,
+`feeds:delete`, and `tokens:manage`. Duplicate scopes are removed and returned
+in canonical order.
 The raw `token` value is returned only by creation; save it in a secret store,
 never put it in source control, URLs, logs, or support tickets. Listing tokens
 returns `id`, `name`, `scopes`, `created_at`, `expires_at`, and optional
@@ -165,7 +163,7 @@ request ID in that header. Codes currently returned are:
 | --- | --- |
 | 400 | `invalid_json`, `unknown_field`, `unsupported_media_type`, `validation_error` |
 | 401 | `authentication_required`, `invalid_credentials` |
-| 403 | `forbidden` (browser-only operation), `insufficient_scope` |
+| 403 | `insufficient_scope`, `forbidden` |
 | 404 | `not_found` |
 | 405 | `method_not_allowed` |
 | 409 | `username_taken`, `idempotency_conflict` |
@@ -231,7 +229,7 @@ curl -fsS -X DELETE "$BASE_URL/api/v1/feeds/${feed_path#/feeds/}" -H "Authorizat
 
 ### Public RSS
 
-Generated URLs do not require JWT or service-token authentication. Use the
+Generated URLs do not require authentication. Use the
 `path` or `url` returned by create/split and give the URL to any RSS reader:
 
 ```bash
@@ -296,7 +294,6 @@ their defaults. Compose passes every setting through so local overrides work:
 | `RSS_STUDIO_ADDRESS` | `:8080` |
 | `RSS_STUDIO_DATA` | `/data`; cache directory and legacy feed location |
 | `RSS_STUDIO_DB` | `$RSS_STUDIO_DATA/rss-studio.db` |
-| `RSS_STUDIO_JWT_SECRET` | Required; at least 32 bytes; keep stable across restarts |
 | `RSS_STUDIO_MCP_ENABLED` | `true`; set `false` to make `/mcp` return 404 |
 | `RSS_STUDIO_MAX_FEEDS_PER_ACCOUNT` | `50` |
 | `RSS_STUDIO_PREVIEWS_PER_DAY` | `100` |
@@ -311,7 +308,6 @@ their defaults. Compose passes every setting through so local overrides work:
 Example local overrides must be exported before the existing Compose command:
 
 ```sh
-export RSS_STUDIO_JWT_SECRET="$(openssl rand -base64 32)"
 export RSS_STUDIO_MCP_ENABLED=false
 export RSS_STUDIO_PREVIEWS_PER_DAY=200
 docker compose up -d --build
@@ -325,7 +321,7 @@ must point to a path available inside the container.
 
 RSS Studio exposes a stateless Streamable HTTP JSON-RPC MCP endpoint at
 `POST /mcp`. It requires an expiring service token in
-`Authorization: Bearer <service-token>`; browser JWTs and auth cookies are
+`Authorization: Bearer <service-token>`; non-service credentials and cookies are
 rejected. MCP is enabled by default. Set `RSS_STUDIO_MCP_ENABLED=false` before
 `docker compose up -d --build` to make `/mcp` unavailable.
 
@@ -471,8 +467,7 @@ if none exists, deployment stops before changing production.
 For manual recovery, use an existing immutable release image. Before starting,
 confirm the target release exists in GHCR, the deployment secrets are
 configured, and no migration or other release-specific action is required.
-Do not change `RSS_STUDIO_JWT_SECRET`; it remains on the host and existing data
-stays in the `rss-studio-data` volume.
+Existing service tokens remain in the `rss-studio-data` volume.
 
 In Forgejo, run **Roll back production** from `main`, enter an exact version such as
 `0.1.0` or `0.2.0` without the `v` prefix, and start the workflow. It rejects
@@ -505,8 +500,8 @@ go run ./cmd/rss-studio
 
 Override data directory or listen address with `RSS_STUDIO_DATA` and
 `RSS_STUDIO_ADDRESS`.
-Override the SQLite path with `RSS_STUDIO_DB`. `RSS_STUDIO_JWT_SECRET` is
-required. JWTs use HS256 and expire after 24 hours.
+Override the SQLite path with `RSS_STUDIO_DB`. Credential login issues service
+tokens that expire after 24 hours by default.
 Login attempts are limited to five per client IP per minute; excess attempts
 return HTTP 429 with a `Retry-After` header.
 Account quotas default to 50 published feeds, 100 previews per UTC day, 20

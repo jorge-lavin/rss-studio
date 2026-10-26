@@ -2,11 +2,8 @@ package httpapi
 
 import (
 	"context"
-	"crypto/hmac"
 	"crypto/sha256"
-	"encoding/base64"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -19,7 +16,6 @@ import (
 
 const (
 	defaultTokenTTL = 24 * time.Hour
-	issuer          = "rss-studio"
 	authCookieName  = "rss_studio_token"
 )
 
@@ -32,7 +28,6 @@ var (
 )
 
 type AuthConfig struct {
-	JWTSecret         string
 	TokenTTL          time.Duration
 	UserStore         UserStore
 	ServiceTokenStore ServiceTokenStore
@@ -54,7 +49,6 @@ type ServiceTokenStore interface {
 }
 
 type Authenticator struct {
-	secret        []byte
 	ttl           time.Duration
 	now           func() time.Time
 	userStore     UserStore
@@ -65,24 +59,9 @@ type Authenticator struct {
 // its context and policy implementation live in the shared policy package.
 type RequestIdentity = policy.Identity
 
-type jwtHeader struct {
-	Algorithm string `json:"alg"`
-	Type      string `json:"typ"`
-}
-
-type jwtClaims struct {
-	Subject string `json:"sub"`
-	Issuer  string `json:"iss"`
-	Issued  int64  `json:"iat"`
-	Expires int64  `json:"exp"`
-}
-
 func NewAuthenticator(config AuthConfig) (*Authenticator, error) {
-	if config.UserStore == nil || config.JWTSecret == "" {
-		return nil, fmt.Errorf("%w: user store and JWT secret are required", ErrInvalidAuthConfig)
-	}
-	if len([]byte(config.JWTSecret)) < 32 {
-		return nil, fmt.Errorf("%w: JWT secret must be at least 32 bytes", ErrInvalidAuthConfig)
+	if config.UserStore == nil {
+		return nil, fmt.Errorf("%w: user store is required", ErrInvalidAuthConfig)
 	}
 	if config.TokenTTL <= 0 {
 		config.TokenTTL = defaultTokenTTL
@@ -91,8 +70,10 @@ func NewAuthenticator(config AuthConfig) (*Authenticator, error) {
 	if serviceTokens == nil {
 		serviceTokens, _ = config.UserStore.(ServiceTokenStore)
 	}
+	if serviceTokens == nil {
+		return nil, fmt.Errorf("%w: service token store is required", ErrInvalidAuthConfig)
+	}
 	return &Authenticator{
-		secret:        []byte(config.JWTSecret),
 		ttl:           config.TokenTTL,
 		now:           time.Now,
 		userStore:     config.UserStore,
@@ -105,26 +86,16 @@ func (a *Authenticator) IssueToken(username, password string) (string, time.Time
 	if err != nil {
 		return "", time.Time{}, ErrInvalidCredentials
 	}
-	subject := user.Username
-
-	now := a.now().UTC().Truncate(time.Second)
+	if a.serviceTokens == nil {
+		return "", time.Time{}, ErrServiceTokenUnavailable
+	}
+	now := a.now().UTC()
 	expires := now.Add(a.ttl)
-	header, err := json.Marshal(jwtHeader{Algorithm: "HS256", Type: "JWT"})
+	_, token, err := a.serviceTokens.CreateServiceToken(user, "login", domain.AllServiceTokenScopes(), expires)
 	if err != nil {
 		return "", time.Time{}, err
 	}
-	claims, err := json.Marshal(jwtClaims{
-		Subject: subject,
-		Issuer:  issuer,
-		Issued:  now.Unix(),
-		Expires: expires.Unix(),
-	})
-	if err != nil {
-		return "", time.Time{}, err
-	}
-
-	signingInput := encodeSegment(header) + "." + encodeSegment(claims)
-	return signingInput + "." + encodeSegment(a.sign([]byte(signingInput))), expires, nil
+	return token, expires, nil
 }
 
 func (a *Authenticator) Register(username, password string) error {
@@ -230,15 +201,6 @@ func hashCredential(value string) string {
 }
 
 func (a *Authenticator) authenticateToken(token string) (RequestIdentity, error) {
-	if strings.Count(token, ".") == 2 {
-		if subject, err := a.TokenSubject(token); err == nil {
-			user, err := a.userForSubject(subject)
-			if err != nil {
-				return RequestIdentity{}, ErrInvalidToken
-			}
-			return RequestIdentity{User: user}, nil
-		}
-	}
 	if a.serviceTokens == nil {
 		return RequestIdentity{}, ErrInvalidToken
 	}
@@ -270,53 +232,4 @@ func (a *Authenticator) userForSubject(subject string) (domain.User, error) {
 		return user, nil
 	}
 	return domain.User{Username: subject}, nil
-}
-
-func (a *Authenticator) TokenSubject(token string) (string, error) {
-	if len(token) > 4096 {
-		return "", ErrInvalidToken
-	}
-	parts := strings.Split(token, ".")
-	if len(parts) != 3 || parts[0] == "" || parts[1] == "" || parts[2] == "" {
-		return "", ErrInvalidToken
-	}
-
-	var header jwtHeader
-	headerBytes, err := decodeSegment(parts[0])
-	if err != nil || json.Unmarshal(headerBytes, &header) != nil || header.Algorithm != "HS256" || header.Type != "JWT" {
-		return "", ErrInvalidToken
-	}
-
-	signature, err := decodeSegment(parts[2])
-	if err != nil || !hmac.Equal(signature, a.sign([]byte(parts[0]+"."+parts[1]))) {
-		return "", ErrInvalidToken
-	}
-
-	claimsBytes, err := decodeSegment(parts[1])
-	if err != nil {
-		return "", ErrInvalidToken
-	}
-	var claims jwtClaims
-	if err := json.Unmarshal(claimsBytes, &claims); err != nil || claims.Subject == "" || claims.Issuer != issuer {
-		return "", ErrInvalidToken
-	}
-	now := a.now().Unix()
-	if claims.Issued <= 0 || claims.Expires <= claims.Issued || claims.Expires <= now {
-		return "", ErrInvalidToken
-	}
-	return claims.Subject, nil
-}
-
-func (a *Authenticator) sign(input []byte) []byte {
-	hash := hmac.New(sha256.New, a.secret)
-	_, _ = hash.Write(input)
-	return hash.Sum(nil)
-}
-
-func encodeSegment(data []byte) string {
-	return base64.RawURLEncoding.EncodeToString(data)
-}
-
-func decodeSegment(segment string) ([]byte, error) {
-	return base64.RawURLEncoding.DecodeString(segment)
 }

@@ -82,7 +82,7 @@ func newAuthenticatedMCPHandler(t *testing.T, quotas application.QuotaConfig, sc
 	if err != nil {
 		t.Fatal(err)
 	}
-	auth, err := httpapi.NewAuthenticator(httpapi.AuthConfig{JWTSecret: strings.Repeat("x", 32), UserStore: store})
+	auth, err := httpapi.NewAuthenticator(httpapi.AuthConfig{UserStore: store})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -286,18 +286,15 @@ func TestHandlerReturnsProtocolErrorsForMalformedRequests(t *testing.T) {
 	}
 }
 
-func TestHandlerRejectsJWTAndEnforcesToolScopes(t *testing.T) {
-	handler, _, _, serviceToken, auth := newAuthenticatedMCPHandler(t, application.DefaultQuotaConfig(), []string{domain.ScopeFeedsRead}, time.Now)
-	jwt, _, err := auth.IssueToken("admin", "password")
-	if err != nil {
-		t.Fatal(err)
-	}
+func TestHandlerRejectsNonServiceBearerAndEnforcesToolScopes(t *testing.T) {
+	handler, _, _, serviceToken, _ := newAuthenticatedMCPHandler(t, application.DefaultQuotaConfig(), []string{domain.ScopeFeedsRead}, time.Now)
+	nonServiceToken := "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJhZG1pbiJ9.signature"
 	request := httptest.NewRequest(http.MethodPost, "http://rss.test/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`))
-	request.Header.Set("Authorization", "Bearer "+jwt)
+	request.Header.Set("Authorization", "Bearer "+nonServiceToken)
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, request)
-	if recorder.Code != http.StatusUnauthorized || bytes.Contains(recorder.Body.Bytes(), []byte(jwt)) {
-		t.Fatalf("JWT was accepted or leaked: status=%d body=%s", recorder.Code, recorder.Body.String())
+	if recorder.Code != http.StatusUnauthorized || bytes.Contains(recorder.Body.Bytes(), []byte(nonServiceToken)) {
+		t.Fatalf("non-service bearer was accepted or leaked: status=%d body=%s", recorder.Code, recorder.Body.String())
 	}
 
 	response := callRPCWithTokenAllowError(t, handler, serviceToken, 2, "tools/call", map[string]any{

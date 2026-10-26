@@ -23,7 +23,6 @@ func testAuthenticator(t *testing.T) *Authenticator {
 		t.Fatal(err)
 	}
 	auth, err := NewAuthenticator(AuthConfig{
-		JWTSecret: strings.Repeat("x", 32),
 		TokenTTL:  time.Hour,
 		UserStore: store,
 	})
@@ -35,9 +34,8 @@ func testAuthenticator(t *testing.T) *Authenticator {
 
 func TestNewAuthenticatorRequiresStrongConfiguration(t *testing.T) {
 	for name, config := range map[string]AuthConfig{
-		"missing user store": {JWTSecret: strings.Repeat("x", 32)},
-		"missing secret":     {UserStore: authStoreStub{}},
-		"short secret":       {UserStore: authStoreStub{}, JWTSecret: "too-short"},
+		"missing user store":  {},
+		"missing token store": {UserStore: authStoreStub{}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			if _, err := NewAuthenticator(config); !errors.Is(err, ErrInvalidAuthConfig) {
@@ -55,13 +53,16 @@ func (authStoreStub) Authenticate(username, password string) (domain.User, error
 
 func TestAuthenticatorIssuesAndValidatesToken(t *testing.T) {
 	auth := testAuthenticator(t)
-	auth.now = func() time.Time { return time.Unix(1000, 0) }
+	started := time.Now().UTC()
 	token, expires, err := auth.IssueToken("admin", "password")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if expires.Unix() != 4600 {
+	if !expires.After(started.Add(59*time.Minute)) || !expires.Before(started.Add(61*time.Minute)) {
 		t.Fatalf("unexpected expiry: %s", expires)
+	}
+	if strings.Contains(token, ".") {
+		t.Fatalf("service token has signed-token shape: %q", token)
 	}
 	if err := auth.ValidateToken(token); err != nil {
 		t.Fatalf("valid token rejected: %v", err)
@@ -89,13 +90,11 @@ func TestAuthenticatorUsesPersistentUserStore(t *testing.T) {
 	}
 
 	auth, err := NewAuthenticator(AuthConfig{
-		JWTSecret: strings.Repeat("x", 32),
 		UserStore: store,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	auth.now = func() time.Time { return time.Unix(1000, 0) }
 	token, _, err := auth.IssueToken("admin", "database-password")
 	if err != nil {
 		t.Fatalf("persistent credentials rejected: %v", err)
@@ -124,7 +123,7 @@ func TestAuthenticatorExposesServiceTokenIdentityAndScopes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	auth, err := NewAuthenticator(AuthConfig{JWTSecret: strings.Repeat("x", 32), UserStore: store})
+	auth, err := NewAuthenticator(AuthConfig{UserStore: store})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -152,7 +151,7 @@ func TestAuthenticatorRegistersUsersInPersistentStore(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer store.Close()
-	auth, err := NewAuthenticator(AuthConfig{JWTSecret: strings.Repeat("x", 32), UserStore: store})
+	auth, err := NewAuthenticator(AuthConfig{UserStore: store})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -166,7 +165,6 @@ func TestAuthenticatorRegistersUsersInPersistentStore(t *testing.T) {
 
 func TestAuthenticatorRejectsInvalidTokens(t *testing.T) {
 	auth := testAuthenticator(t)
-	auth.now = func() time.Time { return time.Unix(1000, 0) }
 	token, _, err := auth.IssueToken("admin", "password")
 	if err != nil {
 		t.Fatal(err)
@@ -198,7 +196,7 @@ func TestAuthenticatorRejectsInvalidTokens(t *testing.T) {
 		})
 	}
 
-	auth.now = func() time.Time { return time.Unix(4600, 0) }
+	auth.now = func() time.Time { return time.Now().UTC().Add(2 * time.Hour) }
 	if err := auth.ValidateToken(token); !errors.Is(err, ErrInvalidToken) {
 		t.Fatalf("expired token accepted: %v", err)
 	}

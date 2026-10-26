@@ -4,8 +4,8 @@ info:
   description: |
     Versioned management API for tenant-scoped filtered RSS feeds.
 
-    Browser JWTs have implicit access to management operations. Expiring
-    service tokens must have the scope required by each operation. Generated
+    Every management operation requires an expiring service token with the
+    scope required by that operation. Generated
     RSS documents are public and are returned from `/feeds/{slug}.xml`.
   version: v1
   license:
@@ -21,8 +21,8 @@ paths:
   /api/v1/auth/login:
     post:
       tags: [Authentication]
-      summary: Issue browser JWT
-      description: Public endpoint. JWTs use HS256 and expire after 24 hours by default.
+      summary: Issue service token
+      description: Public credential exchange. The returned bearer is a scoped service token that expires after 24 hours by default.
       operationId: login
       requestBody:
         required: true
@@ -32,7 +32,7 @@ paths:
               $ref: '#/components/schemas/Credentials'
       responses:
         '200':
-          description: Browser bearer JWT issued.
+          description: Scoped service bearer issued.
           content:
             application/json:
               schema:
@@ -107,7 +107,7 @@ paths:
     get:
       tags: [Service tokens]
       summary: List service-token metadata
-      description: Browser JWT only. Raw service-token values are never returned by this endpoint.
+      description: Requires a service token with `tokens:manage`. Raw service-token values are never returned by this endpoint.
       operationId: listServiceTokens
       security:
         - bearerAuth: []
@@ -129,7 +129,7 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorResponse' }
         '403':
-          description: forbidden; service tokens cannot manage service tokens.
+          description: insufficient_scope; the bearer lacks `tokens:manage`.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorResponse' }
@@ -162,7 +162,7 @@ paths:
       tags: [Service tokens]
       summary: Create service token
       description: |
-        Browser JWT only. Supply exactly one of `expires_in` (positive seconds)
+        Requires a service token with `tokens:manage`. Supply exactly one of `expires_in` (positive seconds)
         or `expires_at` (RFC3339 timestamp). The raw bearer token is returned
         only in this response; store it securely because later responses expose
         metadata and scopes only.
@@ -193,7 +193,7 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorResponse' }
         '403':
-          description: forbidden; service tokens cannot manage service tokens.
+          description: insufficient_scope; the bearer lacks `tokens:manage`.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorResponse' }
@@ -226,7 +226,7 @@ paths:
     post:
       tags: [Service tokens]
       summary: Revoke service token
-      description: Browser JWT only. Revocation is scoped to the authenticated account.
+      description: Requires a service token with `tokens:manage`. Revocation is scoped to the authenticated account.
       operationId: revokeServiceToken
       security:
         - bearerAuth: []
@@ -250,7 +250,7 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorResponse' }
         '403':
-          description: forbidden; service tokens cannot manage service tokens.
+          description: insufficient_scope; the bearer lacks `tokens:manage`.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorResponse' }
@@ -288,7 +288,7 @@ paths:
     delete:
       tags: [Service tokens]
       summary: Revoke service token
-      description: DELETE is an alias for the revoke operation. Browser JWT only.
+      description: DELETE is an alias for the revoke operation. Requires `tokens:manage`.
       operationId: deleteServiceToken
       security:
         - bearerAuth: []
@@ -312,7 +312,7 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorResponse' }
         '403':
-          description: forbidden; service tokens cannot manage service tokens.
+          description: insufficient_scope; the bearer lacks `tokens:manage`.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorResponse' }
@@ -350,7 +350,7 @@ paths:
     get:
       tags: [Feeds]
       summary: List authenticated feeds
-      description: Requires a browser JWT or a service token with feeds:read.
+      description: Requires a service token with `feeds:read`.
       operationId: listFeeds
       security:
         - bearerAuth: []
@@ -400,7 +400,7 @@ paths:
       tags: [Feeds]
       summary: Publish one filtered feed
       description: |
-        Requires a browser JWT or a service token with `feeds:write`.
+        Requires a service token with `feeds:write`.
         `operator` defaults to `contains`. An optional `Idempotency-Key` makes
         this mutation replayable for the same owner and credential.
       operationId: createFeed
@@ -470,7 +470,7 @@ paths:
     post:
       tags: [Feeds]
       summary: Preview filtered outputs
-      description: Requires a browser JWT or a service token with feeds:preview. Does not publish feeds.
+      description: Requires a service token with `feeds:preview`. Does not publish feeds.
       operationId: previewFeeds
       security:
         - bearerAuth: []
@@ -532,7 +532,7 @@ paths:
       tags: [Feeds]
       summary: Publish multiple filtered feeds
       description: |
-        Requires a browser JWT or a service token with `feeds:write`.
+        Requires a service token with `feeds:write`.
         Publishes up to 32 outputs from one source. An optional
         `Idempotency-Key` makes this mutation replayable for the same owner and
         credential.
@@ -603,7 +603,7 @@ paths:
     delete:
       tags: [Feeds]
       summary: Delete published feed
-      description: Requires a browser JWT or a service token with feeds:delete. Use a path such as my-feed.xml; the response returns the canonical slug without /feeds/ or .xml.
+      description: Requires a service token with `feeds:delete`. Use a path such as my-feed.xml; the response returns the canonical slug without /feeds/ or .xml.
       operationId: deleteFeed
       security:
         - bearerAuth: []
@@ -656,8 +656,8 @@ components:
     bearerAuth:
       type: http
       scheme: bearer
-      bearerFormat: JWT or RSS Studio service token
-      description: Use Authorization Bearer credential. Browser JWTs are 24-hour credentials by default; service tokens expire at their configured expiry and are revocable.
+      bearerFormat: RSS Studio service token
+      description: Use an Authorization Bearer service token. Tokens expire at their configured expiry and are revocable.
   parameters:
     TokenID:
       name: id
@@ -736,7 +736,7 @@ components:
           minItems: 1
           items:
             type: string
-            enum: [feeds:read, feeds:preview, feeds:write, feeds:delete]
+            enum: [feeds:read, feeds:preview, feeds:write, feeds:delete, tokens:manage]
         expires_in:
           type: integer
           format: int64
@@ -761,7 +761,7 @@ components:
           type: array
           items:
             type: string
-            enum: [feeds:read, feeds:preview, feeds:write, feeds:delete]
+            enum: [feeds:read, feeds:preview, feeds:write, feeds:delete, tokens:manage]
         created_at: { type: string, format: date-time }
         expires_at: { type: string, format: date-time }
         revoked_at:
