@@ -1,6 +1,9 @@
 {
   "branches": ["main"],
   "tagFormat": "v${version}",
+  "parserOpts": {
+    "breakingHeaderPattern": "^(\\w*)(?:\\(([\\w$@.\\-*/ ]*)\\))?!: (.*)$"
+  },
   "plugins": [
     "@semantic-release/commit-analyzer",
     "@semantic-release/release-notes-generator",
