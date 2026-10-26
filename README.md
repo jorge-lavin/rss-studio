@@ -10,7 +10,8 @@ Host-specific deployment configuration is maintained separately in the
 
 ## Docker example
 
-The included Compose file builds and runs the application locally:
+The included Compose file builds and runs the application locally. Its host port
+binds to loopback only:
 
 ```sh
 docker compose up -d --build
@@ -77,13 +78,29 @@ To run the published image instead:
 docker run -d \
   --name rss-studio \
   --restart unless-stopped \
-  -p 8080:8080 \
+  -p 127.0.0.1:8080:8080 \
   -v rss-studio-data:/data \
   ghcr.io/jorge-lavin/rss-studio:latest
 ```
 
-Place a reverse proxy in front of the container when serving it beyond a local
-development environment.
+These Compose and published-image examples intentionally expose HTTP on
+`127.0.0.1` only. This is a breaking default for operators who relied on port
+8080 being reachable from other hosts; local startup and `http://localhost:8080`
+examples are unchanged.
+
+### Non-local deployments
+
+Any deployment reachable beyond the local machine must terminate HTTPS at a
+trusted reverse proxy or load balancer. Forward only the proxy's internal HTTP
+hop to the RSS Studio container; do not expose the container's HTTP port
+directly to remote clients. For each HTTPS request, the proxy must set and
+preserve `X-Forwarded-Proto: https` and must not accept that header from
+untrusted clients. RSS Studio uses it to mark authentication cookies `Secure`
+and to generate HTTPS base URLs.
+
+Loopback binding is not a substitute for firewalling or TLS. If you change the
+binding to a non-loopback address, restrict it with host/network firewall rules
+and still require HTTPS termination at the trusted proxy or load balancer.
 
 Generated feeds are precomputed on disk. Requests return cached XML immediately, then check the source in the background. RSS Studio regenerates only when the source `Last-Modified` value advances.
 
@@ -508,6 +525,12 @@ services:
 The workflow does not log in or modify remote Docker credentials. It pulls and
 recreates only the `rss-studio` service, preserving its Docker data volume and
 leaving separate Caddy infrastructure untouched.
+
+The production host must keep RSS Studio behind that trusted proxy: terminate
+HTTPS before forwarding the internal HTTP hop to the container, set
+`X-Forwarded-Proto: https`, and do not publish the application port directly to
+remote clients. The loopback default does not replace host/network firewall
+rules or TLS requirements if the deployment binding is changed.
 
 ## Production rollback
 
