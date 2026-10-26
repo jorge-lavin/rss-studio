@@ -69,11 +69,6 @@ jobs:
           image_prefix=ghcr.io/jorge-lavin/rss-studio
           volume_repair_image=alpine@sha256:2e0b81d60597f449baa56dc25d355367869d2dca4cd57e866f1e2b52af3eb55f
 
-          command -v curl >/dev/null || {
-            echo "Cannot roll back safely: curl is required for readiness verification" >&2
-            exit 1
-          }
-
           current_container=$(docker ps -aq \
             --filter label=com.docker.compose.service=rss-studio | sed -n '1p')
           if [[ -z "$current_container" ]]; then
@@ -105,7 +100,7 @@ jobs:
             exit 1
           fi
 
-          docker compose -f "$compose_file" stop rss-studio
+          RSS_STUDIO_TAG="$version" docker compose -f "$compose_file" stop rss-studio
           docker run --rm --pull=missing --user 0:0 \
             --mount "type=volume,source=$data_volume,target=/data" \
             "$volume_repair_image" chown -R "$owner" /data
@@ -115,12 +110,10 @@ jobs:
           [[ "$current_image" == "$target_image" ]]
 
           for _ in {1..60}; do
-            if status=$(curl --silent --connect-timeout 1 --max-time 3 \
-              --output /dev/null --write-out '%{http_code}' \
-              http://127.0.0.1:8080/health); then
-              if [[ "$status" == 200 ]]; then
-                exit 0
-              fi
+            if docker run --rm --pull=missing --network rss-proxy \
+              "$volume_repair_image" wget -q -O /dev/null --timeout=2 \
+              http://rss-studio:8080/health; then
+              exit 0
             fi
             sleep 1
           done

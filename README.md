@@ -529,8 +529,9 @@ leaving separate Caddy infrastructure untouched.
 Before each start, it stops RSS Studio and repairs ownership of the existing
 `/data` named volume with a pinned one-shot root helper. The helper uses the
 target image's numeric runtime UID/GID, so upgrades from older root-run images
-and rollbacks both preserve access. Deployment then requires `GET /health` to
-return `200`; a failed repair, startup, or readiness probe triggers automatic
+and rollbacks both preserve access. Deployment then uses the pinned helper on
+the `rss-proxy` Docker network to GET `http://rss-studio:8080/health` and
+requires `200`; a failed repair, startup, or readiness probe triggers automatic
 rollback. The production Compose file remains host-managed and receives no
 repository secrets.
 
@@ -561,17 +562,18 @@ In Forgejo, run **Roll back production** from `main`, enter an exact version suc
 `latest`, `v0.2.0`, prerelease versions, and other input before opening SSH.
 The workflow repairs volume ownership for the selected image, then runs
 `docker compose pull` followed by `up -d --no-build` for only the `rss-studio`
-service and verifies `GET /health` readiness.
+service and verifies `GET /health` readiness over the `rss-proxy` network.
 
 Verify the result on the host:
 
 ```sh
 cd /home/deploy/rss-studio
 docker compose ps rss-studio
-curl -sS -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8080/health
+docker run --rm --network rss-proxy alpine@sha256:2e0b81d60597f449baa56dc25d355367869d2dca4cd57e866f1e2b52af3eb55f \
+  wget -q -O /dev/null http://rss-studio:8080/health && echo 200
 ```
 
-The health check should return `200`; also verify login and one known public
+The health check should succeed with `200`; also verify login and one known public
 `/feeds/*.xml` URL through the normal public host.
 If rollback is not sufficient, forward-redeploy by running the same workflow
 with the desired exact release version, or merge a fix to `main` and let the

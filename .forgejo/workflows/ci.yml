@@ -236,11 +236,6 @@ jobs:
           volume_repair_image=alpine@sha256:2e0b81d60597f449baa56dc25d355367869d2dca4cd57e866f1e2b52af3eb55f
           version_pattern='^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'
 
-          command -v curl >/dev/null || {
-            echo "Cannot deploy safely: curl is required for readiness verification" >&2
-            exit 1
-          }
-
           previous_container=$(docker ps -aq \
             --filter label=com.docker.compose.service=rss-studio | sed -n '1p')
           if [[ -z "$previous_container" ]]; then
@@ -302,16 +297,14 @@ jobs:
           }
 
           wait_for_ready() {
-            local container status
+            local container
             for _ in {1..60}; do
               container=$(service_container)
               if [[ -n "$container" ]]; then
-                if status=$(curl --silent --connect-timeout 1 --max-time 3 \
-                  --output /dev/null --write-out '%{http_code}' \
-                  http://127.0.0.1:8080/health); then
-                  if [[ "$status" == 200 ]]; then
-                    return 0
-                  fi
+                if docker run --rm --pull=missing --network rss-proxy \
+                  "$volume_repair_image" wget -q -O /dev/null --timeout=2 \
+                  http://rss-studio:8080/health; then
+                  return 0
                 fi
               fi
               sleep 1
@@ -329,7 +322,7 @@ jobs:
               if ! RSS_STUDIO_TAG="$previous_version" docker compose -f "$compose_file" pull rss-studio; then
                 rollback_ok=false
               fi
-              if ! docker compose -f "$compose_file" stop rss-studio; then
+              if ! RSS_STUDIO_TAG="$previous_version" docker compose -f "$compose_file" stop rss-studio; then
                 rollback_ok=false
               fi
               if ! repair_volume "$image_prefix:$previous_version"; then
@@ -353,7 +346,7 @@ jobs:
 
           rollback_required=true
           RSS_STUDIO_TAG="$version" docker compose -f "$compose_file" pull rss-studio
-          docker compose -f "$compose_file" stop rss-studio
+          RSS_STUDIO_TAG="$version" docker compose -f "$compose_file" stop rss-studio
           repair_volume "$image_prefix:$version"
           RSS_STUDIO_TAG="$version" docker compose -f "$compose_file" up -d --no-build rss-studio
           current_container=$(service_container)
