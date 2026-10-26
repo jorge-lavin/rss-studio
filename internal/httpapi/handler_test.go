@@ -210,6 +210,37 @@ func TestHandlerCreatesAndServesFeed(t *testing.T) {
 	}
 }
 
+func TestAPIDocumentationPageIsPublicAndUsesAppShell(t *testing.T) {
+	server, _ := newAuthenticatedServer(t)
+	for _, path := range []string{"/api", "/api/"} {
+		response, err := http.Get(server.URL + path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, err := io.ReadAll(response.Body)
+		response.Body.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		page := string(body)
+		if response.StatusCode != http.StatusOK || !strings.HasPrefix(response.Header.Get("Content-Type"), "text/html") {
+			t.Fatalf("expected public HTML API page for %s, got %d %q: %s", path, response.StatusCode, response.Header.Get("Content-Type"), page)
+		}
+		for _, marker := range []string{
+			"Developer API · v1",
+			"/auth/login",
+			"/feeds/preview",
+			"Authorization: Bearer",
+			`id="theme-toggle"`,
+		} {
+			if !strings.Contains(page, marker) {
+				t.Fatalf("API page %s missing marker %q: %s", path, marker, page)
+			}
+		}
+		assertTailwindUsesClassDarkMode(t, page)
+	}
+}
+
 func TestRateRejectionAuditEventUsesAccountIdentity(t *testing.T) {
 	now := time.Unix(1000, 0).UTC()
 	server, _ := newAuthenticatedServerWithClock(t, func() time.Time { return now })
