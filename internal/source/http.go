@@ -6,8 +6,8 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
-	"strings"
 	"time"
 )
 
@@ -61,7 +61,7 @@ func (s *HTTPSource) Get(ctx context.Context, sourceURL string) ([]byte, time.Ti
 	defer response.Body.Close()
 	data, err := io.ReadAll(io.LimitReader(response.Body, maxFeedSize+1))
 	if err != nil {
-		return nil, time.Time{}, err
+		return nil, time.Time{}, wrapSourceError("source feed read failed", err)
 	}
 	if len(data) > maxFeedSize {
 		return nil, time.Time{}, fmt.Errorf("source feed exceeds %d bytes", maxFeedSize)
@@ -75,17 +75,17 @@ func (s *HTTPSource) do(ctx context.Context, method, sourceURL string) (*http.Re
 	}
 	request, err := http.NewRequestWithContext(ctx, method, sourceURL, nil)
 	if err != nil {
-		return nil, err
+		return nil, wrapSourceError("source request could not be created", err)
 	}
 	request.Header.Set("User-Agent", "RSS-Studio/0.1")
 	request.Header.Set("Accept", "application/rss+xml, application/xml, text/xml;q=0.9, */*;q=0.1")
 	response, err := s.client.Do(request)
 	if err != nil {
-		return nil, err
+		return nil, wrapSourceError("source request failed", err)
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		response.Body.Close()
-		return nil, fmt.Errorf("source %s returned %s", method, response.Status)
+		return nil, fmt.Errorf("source %s returned status %d", method, response.StatusCode)
 	}
 	return response, nil
 }
@@ -104,19 +104,22 @@ func validateURL(value string) (*url.URL, error) {
 }
 
 func safeDialContext(baseDial func(context.Context, string, string) (net.Conn, error)) func(context.Context, string, string) (net.Conn, error) {
+	return safeDialContextWithLookup(net.DefaultResolver.LookupNetIP, baseDial)
+}
+
+func safeDialContextWithLookup(lookupIP func(context.Context, string, string) ([]netip.Addr, error), baseDial func(context.Context, string, string) (net.Conn, error)) func(context.Context, string, string) (net.Conn, error) {
 	return func(ctx context.Context, network, address string) (net.Conn, error) {
 		host, port, err := net.SplitHostPort(address)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("source destination is unavailable")
 		}
-		ips, err := net.DefaultResolver.LookupIP(ctx, "ip", host)
+		ips, err := lookupIP(ctx, "ip", host)
 		if err != nil {
-			return nil, err
+			return nil, wrapSourceError("source DNS lookup failed", err)
 		}
 		var lastErr error
 		for _, ip := range ips {
 			if blockedIP(ip) {
-				lastErr = fmt.Errorf("blocked destination %s", ip)
 				continue
 			}
 			connection, err := baseDial(ctx, network, net.JoinHostPort(ip.String(), port))
@@ -126,12 +129,47 @@ func safeDialContext(baseDial func(context.Context, string, string) (net.Conn, e
 			lastErr = err
 		}
 		if lastErr == nil {
-			lastErr = fmt.Errorf("no usable destination for %s", host)
+			if err := ctx.Err(); err != nil {
+				return nil, wrapSourceError("source connection canceled", err)
+			}
+			return nil, fmt.Errorf("source destination is blocked")
 		}
-		return nil, lastErr
+		return nil, wrapSourceError("source connection failed", lastErr)
 	}
 }
 
-func blockedIP(ip net.IP) bool {
-	return ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified() || ip.IsMulticast() || strings.EqualFold(ip.String(), "169.254.169.254")
+func blockedIP(ip netip.Addr) bool {
+	if !ip.IsValid() || ip.Is4In6() {
+		return true
+	}
+	if ip.Is4() {
+		ip4 := ip.As4()
+		return ip4[0] == 127 ||
+			ip4[0] == 10 ||
+			(ip4[0] == 172 && ip4[1] >= 16 && ip4[1] <= 31) ||
+			(ip4[0] == 192 && ip4[1] == 168) ||
+			(ip4[0] == 169 && ip4[1] == 254) ||
+			(ip4[0] == 100 && ip4[1] >= 64 && ip4[1] <= 127) ||
+			(ip4[0] == 169 && ip4[1] == 254 && ip4[2] == 169 && ip4[3] == 254) ||
+			(ip4[0] == 0 && ip4[1] == 0 && ip4[2] == 0 && ip4[3] == 0) ||
+			(ip4[0] >= 224)
+	}
+	return ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified() || ip.IsMulticast()
+}
+
+type sourceError struct {
+	message string
+	cause   error
+}
+
+func (e *sourceError) Error() string {
+	return e.message
+}
+
+func (e *sourceError) Unwrap() error {
+	return e.cause
+}
+
+func wrapSourceError(message string, cause error) error {
+	return &sourceError{message: message, cause: cause}
 }
