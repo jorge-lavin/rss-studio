@@ -142,12 +142,18 @@ func loginTokenAs(t *testing.T, server *httptest.Server, username, password stri
 	return login.AccessToken
 }
 
-func assertTailwindUsesClassDarkMode(t *testing.T, page string) {
+func assertLocalStylesheet(t *testing.T, page string) {
 	t.Helper()
-	cdn := strings.Index(page, `<script src="https://cdn.tailwindcss.com"></script>`)
-	config := strings.Index(page, `tailwind.config = { darkMode: "class" };`)
-	if cdn == -1 || config == -1 || config < cdn {
-		t.Fatalf("Tailwind class dark-mode config must run after CDN script: %s", page)
+	for _, marker := range []string{
+		` src="http://`, ` src="https://`, ` src="//`,
+		` href="http://`, ` href="https://`, ` href="//`,
+	} {
+		if strings.Contains(page, marker) {
+			t.Fatalf("page contains external browser asset URL %q: %s", marker, page)
+		}
+	}
+	if strings.Contains(page, `<script src=`) || !strings.Contains(page, `<link rel="stylesheet" href="/assets/rss-studio.css">`) {
+		t.Fatalf("page does not use local stylesheet only: %s", page)
 	}
 }
 
@@ -220,13 +226,13 @@ func TestHandlerCreatesAndServesFeed(t *testing.T) {
 	if !strings.Contains(string(homeBody), "RSS Studio · Version "+version.Version) {
 		t.Fatalf("home page does not show version %q: %s", version.Version, homeBody)
 	}
-	if !strings.Contains(string(homeBody), `id="theme-toggle"`) || !strings.Contains(string(homeBody), `darkMode: "class"`) || !strings.Contains(string(homeBody), `rss-studio-theme`) {
+	if !strings.Contains(string(homeBody), `id="theme-toggle"`) || !strings.Contains(string(homeBody), `rss-studio-theme`) {
 		t.Fatalf("home page does not include dark-mode toggle: %s", homeBody)
 	}
 	if !strings.Contains(string(homeBody), domain.FilterStartsWith.Label()+" “Keep”") {
 		t.Fatalf("home page does not show selected filter operator: %s", homeBody)
 	}
-	assertTailwindUsesClassDarkMode(t, string(homeBody))
+	assertLocalStylesheet(t, string(homeBody))
 
 	owner, err := store.User("admin")
 	if err != nil {
@@ -280,7 +286,34 @@ func TestAPIDocumentationPageIsPublicAndUsesAppShell(t *testing.T) {
 				t.Fatalf("API page %s missing marker %q: %s", path, marker, page)
 			}
 		}
-		assertTailwindUsesClassDarkMode(t, page)
+		assertLocalStylesheet(t, page)
+	}
+}
+
+func TestLocalStylesheetIsEmbeddedAndPublic(t *testing.T) {
+	server, _ := newAuthenticatedServer(t)
+	response, err := http.Get(server.URL + "/assets/rss-studio.css")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := io.ReadAll(response.Body)
+	response.Body.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	css := string(body)
+	if response.StatusCode != http.StatusOK || response.Header.Get("Content-Type") != "text/css; charset=utf-8" {
+		t.Fatalf("expected embedded CSS asset, got %d %q", response.StatusCode, response.Header.Get("Content-Type"))
+	}
+	for _, marker := range []string{`[class~="bg-slate-100"]`, "html.dark"} {
+		if !strings.Contains(css, marker) {
+			t.Fatalf("embedded CSS is missing marker %q", marker)
+		}
+	}
+	for _, marker := range []string{"https://", "url("} {
+		if strings.Contains(css, marker) {
+			t.Fatalf("unexpected embedded CSS marker %q", marker)
+		}
 	}
 }
 
@@ -859,10 +892,10 @@ func TestAuthenticatedHandlerSupportsServiceTokenLogin(t *testing.T) {
 	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `action="/auth/login"`) || !strings.Contains(recorder.Body.String(), "Login") || !strings.Contains(recorder.Body.String(), `href="/auth/sign-up"`) {
 		t.Fatalf("expected login page to be publicly reachable, got %d", recorder.Code)
 	}
-	if !strings.Contains(recorder.Body.String(), `id="theme-toggle"`) || !strings.Contains(recorder.Body.String(), `darkMode: "class"`) || !strings.Contains(recorder.Body.String(), `rss-studio-theme`) {
+	if !strings.Contains(recorder.Body.String(), `id="theme-toggle"`) || !strings.Contains(recorder.Body.String(), `rss-studio-theme`) {
 		t.Fatalf("login page does not include dark-mode toggle: %s", recorder.Body.String())
 	}
-	assertTailwindUsesClassDarkMode(t, recorder.Body.String())
+	assertLocalStylesheet(t, recorder.Body.String())
 	csrfCookie := recorder.Result().Cookies()[0]
 	csrfToken := strings.Split(strings.Split(recorder.Body.String(), `name="csrf_token" value="`)[1], `"`)[0]
 
@@ -874,6 +907,7 @@ func TestAuthenticatedHandlerSupportsServiceTokenLogin(t *testing.T) {
 	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `action="/auth/sign-up"`) {
 		t.Fatalf("expected sign-up page to be publicly reachable, got %d", recorder.Code)
 	}
+	assertLocalStylesheet(t, recorder.Body.String())
 
 	request = httptest.NewRequest(http.MethodPost, "/auth/sign-up", strings.NewReader("username=new-user&password=new-password&csrf_token="+csrfToken))
 	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")

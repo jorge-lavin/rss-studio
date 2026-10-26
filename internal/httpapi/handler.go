@@ -3,6 +3,7 @@ package httpapi
 import (
 	"crypto/rand"
 	"crypto/subtle"
+	_ "embed"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -46,6 +47,9 @@ type authPageData struct {
 	Registration bool
 	CSRFToken    string
 }
+
+//go:embed static/rss-studio.css
+var uiStylesheet []byte
 
 type authCredentials struct {
 	Username string `json:"username"`
@@ -196,6 +200,7 @@ func NewHandlerWithClock(service *application.Service, now func() time.Time, aut
 		mux.HandleFunc("PUT /api/v1/feeds/preview", handler.apiPreviewMethodNotAllowed)
 		mux.HandleFunc("PATCH /api/v1/feeds/preview", handler.apiPreviewMethodNotAllowed)
 	}
+	mux.HandleFunc("GET /assets/rss-studio.css", serveUIStylesheet)
 	mux.HandleFunc("GET /api", handler.apiPage)
 	mux.HandleFunc("GET /api/{$}", handler.apiPage)
 	mux.HandleFunc("/api/v1", handler.apiNotFound)
@@ -206,6 +211,13 @@ func NewHandlerWithClock(service *application.Service, now func() time.Time, aut
 	mux.HandleFunc("GET /feeds/{path}", handler.serveFeed)
 	mux.HandleFunc("POST /feeds/{path}/delete", handler.deleteFeed)
 	return observability.HTTPHandler(handler.authenticate(mux))
+}
+
+func serveUIStylesheet(writer http.ResponseWriter, _ *http.Request) {
+	writer.Header().Set("Content-Type", "text/css; charset=utf-8")
+	writer.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+	writer.WriteHeader(http.StatusOK)
+	_, _ = writer.Write(uiStylesheet)
 }
 
 func (h *Handler) apiLogin(writer http.ResponseWriter, request *http.Request) {
@@ -988,6 +1000,9 @@ func acceptsHTML(request *http.Request) bool {
 }
 
 func isPublicRequest(request *http.Request) bool {
+	if request.Method == http.MethodGet && request.URL.Path == "/assets/rss-studio.css" {
+		return true
+	}
 	if request.Method == http.MethodGet && (request.URL.Path == "/api" || request.URL.Path == "/api/") {
 		return true
 	}
@@ -1421,11 +1436,8 @@ var homeTemplate = template.Must(template.New("home").Parse(`<!doctype html>
       } catch {}
     })();
   </script>
+  <link rel="stylesheet" href="/assets/rss-studio.css">
   <title>RSS Studio</title>
-  <script src="https://cdn.tailwindcss.com"></script>
-  <script>
-    tailwind.config = { darkMode: "class" };
-  </script>
 </head>
 <body class="min-h-full bg-slate-100 text-slate-950 antialiased dark:bg-slate-950 dark:text-slate-100">
 <div class="min-h-screen">
@@ -1932,11 +1944,8 @@ var authTemplate = template.Must(template.New("auth").Parse(`<!doctype html>
       } catch {}
     })();
   </script>
+  <link rel="stylesheet" href="/assets/rss-studio.css">
   <title>{{if .Registration}}Create account{{else}}Login{{end}} · RSS Studio</title>
-  <script src="https://cdn.tailwindcss.com"></script>
-  <script>
-    tailwind.config = { darkMode: "class" };
-  </script>
 </head>
 <body class="flex min-h-full items-center justify-center bg-slate-100 px-5 py-12 text-slate-950 antialiased dark:bg-slate-950 dark:text-slate-100">
   <main class="w-full max-w-md rounded-2xl bg-white p-6 shadow-xl shadow-slate-900/5 ring-1 ring-slate-200 dark:bg-slate-900 dark:ring-slate-800 sm:p-8">
