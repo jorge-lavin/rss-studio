@@ -1,0 +1,7 @@
+{
+  "name": "rss-studio-release-tools",
+  "private": true,
+  "devDependencies": {
+    "semantic-release": "25.0.3"
+  }
+}

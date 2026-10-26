@@ -20,10 +20,10 @@ jobs:
       GOCACHE: ${{ github.workspace }}/.go/build-cache
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
         with:
           go-version-file: go.mod
 
@@ -35,7 +35,7 @@ jobs:
     needs: test
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: Configure GHCR credentials
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
@@ -69,7 +69,7 @@ jobs:
       version: ${{ steps.version.outputs.version }}
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           fetch-depth: 0
           ref: ${{ github.sha }}
@@ -84,7 +84,7 @@ jobs:
             exit 1
           fi
 
-          git fetch --tags --force
+          git fetch --tags
           if git tag --list 'v*' | grep -q .; then
             echo "created=false" >> "$GITHUB_OUTPUT"
             exit 0
@@ -92,11 +92,24 @@ jobs:
 
           version=0.1.0
           api_url="${GITHUB_API_URL%/}"
+          server_url="${GITHUB_SERVER_URL%/}"
+          if [[ "$api_url" != "$server_url/api/v1" ]]; then
+            echo "Unexpected Forgejo API endpoint" >&2
+            exit 1
+          fi
+          if [[ ! "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "Unexpected commit SHA" >&2
+            exit 1
+          fi
+          if [[ ! "$GITHUB_REPOSITORY" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
+            echo "Unexpected repository name" >&2
+            exit 1
+          fi
           payload=$(printf \
             '{"tag_name":"v%s","target_commitish":"%s","name":"v%s","body":"Initial release of RSS Studio.","draft":false,"prerelease":false}' \
             "$version" "$GITHUB_SHA" "$version")
 
-          curl -fsS \
+          curl --fail --silent --show-error --proto '=https' --tlsv1.2 \
             -X POST \
             -H "Authorization: token $GH_TOKEN" \
             -H 'Content-Type: application/json' \
@@ -107,15 +120,20 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GITHUB_API_URL: ${{ github.api_url }}
+          GITHUB_SERVER_URL: ${{ github.server_url }}
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: 22.14.0
+          node-version: 22.14.0 # exact Node.js version required by semantic-release 25.0.3
+
+      - name: Install release tooling
+        if: steps.bootstrap.outputs.created != 'true'
+        run: npm ci --ignore-scripts --no-audit --no-fund
 
       - name: Run semantic release
         if: steps.bootstrap.outputs.created != 'true'
-        run: npx --yes semantic-release@25.0.3
+        run: ./node_modules/.bin/semantic-release
         env:
           GH_TOKEN: ${{ github.token }}
           GITHUB_URL: ${{ github.server_url }}
@@ -133,7 +151,7 @@ jobs:
             exit 0
           fi
 
-          git fetch --tags --force
+          git fetch --tags
           tag=$(git tag --points-at "$GITHUB_SHA" --list 'v*' | sort -V | tail -n 1)
           if [[ -n "$tag" ]]; then
             version=${tag#v}
