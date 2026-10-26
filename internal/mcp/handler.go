@@ -200,7 +200,7 @@ var tools = []tool{
 		Name:        "delete_feed",
 		Description: "Delete one of the authenticated user's published feeds by its path.",
 		InputSchema: objectSchema(map[string]any{
-			"path":            map[string]any{"type": "string", "description": "Public feed path, such as /feeds/my-feed.xml."},
+			"path":            map[string]any{"type": "string", "description": "Public feed path, such as /feeds/0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef.xml."},
 			"idempotency_key": map[string]any{"type": "string", "minLength": 1, "maxLength": 255},
 		}, []string{"path"}),
 	},

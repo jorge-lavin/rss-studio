@@ -6,7 +6,8 @@ info:
 
     Every management operation requires an expiring service token with the
     scope required by that operation. Generated RSS documents are public and
-    are returned from `/feeds/{slug}.xml`; delivery remains unauthenticated but
+    are returned from `/feeds/{path}.xml`; new paths use opaque cryptographic
+    hashes and exclude feed names. Delivery remains unauthenticated but
     is limited to an aggregate 60 requests per feed URL per one-minute window.
   version: v1
   license:
@@ -604,7 +605,7 @@ paths:
     delete:
       tags: [Feeds]
       summary: Delete published feed
-      description: Requires a service token with `feeds:delete`. Use a path such as my-feed.xml; the response returns the canonical slug without /feeds/ or .xml.
+      description: Requires a service token with `feeds:delete`. Use the returned public path, such as a 64-character hash with .xml; the response returns the path identifier without /feeds/ or .xml.
       operationId: deleteFeed
       security:
         - bearerAuth: []
@@ -673,7 +674,7 @@ components:
       name: path
       in: path
       required: true
-      description: Feed slug, normally including .xml, for example my-feed.xml.
+      description: Public feed path identifier, normally including .xml. New identifiers are 64-character hexadecimal hashes.
       schema:
         type: string
         minLength: 1
@@ -831,7 +832,7 @@ components:
         name: { type: string }
         path:
           type: string
-          description: Public path, such as /feeds/my-feed.xml.
+          description: Public path, such as /feeds/0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef.xml.
         url:
           type: string
           format: uri
@@ -888,7 +889,7 @@ components:
         deleted: { type: boolean, const: true }
         path:
           type: string
-          description: Canonical feed slug without /feeds/ or .xml.
+          description: Public path identifier without /feeds/ or .xml.
     ErrorBody:
       type: object
       required: [code, message]

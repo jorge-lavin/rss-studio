@@ -146,7 +146,8 @@ returns one feed object with HTTP 201. Preview returns
 `{ "outputs": [{"name","operator","keyword","count","sample_titles"}] }`;
 sample titles contain at most five entries. Split accepts one to 32 outputs and
 returns `{ "outputs": [{"name","operator","keyword","path","url"}] }`
-with HTTP 201. Delete returns `{ "deleted": true, "path": "slug" }`.
+with HTTP 201. Delete returns `{ "deleted": true, "path": "opaque-id" }`;
+new feed paths use 64-character cryptographic hashes and exclude the feed name.
 
 ### Stable errors and response metadata
 
@@ -223,7 +224,7 @@ curl -fsS -X POST "$BASE_URL/api/v1/feeds" -H "Authorization: Bearer $token" -H 
 curl -sS -o /tmp/rss-studio-conflict.json -w '%{http_code}\n' -X POST "$BASE_URL/api/v1/feeds" -H "Authorization: Bearer $token" -H 'Content-Type: application/json' -H 'Idempotency-Key: create-example-1' -d "$(jq -nc --arg source "$SOURCE_URL" '{name:"Changed retry",source_url:$source,keyword:"AI"}')"
 jq </tmp/rss-studio-conflict.json
 
-# Delete the single feed. API path parameter uses the slug plus .xml.
+# Delete the single feed. API path parameter accepts the returned public path.
 curl -fsS -X DELETE "$BASE_URL/api/v1/feeds/${feed_path#/feeds/}" -H "Authorization: Bearer $token" | jq
 ```
 

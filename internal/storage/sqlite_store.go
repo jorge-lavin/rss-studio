@@ -946,7 +946,7 @@ func (s *SQLiteStore) CreateWithOperator(owner domain.User, name, sourceURL stri
 	if err != nil {
 		return domain.Feed{}, fmt.Errorf("choose feed slug: %w", err)
 	}
-	path, err := uniqueFeedValue(tx, "path", base, userID, false)
+	path, err := uniqueFeedPath(tx)
 	if err != nil {
 		return domain.Feed{}, fmt.Errorf("choose feed path: %w", err)
 	}
@@ -1062,7 +1062,7 @@ func (s *SQLiteStore) ImportLegacyFeeds(path string, owner domain.User) error {
 		if err != nil {
 			return fmt.Errorf("choose legacy feed slug: %w", err)
 		}
-		feedPath, err := uniqueFeedValue(tx, "path", base, userID, false)
+		feedPath, err := uniqueFeedPath(tx)
 		if err != nil {
 			return fmt.Errorf("choose legacy feed path: %w", err)
 		}
@@ -1126,6 +1126,31 @@ func uniqueFeedValue(tx *sql.Tx, column, base string, userID int64, scoped bool)
 			return candidate, nil
 		}
 	}
+}
+
+func uniqueFeedPath(tx *sql.Tx) (string, error) {
+	for {
+		path, err := newFeedPath()
+		if err != nil {
+			return "", err
+		}
+		var exists bool
+		if err := tx.QueryRow("SELECT EXISTS(SELECT 1 FROM feeds WHERE path = ?)", path).Scan(&exists); err != nil {
+			return "", fmt.Errorf("check feed path: %w", err)
+		}
+		if !exists {
+			return path, nil
+		}
+	}
+}
+
+func newFeedPath() (string, error) {
+	entropy := make([]byte, 32)
+	if _, err := rand.Read(entropy); err != nil {
+		return "", fmt.Errorf("generate feed path: %w", err)
+	}
+	sum := sha256.Sum256(entropy)
+	return hex.EncodeToString(sum[:]), nil
 }
 
 type rowScanner interface {

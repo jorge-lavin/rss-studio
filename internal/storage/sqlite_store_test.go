@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"os"
@@ -111,6 +112,14 @@ func TestSQLiteStoreScopesFeedsByUserAndPersistsPath(t *testing.T) {
 	if aliceFeed.Path == bobFeed.Path {
 		t.Fatalf("expected globally unique paths, got %q", aliceFeed.Path)
 	}
+	for _, path := range []string{aliceFeed.Path, bobFeed.Path} {
+		if path == "news-feed" || len(path) != 64 {
+			t.Fatalf("expected opaque hashed feed path, got %q", path)
+		}
+		if decoded, err := hex.DecodeString(path); err != nil || len(decoded) != 32 {
+			t.Fatalf("expected 32-byte hexadecimal feed path, got %q", path)
+		}
+	}
 
 	aliceFeeds, err := store.List(alice)
 	if err != nil {
@@ -179,8 +188,11 @@ func TestSQLiteStoreImportsAndRemovesLegacyFeedStore(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(feeds) != 1 || feeds[0].Path != "news-feed" || !feeds[0].CreatedAt.Equal(createdAt) {
+	if len(feeds) != 1 || feeds[0].Path == "news-feed" || len(feeds[0].Path) != 64 || !feeds[0].CreatedAt.Equal(createdAt) {
 		t.Fatalf("unexpected imported feeds: %#v", feeds)
+	}
+	if decoded, err := hex.DecodeString(feeds[0].Path); err != nil || len(decoded) != 32 {
+		t.Fatalf("expected imported feed path to be opaque hash, got %q", feeds[0].Path)
 	}
 	if feeds[0].Operator != domain.FilterContains {
 		t.Fatalf("expected legacy feeds to use contains operator, got %q", feeds[0].Operator)

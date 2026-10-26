@@ -3,6 +3,7 @@ package httpapi_test
 import (
 	"bytes"
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
@@ -27,6 +28,12 @@ import (
 )
 
 type sourceStub struct{}
+
+func isOpaqueFeedPath(path string) bool {
+	value := strings.TrimSuffix(strings.TrimPrefix(path, "/feeds/"), ".xml")
+	decoded, err := hex.DecodeString(value)
+	return len(value) == 64 && err == nil && len(decoded) == 32
+}
 
 func (sourceStub) Head(context.Context, string) (time.Time, error) { return time.Time{}, nil }
 
@@ -145,7 +152,7 @@ func assertTailwindUsesClassDarkMode(t *testing.T, page string) {
 }
 
 func TestHandlerCreatesAndServesFeed(t *testing.T) {
-	server, _ := newAuthenticatedServer(t)
+	server, store := newAuthenticatedServer(t)
 	token := loginToken(t, server)
 
 	request, err := http.NewRequest(http.MethodPost, server.URL+"/feeds", strings.NewReader("name=Foo+feed&source_url=https%3A%2F%2Fexample.test%2Frss&operator=starts_with&keyword=Keep"))
@@ -192,7 +199,15 @@ func TestHandlerCreatesAndServesFeed(t *testing.T) {
 	}
 	assertTailwindUsesClassDarkMode(t, string(homeBody))
 
-	response, err = http.Get(server.URL + "/feeds/foo-feed.xml")
+	owner, err := store.User("admin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	feeds, err := store.List(owner)
+	if err != nil || len(feeds) != 1 {
+		t.Fatalf("expected one stored feed, got feeds=%#v err=%v", feeds, err)
+	}
+	response, err = http.Get(server.URL + "/feeds/" + feeds[0].Path + ".xml")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -697,6 +712,15 @@ func TestAuthenticatedHandlerIsolatesFeedsByUser(t *testing.T) {
 	if recorder.Code != http.StatusSeeOther {
 		t.Fatalf("admin feed creation failed: %d: %s", recorder.Code, recorder.Body.String())
 	}
+	admin, err := store.User("admin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	feeds, err := store.List(admin)
+	if err != nil || len(feeds) != 1 {
+		t.Fatalf("expected one admin feed, got feeds=%#v err=%v", feeds, err)
+	}
+	feedPath := feeds[0].Path
 
 	for name, token := range map[string]string{"admin": adminToken, "reader": readerToken} {
 		request = httptest.NewRequest(http.MethodGet, "/", nil)
@@ -723,7 +747,7 @@ func TestAuthenticatedHandlerIsolatesFeedsByUser(t *testing.T) {
 		}
 	}
 
-	request = httptest.NewRequest(http.MethodPost, "/feeds/alice-feed/delete", nil)
+	request = httptest.NewRequest(http.MethodPost, "/feeds/"+feedPath+"/delete", nil)
 	request.Header.Set("Authorization", "Bearer "+readerToken)
 	recorder = httptest.NewRecorder()
 	handler.ServeHTTP(recorder, request)
@@ -732,7 +756,7 @@ func TestAuthenticatedHandlerIsolatesFeedsByUser(t *testing.T) {
 	}
 
 	response := httptest.NewRecorder()
-	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/feeds/alice-feed.xml", nil))
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/feeds/"+feedPath+".xml", nil))
 	if response.Code != http.StatusOK {
 		t.Fatalf("public feed became inaccessible: %d", response.Code)
 	}
@@ -1023,7 +1047,7 @@ func TestVersionedCreateReturnsFeedMetadata(t *testing.T) {
 	if err := json.NewDecoder(recorder.Body).Decode(&feed); err != nil {
 		t.Fatal(err)
 	}
-	if feed.Name != "Foo feed" || feed.Path != "/feeds/foo-feed.xml" || feed.URL != "http://example.com/feeds/foo-feed.xml" || feed.SourceURL != "https://example.test/rss" || feed.Operator != "starts_with" || feed.Keyword != "Keep" || feed.CreatedAt.IsZero() {
+	if feed.Name != "Foo feed" || !isOpaqueFeedPath(feed.Path) || feed.URL != "http://example.com"+feed.Path || feed.SourceURL != "https://example.test/rss" || feed.Operator != "starts_with" || feed.Keyword != "Keep" || feed.CreatedAt.IsZero() {
 		t.Fatalf("unexpected created feed metadata: %#v", feed)
 	}
 }
@@ -1464,7 +1488,7 @@ func TestVersionedFeedListReturnsTenantScopedMetadata(t *testing.T) {
 		t.Fatalf("unexpected feed list: %#v", response)
 	}
 	feed := response.Feeds[0]
-	if feed.Name != "Foo feed" || feed.Path != "/feeds/foo-feed.xml" || feed.URL != "http://example.com/feeds/foo-feed.xml" || feed.SourceURL != "https://example.test/rss" || feed.Operator != "starts_with" || feed.Keyword != "Keep" || feed.CreatedAt.IsZero() {
+	if feed.Name != "Foo feed" || !isOpaqueFeedPath(feed.Path) || feed.URL != "http://example.com"+feed.Path || feed.SourceURL != "https://example.test/rss" || feed.Operator != "starts_with" || feed.Keyword != "Keep" || feed.CreatedAt.IsZero() {
 		t.Fatalf("unexpected feed metadata: %#v", feed)
 	}
 }
