@@ -340,6 +340,7 @@ their defaults. Compose passes every setting through so local overrides work:
 | `OTEL_SERVICE_NAME` | `rss-studio` when OTLP is enabled |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | Empty; standard OTLP/HTTP endpoint enables tracing |
 | `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` | Empty; trace-specific OTLP/HTTP endpoint alternative |
+| `OTEL_EXPORTER_OTLP_TRACES_HEADERS` | Empty; trace exporter headers such as Axiom authorization and dataset |
 | `OTEL_TRACES_EXPORTER` | Set `none` to disable exporting explicitly |
 
 Example local overrides must be exported before the existing Compose command:
@@ -432,6 +433,21 @@ docker compose up -d --build
 
 `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` can be used instead for a trace-specific
 endpoint. Set `OTEL_TRACES_EXPORTER=none` to disable exporting explicitly.
+
+For direct Axiom export, use a dedicated traces dataset and keep the token in
+your shell or secret manager, never in this repository:
+
+```sh
+export AXIOM_TOKEN='your-token'
+export AXIOM_DATASET='rss-studio-traces'
+export OTEL_SERVICE_NAME=rss-studio
+export OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=https://api.axiom.co/v1/traces
+export OTEL_EXPORTER_OTLP_TRACES_HEADERS="Authorization=Bearer ${AXIOM_TOKEN},X-Axiom-Dataset=${AXIOM_DATASET}"
+docker compose up -d --build
+```
+
+Unset `AXIOM_TOKEN` and `OTEL_EXPORTER_OTLP_TRACES_HEADERS` after stopping the
+service when they are no longer needed.
 
 ## Releases
 
