@@ -201,6 +201,7 @@ func NewHandlerWithClock(service *application.Service, now func() time.Time, aut
 		mux.HandleFunc("PATCH /api/v1/feeds/preview", handler.apiPreviewMethodNotAllowed)
 	}
 	mux.HandleFunc("GET /assets/rss-studio.css", serveUIStylesheet)
+	mux.HandleFunc("GET /health", health)
 	mux.HandleFunc("GET /api", handler.apiPage)
 	mux.HandleFunc("GET /api/{$}", handler.apiPage)
 	mux.HandleFunc("/api/v1", handler.apiNotFound)
@@ -218,6 +219,13 @@ func serveUIStylesheet(writer http.ResponseWriter, _ *http.Request) {
 	writer.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
 	writer.WriteHeader(http.StatusOK)
 	_, _ = writer.Write(uiStylesheet)
+}
+
+func health(writer http.ResponseWriter, _ *http.Request) {
+	writer.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	writer.Header().Set("Cache-Control", "no-store")
+	writer.WriteHeader(http.StatusOK)
+	_, _ = writer.Write([]byte("ok\n"))
 }
 
 func (h *Handler) apiLogin(writer http.ResponseWriter, request *http.Request) {
@@ -1001,6 +1009,9 @@ func acceptsHTML(request *http.Request) bool {
 
 func isPublicRequest(request *http.Request) bool {
 	if request.Method == http.MethodGet && request.URL.Path == "/assets/rss-studio.css" {
+		return true
+	}
+	if request.Method == http.MethodGet && request.URL.Path == "/health" {
 		return true
 	}
 	if request.Method == http.MethodGet && (request.URL.Path == "/api" || request.URL.Path == "/api/") {

@@ -526,6 +526,14 @@ The workflow does not log in or modify remote Docker credentials. It pulls and
 recreates only the `rss-studio` service, preserving its Docker data volume and
 leaving separate Caddy infrastructure untouched.
 
+Before each start, it stops RSS Studio and repairs ownership of the existing
+`/data` named volume with a pinned one-shot root helper. The helper uses the
+target image's numeric runtime UID/GID, so upgrades from older root-run images
+and rollbacks both preserve access. Deployment then requires `GET /health` to
+return `200`; a failed repair, startup, or readiness probe triggers automatic
+rollback. The production Compose file remains host-managed and receives no
+repository secrets.
+
 The production host must keep RSS Studio behind that trusted proxy: terminate
 HTTPS before forwarding the internal HTTP hop to the container, set
 `X-Forwarded-Proto: https`, and do not publish the application port directly to
@@ -551,19 +559,20 @@ delete the service-token table from a live database.
 In Forgejo, run **Roll back production** from `main`, enter an exact version such as
 `0.1.0` or `0.2.0` without the `v` prefix, and start the workflow. It rejects
 `latest`, `v0.2.0`, prerelease versions, and other input before opening SSH.
-The workflow runs `docker compose pull` followed by `up -d --no-build` for only
-the `rss-studio` service.
+The workflow repairs volume ownership for the selected image, then runs
+`docker compose pull` followed by `up -d --no-build` for only the `rss-studio`
+service and verifies `GET /health` readiness.
 
 Verify the result on the host:
 
 ```sh
 cd /home/deploy/rss-studio
 docker compose ps rss-studio
-curl -sS -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8080/
+curl -sS -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8080/health
 ```
 
-With authentication enabled, the curl check should return `401`; also verify
-login and one known public `/feeds/*.xml` URL through the normal public host.
+The health check should return `200`; also verify login and one known public
+`/feeds/*.xml` URL through the normal public host.
 If rollback is not sufficient, forward-redeploy by running the same workflow
 with the desired exact release version, or merge a fix to `main` and let the
 normal release deployment publish and deploy it.

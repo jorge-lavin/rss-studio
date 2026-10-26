@@ -233,7 +233,13 @@ jobs:
           version=$1
           compose_file=/home/deploy/rss-studio/compose.yaml
           image_prefix=ghcr.io/jorge-lavin/rss-studio
+          volume_repair_image=alpine@sha256:2e0b81d60597f449baa56dc25d355367869d2dca4cd57e866f1e2b52af3eb55f
           version_pattern='^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'
+
+          command -v curl >/dev/null || {
+            echo "Cannot deploy safely: curl is required for readiness verification" >&2
+            exit 1
+          }
 
           previous_container=$(docker ps -aq \
             --filter label=com.docker.compose.service=rss-studio | sed -n '1p')
@@ -255,16 +261,58 @@ jobs:
             exit 1
           fi
 
+          data_mount=$(docker inspect --format '{{range .Mounts}}{{if eq .Destination "/data"}}{{.Type}}:{{.Name}}{{end}}{{end}}' "$previous_container")
+          if [[ "$data_mount" != volume:* ]]; then
+            echo "Cannot deploy safely: rss-studio /data mount is not a named volume" >&2
+            exit 1
+          fi
+          data_volume=${data_mount#volume:}
+          if [[ ! "$data_volume" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]]; then
+            echo "Cannot deploy safely: invalid rss-studio data volume name" >&2
+            exit 1
+          fi
+
           service_container() {
             docker ps -q --filter label=com.docker.compose.service=rss-studio | sed -n '1p'
           }
 
-          wait_for_running() {
-            local container
-            for _ in {1..30}; do
+          image_owner() {
+            local image=$1
+            local owner
+            owner=$(docker image inspect --format '{{.Config.User}}' "$image")
+            if [[ -z "$owner" ]]; then
+              owner=0:0
+            elif [[ "$owner" =~ ^[0-9]+$ ]]; then
+              owner="$owner:$owner"
+            fi
+            if [[ ! "$owner" =~ ^[0-9]+:[0-9]+$ ]]; then
+              echo "Cannot deploy safely: image has non-numeric runtime user: $owner" >&2
+              return 1
+            fi
+            printf '%s\n' "$owner"
+          }
+
+          repair_volume() {
+            local image=$1
+            local owner
+            owner=$(image_owner "$image") || return 1
+            docker run --rm --pull=missing --user 0:0 \
+              --mount "type=volume,source=$data_volume,target=/data" \
+              "$volume_repair_image" chown -R "$owner" /data
+          }
+
+          wait_for_ready() {
+            local container status
+            for _ in {1..60}; do
               container=$(service_container)
-              if [[ -n "$container" ]] && [[ "$(docker inspect --format '{{.State.Status}}' "$container")" == running ]]; then
-                return 0
+              if [[ -n "$container" ]]; then
+                if status=$(curl --silent --connect-timeout 1 --max-time 3 \
+                  --output /dev/null --write-out '%{http_code}' \
+                  http://127.0.0.1:8080/health); then
+                  if [[ "$status" == 200 ]]; then
+                    return 0
+                  fi
+                fi
               fi
               sleep 1
             done
@@ -281,10 +329,16 @@ jobs:
               if ! RSS_STUDIO_TAG="$previous_version" docker compose -f "$compose_file" pull rss-studio; then
                 rollback_ok=false
               fi
+              if ! docker compose -f "$compose_file" stop rss-studio; then
+                rollback_ok=false
+              fi
+              if ! repair_volume "$image_prefix:$previous_version"; then
+                rollback_ok=false
+              fi
               if ! RSS_STUDIO_TAG="$previous_version" docker compose -f "$compose_file" up -d --no-build rss-studio; then
                 rollback_ok=false
               fi
-              if ! wait_for_running; then
+              if ! wait_for_ready; then
                 rollback_ok=false
               fi
               if [[ "$rollback_ok" != true ]]; then
@@ -299,11 +353,13 @@ jobs:
 
           rollback_required=true
           RSS_STUDIO_TAG="$version" docker compose -f "$compose_file" pull rss-studio
+          docker compose -f "$compose_file" stop rss-studio
+          repair_volume "$image_prefix:$version"
           RSS_STUDIO_TAG="$version" docker compose -f "$compose_file" up -d --no-build rss-studio
           current_container=$(service_container)
           current_image=$(docker inspect --format '{{.Config.Image}}' "$current_container")
           [[ "$current_image" == "$image_prefix:$version" ]]
-          wait_for_running
+          wait_for_ready
 
           rollback_required=false
           trap - EXIT

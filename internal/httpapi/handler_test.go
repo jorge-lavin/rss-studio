@@ -317,6 +317,22 @@ func TestLocalStylesheetIsEmbeddedAndPublic(t *testing.T) {
 	}
 }
 
+func TestHealthEndpointIsPublic(t *testing.T) {
+	server, _ := newAuthenticatedServer(t)
+	response, err := http.Get(server.URL + "/health")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	body, err := io.ReadAll(response.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.StatusCode != http.StatusOK || response.Header.Get("Content-Type") != "text/plain; charset=utf-8" || string(body) != "ok\n" {
+		t.Fatalf("unexpected health response: status=%d content-type=%q body=%q", response.StatusCode, response.Header.Get("Content-Type"), body)
+	}
+}
+
 func TestRateRejectionAuditEventUsesAccountIdentity(t *testing.T) {
 	now := time.Unix(1000, 0).UTC()
 	server, _ := newAuthenticatedServerWithClock(t, func() time.Time { return now })
