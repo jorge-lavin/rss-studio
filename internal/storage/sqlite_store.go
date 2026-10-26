@@ -550,7 +550,7 @@ func (s *SQLiteStore) ClaimIdempotency(ownerID int64, credentialHash, key, reque
 		if err != nil {
 			return IdempotencyClaim{}, fmt.Errorf("parse idempotency expiry: %w", err)
 		}
-		if !parsedExpiry.After(now) {
+		if !parsedExpiry.After(now) && status != idempotencyPending {
 			deleted, err := s.db.Exec("DELETE FROM idempotency_keys WHERE id = ? AND expires_at <= ?", claim.ID, now.Format(time.RFC3339Nano))
 			if err != nil {
 				return IdempotencyClaim{}, fmt.Errorf("reclaim idempotency key: %w", err)
@@ -566,6 +566,10 @@ func (s *SQLiteStore) ClaimIdempotency(ownerID int64, credentialHash, key, reque
 		switch status {
 		case idempotencyPending:
 			claim.Pending = true
+			claim.RecoveryRequired = !parsedExpiry.After(now)
+			if result != "" {
+				claim.Result = []byte(result)
+			}
 		case idempotencyDone:
 			claim.Completed = true
 			claim.Result = []byte(result)
@@ -574,6 +578,38 @@ func (s *SQLiteStore) ClaimIdempotency(ownerID int64, credentialHash, key, reque
 		}
 		return claim, nil
 	}
+}
+
+func (s *SQLiteStore) PrepareIdempotency(id int64, result []byte) error {
+	if id <= 0 || len(result) == 0 {
+		return errors.New("invalid idempotency result")
+	}
+	updated, err := s.db.Exec(
+		"UPDATE idempotency_keys SET result = ? WHERE id = ? AND status = ?",
+		result, id, idempotencyPending,
+	)
+	if err != nil {
+		return fmt.Errorf("prepare idempotency result: %w", err)
+	}
+	count, err := updated.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("check prepared idempotency result: %w", err)
+	}
+	if count > 0 {
+		return nil
+	}
+	var status string
+	var storedResult []byte
+	if err := s.db.QueryRow("SELECT status, result FROM idempotency_keys WHERE id = ?", id).Scan(&status, &storedResult); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return errors.New("idempotency claim is no longer pending")
+		}
+		return fmt.Errorf("read prepared idempotency result: %w", err)
+	}
+	if status == idempotencyPending && string(storedResult) == string(result) {
+		return nil
+	}
+	return errors.New("idempotency claim is no longer pending")
 }
 
 func (s *SQLiteStore) CompleteIdempotency(id int64, result []byte) error {
@@ -593,6 +629,17 @@ func (s *SQLiteStore) CompleteIdempotency(id int64, result []byte) error {
 		return fmt.Errorf("check completed idempotency claim: %w", err)
 	}
 	if count == 0 {
+		var status string
+		var storedResult []byte
+		if err := s.db.QueryRow("SELECT status, result FROM idempotency_keys WHERE id = ?", id).Scan(&status, &storedResult); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return errors.New("idempotency claim is no longer pending")
+			}
+			return fmt.Errorf("read completed idempotency claim: %w", err)
+		}
+		if status == idempotencyDone && string(storedResult) == string(result) {
+			return nil
+		}
 		return errors.New("idempotency claim is no longer pending")
 	}
 	return nil

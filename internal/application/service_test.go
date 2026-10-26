@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"rss-studio/internal/domain"
+	"rss-studio/internal/idempotency"
 	"rss-studio/internal/observability"
 	"rss-studio/internal/policy"
 	"rss-studio/internal/rss"
@@ -35,6 +36,41 @@ func (r *auditEventRecorder) Record(event observability.Event) {
 
 type failingAuditSource struct{}
 
+type idempotencyStoreStub struct {
+	*storage.SQLiteStore
+	claim            idempotency.Claim
+	completeFailures int
+	completeCalls    int
+	abandonCalls     int
+}
+
+func (s *idempotencyStoreStub) ClaimIdempotency(int64, string, string, string, time.Time) (idempotency.Claim, error) {
+	if s.claim.ID == 0 {
+		s.claim = idempotency.Claim{ID: 1, Pending: true}
+		return idempotency.Claim{ID: 1, Acquired: true}, nil
+	}
+	return s.claim, nil
+}
+
+func (s *idempotencyStoreStub) PrepareIdempotency(_ int64, result []byte) error {
+	s.claim.Result = append([]byte(nil), result...)
+	return nil
+}
+
+func (s *idempotencyStoreStub) CompleteIdempotency(id int64, result []byte) error {
+	s.completeCalls++
+	if s.completeCalls <= s.completeFailures {
+		return errors.New("completion unavailable")
+	}
+	s.claim = idempotency.Claim{ID: id, Completed: true, Result: append([]byte(nil), result...)}
+	return nil
+}
+
+func (s *idempotencyStoreStub) AbandonIdempotency(int64) error {
+	s.abandonCalls++
+	return nil
+}
+
 func (failingAuditSource) Head(context.Context, string) (time.Time, error) {
 	return time.Time{}, errors.New("upstream unavailable")
 }
@@ -51,6 +87,53 @@ func (s *sourceStub) Head(context.Context, string) (time.Time, error) {
 func (s *sourceStub) Get(context.Context, string) ([]byte, time.Time, error) {
 	s.getCount.Add(1)
 	return []byte(`<rss version="2.0"><channel><title>Source</title><item><title>Keep foo</title><guid>1</guid></item><item><title>Drop</title><guid>2</guid></item></channel></rss>`), time.Date(2026, time.July, 30, 12, 0, 0, 0, time.UTC), nil
+}
+
+func TestExecuteIdempotentRetriesCompletionWithoutReexecuting(t *testing.T) {
+	store := &idempotencyStoreStub{completeFailures: 1}
+	service := NewService(store, nil, nil, nil)
+	calls := 0
+	operation := func() (any, error) {
+		calls++
+		return map[string]string{"path": "feed"}, nil
+	}
+
+	result, err := service.ExecuteIdempotent(context.Background(), domain.User{ID: 1}, "credential", "key", "request", operation)
+	if err != nil || string(result) != `{"path":"feed"}` {
+		t.Fatalf("completion retry failed: result=%s err=%v", result, err)
+	}
+	if calls != 1 || store.completeCalls != 2 {
+		t.Fatalf("mutation or completion was retried incorrectly: operations=%d completions=%d", calls, store.completeCalls)
+	}
+
+	replayed, err := service.ExecuteIdempotent(context.Background(), domain.User{ID: 1}, "credential", "key", "request", operation)
+	if err != nil || string(replayed) != string(result) || calls != 1 {
+		t.Fatalf("successful completion was not replayed: result=%s err=%v operations=%d", replayed, err, calls)
+	}
+}
+
+func TestExecuteIdempotentRetainsClaimAfterCompletionFailure(t *testing.T) {
+	store := &idempotencyStoreStub{completeFailures: 4}
+	service := NewService(store, nil, nil, nil)
+	calls := 0
+	operation := func() (any, error) {
+		calls++
+		return map[string]string{"path": "feed"}, nil
+	}
+
+	if _, err := service.ExecuteIdempotent(context.Background(), domain.User{ID: 1}, "credential", "key", "request", operation); !errors.Is(err, ErrIdempotencyUnavailable) {
+		t.Fatalf("expected unavailable completion error, got %v", err)
+	}
+	if calls != 1 || store.abandonCalls != 0 {
+		t.Fatalf("completion failure allowed unsafe recovery: operations=%d abandons=%d", calls, store.abandonCalls)
+	}
+
+	if _, err := service.ExecuteIdempotent(context.Background(), domain.User{ID: 1}, "credential", "key", "request", operation); !errors.Is(err, ErrIdempotencyUnavailable) {
+		t.Fatalf("expected unavailable recovery error, got %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("pending claim reran mutation: operations=%d", calls)
+	}
 }
 
 type memoryCache struct {

@@ -417,6 +417,9 @@ func TestSQLiteStoreReclaimsExpiredIdempotencyClaim(t *testing.T) {
 	if err := store.CompleteIdempotency(first.ID, []byte(`{"path":"first"}`)); err != nil {
 		t.Fatal(err)
 	}
+	if err := store.CompleteIdempotency(first.ID, []byte(`{"path":"first"}`)); err != nil {
+		t.Fatalf("idempotent completion was not replay-safe: %v", err)
+	}
 	if _, err := store.db.Exec("UPDATE idempotency_keys SET expires_at = ? WHERE id = ?", now.Add(-time.Minute).Format(time.RFC3339Nano), first.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -439,6 +442,38 @@ func TestSQLiteStoreReclaimsExpiredIdempotencyClaim(t *testing.T) {
 	}
 	if storedKey == "request-key" || storedCredential == "credential" {
 		t.Fatal("raw idempotency values were persisted")
+	}
+}
+
+func TestSQLiteStoreDoesNotReclaimExpiredPendingIdempotencyClaim(t *testing.T) {
+	store, err := NewSQLiteStore(filepath.Join(t.TempDir(), "rss-studio.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	owner, err := store.CreateUser("alice", "password")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	first, err := store.ClaimIdempotency(owner.ID, "credential", "request-key", "request", now)
+	if err != nil || !first.Acquired {
+		t.Fatalf("initial claim failed: claim=%#v err=%v", first, err)
+	}
+	prepared := []byte(`{"path":"prepared"}`)
+	if err := store.PrepareIdempotency(first.ID, prepared); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.Exec("UPDATE idempotency_keys SET expires_at = ? WHERE id = ?", now.Add(-time.Minute).Format(time.RFC3339Nano), first.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	stale, err := store.ClaimIdempotency(owner.ID, "credential", "request-key", "request", now)
+	if err != nil || !stale.Pending || !stale.RecoveryRequired || stale.Acquired || string(stale.Result) != string(prepared) {
+		t.Fatalf("expired pending claim was reclaimed: claim=%#v err=%v", stale, err)
+	}
+	if err := store.CompleteIdempotency(stale.ID, stale.Result); err != nil {
+		t.Fatalf("prepared pending result was not recoverable: %v", err)
 	}
 }
 

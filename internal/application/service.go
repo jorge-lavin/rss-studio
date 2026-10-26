@@ -64,8 +64,21 @@ type Service struct {
 
 type IdempotencyStore interface {
 	ClaimIdempotency(ownerID int64, credentialHash, key, requestHash string, now time.Time) (idempotency.Claim, error)
+	PrepareIdempotency(id int64, result []byte) error
 	CompleteIdempotency(id int64, result []byte) error
 	AbandonIdempotency(id int64) error
+}
+
+const idempotencyCompletionAttempts = 2
+
+func completeIdempotency(store IdempotencyStore, id int64, result []byte) error {
+	var err error
+	for attempt := 0; attempt < idempotencyCompletionAttempts; attempt++ {
+		if err = store.CompleteIdempotency(id, result); err == nil {
+			return nil
+		}
+	}
+	return err
 }
 
 type refreshKey struct {
@@ -161,6 +174,15 @@ func (s *Service) ExecuteIdempotent(ctx context.Context, owner domain.User, cred
 			break
 		}
 		if claim.Pending {
+			if len(claim.Result) > 0 {
+				if err := completeIdempotency(store, claim.ID, claim.Result); err != nil {
+					return nil, fmt.Errorf("%w: complete idempotency key: %v", ErrIdempotencyUnavailable, err)
+				}
+				return append([]byte(nil), claim.Result...), nil
+			}
+			if claim.RecoveryRequired {
+				return nil, ErrIdempotencyUnavailable
+			}
 			select {
 			case <-ctx.Done():
 				return nil, ctx.Err()
@@ -180,11 +202,13 @@ func (s *Service) ExecuteIdempotent(ctx context.Context, owner domain.User, cred
 	}
 	encoded, err := json.Marshal(result)
 	if err != nil {
-		_ = store.AbandonIdempotency(claim.ID)
-		return nil, fmt.Errorf("encode idempotency result: %w", err)
+		return nil, fmt.Errorf("%w: encode idempotency result: %v", ErrIdempotencyUnavailable, err)
 	}
-	if err := store.CompleteIdempotency(claim.ID, encoded); err != nil {
-		return nil, fmt.Errorf("complete idempotency key: %w", err)
+	if err := store.PrepareIdempotency(claim.ID, encoded); err != nil {
+		return nil, fmt.Errorf("%w: prepare idempotency result: %v", ErrIdempotencyUnavailable, err)
+	}
+	if err := completeIdempotency(store, claim.ID, encoded); err != nil {
+		return nil, fmt.Errorf("%w: complete idempotency key: %v", ErrIdempotencyUnavailable, err)
 	}
 	return encoded, nil
 }

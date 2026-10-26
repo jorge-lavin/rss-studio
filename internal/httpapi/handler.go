@@ -552,6 +552,8 @@ func (h *Handler) writeAPIFeedError(writer http.ResponseWriter, request *http.Re
 		writeAPIError(writer, request, http.StatusBadGateway, "source_unavailable", "Source feed could not be fetched or processed.")
 	case errors.Is(err, application.ErrIdempotencyConflict):
 		writeAPIError(writer, request, http.StatusConflict, "idempotency_conflict", "Idempotency key was already used with a different request.")
+	case errors.Is(err, application.ErrIdempotencyUnavailable):
+		writeAPIError(writer, request, http.StatusServiceUnavailable, "idempotency_unavailable", "Idempotency protection is temporarily unavailable.")
 	default:
 		log.Printf("API feed operation: %v", err)
 		writeAPIError(writer, request, http.StatusInternalServerError, "internal_error", internalMessage)

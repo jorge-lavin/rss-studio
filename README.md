@@ -219,7 +219,13 @@ owner, credential, key, and decoded JSON request, a retry returns the original
 JSON result and status. Reusing the key with changed JSON returns HTTP 409 and
 `idempotency_conflict`; the key is not included in the response. Completed keys
 expire after 24 hours. Failed work releases its pending claim so it can be
-retried. Do not log raw keys.
+retried. If mutation succeeds but result persistence fails, the service retries
+completion, keeps the claim pending, and returns `idempotency_unavailable`
+(HTTP 503) rather than risking a duplicate mutation. Retry with the same key
+after storage recovers; never switch to a new key. Pending claims retain their
+prepared result for safe completion and are never reclaimed automatically; a
+claim without a prepared result requires operator reconciliation before retry.
+Do not log raw keys.
 
 ### Local API integration examples
 
