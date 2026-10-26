@@ -53,7 +53,7 @@ func TestVersionedAPIRateLimitsAggregateTokensAndReset(t *testing.T) {
 		t.Fatalf("unsafe or unstable rate-limit response: %s", responseBody)
 	}
 
-	if _, err := store.CreateUser("other", "password"); err != nil {
+	if _, err := store.CreateUser("other", "password-1234"); err != nil {
 		t.Fatal(err)
 	}
 	other, err := store.User("other")

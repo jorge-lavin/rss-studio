@@ -762,7 +762,7 @@ func testSQLiteStore(t *testing.T) (*storage.SQLiteStore, domain.User) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { store.Close() })
-	if _, err := store.CreateUser("admin", "password"); err != nil {
+	if _, err := store.CreateUser("admin", "password-1234"); err != nil {
 		t.Fatal(err)
 	}
 	owner, err := store.User("admin")

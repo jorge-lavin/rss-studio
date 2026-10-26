@@ -99,7 +99,7 @@ func newAuthenticatedServerWithSourceAndClock(t *testing.T, feedSource applicati
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.CreateUser("admin", "password"); err != nil {
+	if _, err := store.CreateUser("admin", "password-1234"); err != nil {
 		store.Close()
 		t.Fatal(err)
 	}
@@ -120,7 +120,7 @@ func newAuthenticatedServerWithSourceAndClock(t *testing.T, feedSource applicati
 }
 
 func loginToken(t *testing.T, server *httptest.Server) string {
-	return loginTokenAs(t, server, "admin", "password")
+	return loginTokenAs(t, server, "admin", "password-1234")
 }
 
 func loginTokenAs(t *testing.T, server *httptest.Server, username, password string) string {
@@ -459,7 +459,7 @@ func TestHomeRendersSplitFeedWorkflow(t *testing.T) {
 
 func TestAuthJSONEndpointsRejectOversizedBodies(t *testing.T) {
 	server, _ := newAuthenticatedServer(t)
-	body := `{"username":"admin","password":"password"}` + strings.Repeat(" ", 16<<10)
+	body := `{"username":"admin","password":"password-1234"}` + strings.Repeat(" ", 16<<10)
 	for _, endpoint := range []string{"/auth/login", "/auth/register"} {
 		request := httptest.NewRequest(http.MethodPost, endpoint, strings.NewReader(body))
 		request.Header.Set("Content-Type", "application/json")
@@ -518,7 +518,7 @@ func TestAuthenticatedHandlerProtectsManagementAndLeavesFeedsPublic(t *testing.T
 		t.Fatalf("expected unauthenticated management request to fail, got %d", response.StatusCode)
 	}
 
-	response, err = http.Post(server.URL+"/auth/login", "application/json", strings.NewReader(`{"username":"admin","password":"password"}`))
+	response, err = http.Post(server.URL+"/auth/login", "application/json", strings.NewReader(`{"username":"admin","password":"password-1234"}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -747,7 +747,7 @@ func TestAuthenticatedHandlerIsolatesFeedsByUser(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer store.Close()
-	if _, err := store.CreateUser("admin", "password"); err != nil {
+	if _, err := store.CreateUser("admin", "password-1234"); err != nil {
 		t.Fatal(err)
 	}
 	service := application.NewServiceWithOperator(store, cache.NewFileCache(t.TempDir()), sourceStub{}, rss.FilterWithOperator)
@@ -755,14 +755,14 @@ func TestAuthenticatedHandlerIsolatesFeedsByUser(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := auth.Register("reader", "password"); err != nil {
+	if err := auth.Register("reader", "password-1234"); err != nil {
 		t.Fatal(err)
 	}
-	adminToken, _, err := auth.IssueToken("admin", "password")
+	adminToken, _, err := auth.IssueToken("admin", "password-1234")
 	if err != nil {
 		t.Fatal(err)
 	}
-	readerToken, _, err := auth.IssueToken("reader", "password")
+	readerToken, _, err := auth.IssueToken("reader", "password-1234")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -832,7 +832,7 @@ func TestAuthenticatedHandlerSupportsServiceTokenLogin(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer store.Close()
-	if _, err := store.CreateUser("admin", "password"); err != nil {
+	if _, err := store.CreateUser("admin", "password-1234"); err != nil {
 		t.Fatal(err)
 	}
 	service := application.NewServiceWithOperator(store, cache.NewFileCache(t.TempDir()), sourceStub{}, rss.FilterWithOperator)
@@ -947,7 +947,7 @@ func TestBrowserSessionsProtectMutationsAndRevokeOnlyCurrentSession(t *testing.T
 	apiToken := loginToken(t, server)
 	csrfCookie, csrfToken := csrfFromPage(t, server.Config.Handler, "/auth/login")
 
-	request, err := http.NewRequest(http.MethodPost, server.URL+"/auth/login", strings.NewReader("username=admin&password=password"))
+	request, err := http.NewRequest(http.MethodPost, server.URL+"/auth/login", strings.NewReader("username=admin&password=password-1234"))
 	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	response, err := client.Do(request)
 	if err != nil {
@@ -958,7 +958,7 @@ func TestBrowserSessionsProtectMutationsAndRevokeOnlyCurrentSession(t *testing.T
 		t.Fatalf("missing login CSRF was accepted or cacheable: status=%d cache=%q", response.StatusCode, response.Header.Get("Cache-Control"))
 	}
 
-	request, err = http.NewRequest(http.MethodPost, server.URL+"/auth/login", strings.NewReader("username=admin&password=password&csrf_token=wrong"))
+	request, err = http.NewRequest(http.MethodPost, server.URL+"/auth/login", strings.NewReader("username=admin&password=password-1234&csrf_token=wrong"))
 	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	request.AddCookie(csrfCookie)
 	response, err = client.Do(request)
@@ -970,7 +970,7 @@ func TestBrowserSessionsProtectMutationsAndRevokeOnlyCurrentSession(t *testing.T
 		t.Fatalf("invalid login CSRF was accepted: %d", response.StatusCode)
 	}
 
-	request, err = http.NewRequest(http.MethodPost, server.URL+"/auth/login", strings.NewReader("username=admin&password=password&csrf_token="+csrfToken))
+	request, err = http.NewRequest(http.MethodPost, server.URL+"/auth/login", strings.NewReader("username=admin&password=password-1234&csrf_token="+csrfToken))
 	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	request.Header.Set("Origin", "https://evil.example")
 	request.AddCookie(csrfCookie)
@@ -983,7 +983,7 @@ func TestBrowserSessionsProtectMutationsAndRevokeOnlyCurrentSession(t *testing.T
 		t.Fatalf("cross-site login CSRF was accepted: %d", response.StatusCode)
 	}
 
-	request, err = http.NewRequest(http.MethodPost, server.URL+"/auth/login", strings.NewReader("username=admin&password=password&csrf_token="+csrfToken))
+	request, err = http.NewRequest(http.MethodPost, server.URL+"/auth/login", strings.NewReader("username=admin&password=password-1234&csrf_token="+csrfToken))
 	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	request.AddCookie(csrfCookie)
 	response, err = client.Do(request)
@@ -1134,7 +1134,7 @@ func TestAuthenticatedHandlerRateLimitsLoginAttempts(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer store.Close()
-	if _, err := store.CreateUser("admin", "password"); err != nil {
+	if _, err := store.CreateUser("admin", "password-1234"); err != nil {
 		t.Fatal(err)
 	}
 	service := application.NewServiceWithOperator(store, cache.NewFileCache(t.TempDir()), sourceStub{}, rss.FilterWithOperator)
@@ -1226,7 +1226,7 @@ func TestVersionedAuthEndpointsUseStableJSONErrors(t *testing.T) {
 		contentType string
 	}{
 		{name: "malformed JSON", path: "/api/v1/auth/login", body: `{"username":`, status: http.StatusBadRequest, code: "invalid_json"},
-		{name: "unknown field", path: "/api/v1/auth/login", body: `{"username":"admin","password":"password","extra":true}`, status: http.StatusBadRequest, code: "unknown_field"},
+		{name: "unknown field", path: "/api/v1/auth/login", body: `{"username":"admin","password":"password-1234","extra":true}`, status: http.StatusBadRequest, code: "unknown_field"},
 		{name: "invalid credentials", path: "/api/v1/auth/login", body: `{"username":"admin","password":"wrong"}`, status: http.StatusUnauthorized, code: "invalid_credentials"},
 		{name: "validation", path: "/api/v1/auth/register", body: `{"username":"","password":""}`, status: http.StatusBadRequest, code: "validation_error"},
 		{name: "unsupported content type", path: "/api/v1/auth/register", body: "username=new-user&password=new-password", status: http.StatusBadRequest, code: "unsupported_media_type", contentType: "application/x-www-form-urlencoded"},
@@ -1524,7 +1524,7 @@ func TestVersionedSplitReturnsErrorAfterRollback(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer store.Close()
-	owner, err := store.CreateUser("admin", "password")
+	owner, err := store.CreateUser("admin", "password-1234")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1534,7 +1534,7 @@ func TestVersionedSplitReturnsErrorAfterRollback(t *testing.T) {
 	}
 	cache := &failingMutationCache{data: make(map[string][]byte), failOnWrite: 2}
 	service := application.NewServiceWithOperator(store, cache, sourceStub{}, rss.FilterWithOperator)
-	token, _, err := auth.IssueToken("admin", "password")
+	token, _, err := auth.IssueToken("admin", "password-1234")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1561,7 +1561,7 @@ func TestVersionedCreateIdempotencyReleasesKeyAfterFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer store.Close()
-	if _, err := store.CreateUser("admin", "password"); err != nil {
+	if _, err := store.CreateUser("admin", "password-1234"); err != nil {
 		t.Fatal(err)
 	}
 	auth, err := httpapi.NewAuthenticator(httpapi.AuthConfig{UserStore: store})
@@ -1570,7 +1570,7 @@ func TestVersionedCreateIdempotencyReleasesKeyAfterFailure(t *testing.T) {
 	}
 	cache := &failingMutationCache{data: make(map[string][]byte), failOnWrite: 1}
 	service := application.NewServiceWithOperator(store, cache, sourceStub{}, rss.FilterWithOperator)
-	token, _, err := auth.IssueToken("admin", "password")
+	token, _, err := auth.IssueToken("admin", "password-1234")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1890,7 +1890,7 @@ func TestVersionedPreviewRejectsOversizedBody(t *testing.T) {
 func TestVersionedJSONPostEndpointsRejectOversizedBodiesWithStableErrors(t *testing.T) {
 	server, _ := newAuthenticatedServer(t)
 	token := loginToken(t, server)
-	authBody := `{"username":"admin","password":"password"}` + strings.Repeat(" ", 16<<10)
+	authBody := `{"username":"admin","password":"password-1234"}` + strings.Repeat(" ", 16<<10)
 	jsonBody := `{"name":"Foo","source_url":"https://example.test/rss","keyword":"foo"}` + strings.Repeat(" ", 1<<20)
 	previewBody := `{"source_url":"https://example.test/rss","outputs":[{"name":"Foo","keyword":"foo"}]}` + strings.Repeat(" ", 1<<20)
 	tests := []struct {

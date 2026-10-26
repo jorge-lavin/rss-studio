@@ -59,7 +59,7 @@ func newTestHandler(t *testing.T) (http.Handler, domain.User) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { store.Close() })
-	owner, err := store.CreateUser("admin", "password")
+	owner, err := store.CreateUser("admin", "password-1234")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -74,7 +74,7 @@ func newAuthenticatedMCPHandler(t *testing.T, quotas application.QuotaConfig, sc
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { store.Close() })
-	owner, err := store.CreateUser("admin", "password")
+	owner, err := store.CreateUser("admin", "password-1234")
 	if err != nil {
 		t.Fatal(err)
 	}

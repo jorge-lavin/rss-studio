@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"golang.org/x/crypto/bcrypt"
+
 	"rss-studio/internal/domain"
 	"rss-studio/internal/policy"
 )
@@ -50,10 +52,10 @@ func TestSQLiteStoreMigratesAndPersistsMultipleUsers(t *testing.T) {
 	if _, err := store.Authenticate("admin", "new password"); !errors.Is(err, ErrInvalidCredential) {
 		t.Fatalf("expected replacement password to be rejected, got %v", err)
 	}
-	if _, err := store.Authenticate("missing", "password"); !errors.Is(err, ErrInvalidCredential) {
+	if _, err := store.Authenticate("missing", "password-1234"); !errors.Is(err, ErrInvalidCredential) {
 		t.Fatalf("expected missing user to be rejected, got %v", err)
 	}
-	if _, err := store.CreateUser("", "password"); !errors.Is(err, domain.ErrInvalidUser) {
+	if _, err := store.CreateUser("", "password-1234"); !errors.Is(err, domain.ErrInvalidUser) {
 		t.Fatalf("expected empty username to be rejected, got %v", err)
 	}
 	if err := store.Close(); err != nil {
@@ -81,6 +83,87 @@ func TestSQLiteStoreMigratesAndPersistsMultipleUsers(t *testing.T) {
 	}
 }
 
+func TestSQLiteStoreRejectsInvalidNewPasswords(t *testing.T) {
+	store, err := NewSQLiteStore(filepath.Join(t.TempDir(), "rss-studio.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	tests := []struct {
+		name     string
+		password string
+	}{
+		{name: "empty", password: ""},
+		{name: "short", password: strings.Repeat("a", minimumPasswordRunes-1)},
+		{name: "invalid UTF-8", password: string([]byte{'a', 0xff, 'b'})},
+		{name: "over bcrypt byte capacity", password: strings.Repeat("a", bcryptMaxPasswordBytes+1)},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := store.CreateUser(test.name, test.password)
+			if !errors.Is(err, domain.ErrInvalidUser) {
+				t.Fatalf("expected invalid user error, got %v", err)
+			}
+			if test.password != "" && err.Error() != "invalid user: password policy" {
+				t.Fatalf("expected generic password policy error, got %q", err)
+			}
+		})
+	}
+}
+
+func TestSQLiteStoreAcceptsUnicodeAndLongPasswords(t *testing.T) {
+	store, err := NewSQLiteStore(filepath.Join(t.TempDir(), "rss-studio.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	passwords := []struct {
+		username string
+		password string
+	}{
+		{username: "unicode", password: strings.Repeat("界", minimumPasswordRunes)},
+		{username: "long", password: strings.Repeat("a", bcryptMaxPasswordBytes)},
+	}
+	for _, test := range passwords {
+		user, err := store.CreateUser(test.username, test.password)
+		if err != nil {
+			t.Fatalf("create %s user: %v", test.username, err)
+		}
+		if user.PasswordHash == test.password || strings.Contains(user.PasswordHash, test.password) {
+			t.Fatalf("plaintext password was stored for %s user", test.username)
+		}
+		if _, err := store.Authenticate(test.username, test.password); err != nil {
+			t.Fatalf("authenticate %s user: %v", test.username, err)
+		}
+	}
+}
+
+func TestSQLiteStoreAuthenticatesLegacyShortPassword(t *testing.T) {
+	store, err := NewSQLiteStore(filepath.Join(t.TempDir(), "rss-studio.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	legacyPassword := "short"
+	hash, err := bcrypt.GenerateFromPassword([]byte(legacyPassword), bcrypt.DefaultCost)
+	if err != nil {
+		t.Fatal(err)
+	}
+	createdAt := time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC).Format(time.RFC3339Nano)
+	if _, err := store.db.Exec(
+		"INSERT INTO users (username, password_hash, created_at) VALUES (?, ?, ?)",
+		"legacy", string(hash), createdAt,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Authenticate("legacy", legacyPassword); err != nil {
+		t.Fatalf("legacy short password was rejected: %v", err)
+	}
+}
+
 func TestSQLiteStoreScopesFeedsByUserAndPersistsPath(t *testing.T) {
 	store, err := NewSQLiteStore(filepath.Join(t.TempDir(), "rss-studio.db"))
 	if err != nil {
@@ -88,7 +171,7 @@ func TestSQLiteStoreScopesFeedsByUserAndPersistsPath(t *testing.T) {
 	}
 	defer store.Close()
 	for _, username := range []string{"alice", "bob"} {
-		if _, err := store.CreateUser(username, "password"); err != nil {
+		if _, err := store.CreateUser(username, "password-1234"); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -171,7 +254,7 @@ func TestSQLiteStoreImportsAndRemovesLegacyFeedStore(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer store.Close()
-	if _, err := store.CreateUser("admin", "password"); err != nil {
+	if _, err := store.CreateUser("admin", "password-1234"); err != nil {
 		t.Fatal(err)
 	}
 	owner, err := store.User("admin")
@@ -205,10 +288,10 @@ func TestSQLiteStoreServiceTokensAreHashedScopedExpiringAndRevocable(t *testing.
 		t.Fatal(err)
 	}
 	defer store.Close()
-	if _, err := store.CreateUser("alice", "password"); err != nil {
+	if _, err := store.CreateUser("alice", "password-1234"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.CreateUser("bob", "password"); err != nil {
+	if _, err := store.CreateUser("bob", "password-1234"); err != nil {
 		t.Fatal(err)
 	}
 	alice, err := store.User("alice")
@@ -285,7 +368,7 @@ func TestSQLiteStoreCleansTerminalServiceTokensAfterRetention(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = store.Close() })
-	owner, err := store.CreateUser("alice", "password")
+	owner, err := store.CreateUser("alice", "password-1234")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -348,7 +431,7 @@ func TestSQLiteStoreUpgradePreservesUsersAndFeeds(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	owner, err := store.CreateUser("alice", "password")
+	owner, err := store.CreateUser("alice", "password-1234")
 	if err != nil {
 		store.Close()
 		t.Fatal(err)
@@ -383,7 +466,7 @@ func TestSQLiteStoreUpgradePreservesUsersAndFeeds(t *testing.T) {
 	if err != nil || version != 8 {
 		t.Fatalf("unexpected upgraded schema version: version=%d err=%v", version, err)
 	}
-	if _, err := upgraded.Authenticate("alice", "password"); err != nil {
+	if _, err := upgraded.Authenticate("alice", "password-1234"); err != nil {
 		t.Fatalf("existing user was not preserved: %v", err)
 	}
 	feeds, err := upgraded.List(owner)
@@ -405,7 +488,7 @@ func TestSQLiteStoreReclaimsExpiredIdempotencyClaim(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer store.Close()
-	owner, err := store.CreateUser("alice", "password")
+	owner, err := store.CreateUser("alice", "password-1234")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -451,7 +534,7 @@ func TestSQLiteStoreDoesNotReclaimExpiredPendingIdempotencyClaim(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer store.Close()
-	owner, err := store.CreateUser("alice", "password")
+	owner, err := store.CreateUser("alice", "password-1234")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -483,11 +566,11 @@ func TestSQLiteStoreQuotaBucketsResetRefundAndIsolateAccounts(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer store.Close()
-	alice, err := store.CreateUser("alice", "password")
+	alice, err := store.CreateUser("alice", "password-1234")
 	if err != nil {
 		t.Fatal(err)
 	}
-	bob, err := store.CreateUser("bob", "password")
+	bob, err := store.CreateUser("bob", "password-1234")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -538,7 +621,7 @@ func TestSQLiteStoreQuotaConcurrentReservationsAreAtomic(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer store.Close()
-	owner, err := store.CreateUser("alice", "password")
+	owner, err := store.CreateUser("alice", "password-1234")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -587,7 +670,7 @@ func TestSQLiteStoreBoundsBrowserSessionsWithoutTouchingServiceTokens(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	owner, err := store.CreateUser("alice", "password")
+	owner, err := store.CreateUser("alice", "password-1234")
 	if err != nil {
 		store.Close()
 		t.Fatal(err)
@@ -636,7 +719,7 @@ func TestSQLiteStoreCleansOnlyTerminalBrowserSessions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	owner, err := store.CreateUser("alice", "password")
+	owner, err := store.CreateUser("alice", "password-1234")
 	if err != nil {
 		store.Close()
 		t.Fatal(err)

@@ -20,7 +20,7 @@ func testAuthenticator(t *testing.T) *Authenticator {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = store.Close() })
-	if _, err := store.CreateUser("admin", "password"); err != nil {
+	if _, err := store.CreateUser("admin", "password-1234"); err != nil {
 		t.Fatal(err)
 	}
 	auth, err := NewAuthenticator(AuthConfig{
@@ -55,7 +55,7 @@ func (authStoreStub) Authenticate(username, password string) (domain.User, error
 func TestAuthenticatorIssuesAndValidatesToken(t *testing.T) {
 	auth := testAuthenticator(t)
 	started := time.Now().UTC()
-	token, expires, err := auth.IssueToken("admin", "password")
+	token, expires, err := auth.IssueToken("admin", "password-1234")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -141,7 +141,7 @@ func TestAuthenticatorExposesServiceTokenIdentityAndScopes(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer store.Close()
-	owner, err := store.CreateUser("admin", "password")
+	owner, err := store.CreateUser("admin", "password-1234")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -185,9 +185,21 @@ func TestAuthenticatorRegistersUsersInPersistentStore(t *testing.T) {
 	}
 }
 
+func TestAuthenticatorRegistrationReturnsGenericPasswordPolicyError(t *testing.T) {
+	auth := testAuthenticator(t)
+	password := "too-short"
+	err := auth.Register("new-user", password)
+	if !errors.Is(err, domain.ErrInvalidUser) {
+		t.Fatalf("expected invalid user error, got %v", err)
+	}
+	if strings.Contains(err.Error(), password) {
+		t.Fatalf("password was exposed in registration error: %q", err)
+	}
+}
+
 func TestAuthenticatorRejectsInvalidTokens(t *testing.T) {
 	auth := testAuthenticator(t)
-	token, _, err := auth.IssueToken("admin", "password")
+	token, _, err := auth.IssueToken("admin", "password-1234")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -230,7 +242,7 @@ func TestAuthenticatorKeepsBrowserSessionsSeparateFromServiceTokens(t *testing.T
 		t.Fatal(err)
 	}
 	defer store.Close()
-	owner, err := store.CreateUser("admin", "password")
+	owner, err := store.CreateUser("admin", "password-1234")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -238,11 +250,11 @@ func TestAuthenticatorKeepsBrowserSessionsSeparateFromServiceTokens(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	serviceToken, _, err := auth.IssueToken("admin", "password")
+	serviceToken, _, err := auth.IssueToken("admin", "password-1234")
 	if err != nil {
 		t.Fatal(err)
 	}
-	browserToken, _, err := auth.IssueBrowserToken("admin", "password")
+	browserToken, _, err := auth.IssueBrowserToken("admin", "password-1234")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -22,7 +22,7 @@ func TestVersionedAPIQuotaResponseIsStableAndValidationDoesNotConsume(t *testing
 		t.Fatal(err)
 	}
 	defer store.Close()
-	if _, err := store.CreateUser("admin", "password"); err != nil {
+	if _, err := store.CreateUser("admin", "password-1234"); err != nil {
 		t.Fatal(err)
 	}
 	auth, err := httpapi.NewAuthenticator(httpapi.AuthConfig{

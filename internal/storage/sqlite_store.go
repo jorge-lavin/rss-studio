@@ -17,6 +17,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"golang.org/x/crypto/bcrypt"
 	_ "modernc.org/sqlite"
@@ -47,6 +48,8 @@ const (
 	// rows per user, preferring active rows. Cleanup only touches browser_sessions.
 	browserSessionRetention = 30 * 24 * time.Hour
 	maxBrowserSessions      = 10
+	minimumPasswordRunes    = 12
+	bcryptMaxPasswordBytes  = 72
 )
 
 type IdempotencyClaim = idempotency.Claim
@@ -673,6 +676,9 @@ func (s *SQLiteStore) CreateUser(username, password string) (domain.User, error)
 	username = strings.TrimSpace(username)
 	if username == "" || password == "" {
 		return domain.User{}, fmt.Errorf("%w: username and password are required", domain.ErrInvalidUser)
+	}
+	if !utf8.ValidString(password) || utf8.RuneCountInString(password) < minimumPasswordRunes || len(password) > bcryptMaxPasswordBytes {
+		return domain.User{}, fmt.Errorf("%w: password policy", domain.ErrInvalidUser)
 	}
 	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
 	if err != nil {

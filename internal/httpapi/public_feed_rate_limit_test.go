@@ -47,7 +47,7 @@ func newPublicFeedFixture(t *testing.T, now func() time.Time) *publicFeedFixture
 	if err != nil {
 		t.Fatal(err)
 	}
-	owner, err := store.CreateUser("admin", "password")
+	owner, err := store.CreateUser("admin", "password-1234")
 	if err != nil {
 		store.Close()
 		t.Fatal(err)
