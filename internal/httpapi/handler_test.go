@@ -418,8 +418,8 @@ func TestHomeRendersSplitFeedWorkflow(t *testing.T) {
 		`id="split-status"`,
 		`role="status"`,
 		`aria-live="polite"`,
-		`"/preview"`,
-		`"/feeds/split"`,
+		`"/api/v1/feeds/preview"`,
+		`"/api/v1/feeds/split"`,
 		`credentials: "same-origin"`,
 	} {
 		if !strings.Contains(page, marker) {

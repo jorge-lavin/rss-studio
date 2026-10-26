@@ -1270,7 +1270,7 @@ var homeTemplate = template.Must(template.New("home").Parse(`<!doctype html>
         <span class="text-xs font-medium uppercase tracking-wider text-slate-400">New feed</span>
       </div>
       {{if .Error}}<div class="mb-6 flex items-start gap-3 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700 dark:border-rose-800 dark:bg-rose-950/50 dark:text-rose-300" role="alert"><span class="mt-0.5 font-bold">!</span><p>{{.Error}}</p></div>{{end}}
-      <form method="post" action="/feeds" class="grid gap-5 lg:grid-cols-[1fr_1.4fr_0.8fr_0.8fr_auto] lg:items-end">
+      <form id="create-feed-form" method="post" action="/feeds" class="grid gap-5 lg:grid-cols-[1fr_1.4fr_0.8fr_0.8fr_auto] lg:items-end">
         <div>
           <label for="name" class="mb-2 block text-sm font-medium text-slate-700 dark:text-slate-300">Feed name</label>
           <input id="name" name="name" maxlength="120" placeholder="My tech episodes" required class="block w-full rounded-lg border border-slate-300 bg-white px-3.5 py-3 text-sm text-slate-900 shadow-sm outline-none transition placeholder:text-slate-400 focus:border-violet-600 focus:ring-4 focus:ring-violet-600/10 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 dark:placeholder:text-slate-500">
@@ -1294,6 +1294,7 @@ var homeTemplate = template.Must(template.New("home").Parse(`<!doctype html>
         </div>
         <button type="submit" class="inline-flex min-h-[46px] items-center justify-center gap-2 rounded-lg bg-violet-600 px-5 py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-violet-700 focus:outline-none focus:ring-4 focus:ring-violet-600/20 lg:mb-0">Publish feed <span aria-hidden="true">→</span></button>
       </form>
+      <div id="create-status" role="status" aria-live="polite" aria-atomic="true" class="mt-4 text-sm text-slate-600 dark:text-slate-300"></div>
     </section>
 
     <section class="mt-8 rounded-2xl bg-white p-6 shadow-xl shadow-slate-900/5 ring-1 ring-slate-200 dark:bg-slate-900 dark:ring-slate-800 sm:p-8" aria-labelledby="split-heading">
@@ -1373,18 +1374,19 @@ var homeTemplate = template.Must(template.New("home").Parse(`<!doctype html>
           <h2 class="text-xl font-semibold tracking-tight">Published feeds</h2>
           <p class="mt-1 text-sm text-slate-500 dark:text-slate-400">Ready to add to any RSS reader.</p>
         </div>
-        <span class="rounded-full bg-slate-200 px-3 py-1 text-sm font-medium text-slate-600 dark:bg-slate-800 dark:text-slate-300">{{len .Feeds}}</span>
+         <span id="published-feed-count" class="rounded-full bg-slate-200 px-3 py-1 text-sm font-medium text-slate-600 dark:bg-slate-800 dark:text-slate-300">{{len .Feeds}}</span>
       </div>
-      {{if not .Feeds}}
-      <div class="rounded-2xl border border-dashed border-slate-300 bg-white px-6 py-14 text-center dark:border-slate-700 dark:bg-slate-900">
+       <div id="published-feed-content">
+       {{if not .Feeds}}
+       <div data-feed-empty class="rounded-2xl border border-dashed border-slate-300 bg-white px-6 py-14 text-center dark:border-slate-700 dark:bg-slate-900">
         <div class="mx-auto flex h-11 w-11 items-center justify-center rounded-full bg-violet-50 text-xl text-violet-600 dark:bg-violet-950 dark:text-violet-300">＋</div>
         <h3 class="mt-4 text-sm font-semibold text-slate-900 dark:text-slate-100">No filtered feeds yet</h3>
         <p class="mt-1 text-sm text-slate-500 dark:text-slate-400">Create your first one above.</p>
       </div>
       {{else}}
-      <div class="space-y-3">
-        {{range .Feeds}}
-        <article class="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900 sm:p-6">
+       <div data-feed-items class="space-y-3">
+       {{range .Feeds}}
+       <article data-feed-card data-feed-path="{{.Path}}" class="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900 sm:p-6">
           <div class="flex flex-col gap-5 lg:flex-row lg:items-center lg:justify-between">
             <div class="min-w-0">
               <div class="flex flex-wrap items-center gap-3">
@@ -1396,18 +1398,155 @@ var homeTemplate = template.Must(template.New("home").Parse(`<!doctype html>
             </div>
             <div class="flex shrink-0 items-center gap-4 border-t border-slate-100 pt-4 dark:border-slate-800 lg:border-0 lg:pt-0">
               <a href="/feeds/{{.Path}}.xml" class="text-sm font-semibold text-slate-700 hover:text-slate-950 dark:text-slate-300 dark:hover:text-slate-100">Open feed <span aria-hidden="true">↗</span></a>
-              <form method="post" action="/feeds/{{.Path}}/delete"><button class="text-sm font-medium text-rose-600 hover:text-rose-700 dark:text-rose-400 dark:hover:text-rose-300" type="submit">Delete</button></form>
+               <form data-feed-delete method="post" action="/feeds/{{.Path}}/delete"><button class="text-sm font-medium text-rose-600 hover:text-rose-700 dark:text-rose-400 dark:hover:text-rose-300" type="submit">Delete</button></form>
             </div>
           </div>
         </article>
-        {{end}}
-      </div>
-      {{end}}
-    </section>
+       {{end}}
+       </div>
+       {{end}}
+       </div>
+       <template id="feed-card-template">
+         <article data-feed-card class="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900 sm:p-6">
+           <div class="flex flex-col gap-5 lg:flex-row lg:items-center lg:justify-between">
+             <div class="min-w-0">
+               <div class="flex flex-wrap items-center gap-3">
+                 <h3 data-feed-name class="text-base font-semibold text-slate-900 dark:text-slate-100"></h3>
+                 <span data-feed-filter class="rounded-full bg-violet-50 px-2.5 py-1 text-xs font-medium text-violet-700 dark:bg-violet-950 dark:text-violet-300"></span>
+               </div>
+               <p data-feed-source class="mt-2 truncate text-sm text-slate-500 dark:text-slate-400"></p>
+               <a data-feed-url class="mt-3 block truncate text-sm font-medium text-violet-600 hover:text-violet-700 hover:underline dark:text-violet-400 dark:hover:text-violet-300"></a>
+             </div>
+             <div class="flex shrink-0 items-center gap-4 border-t border-slate-100 pt-4 dark:border-slate-800 lg:border-0 lg:pt-0">
+               <a data-feed-open class="text-sm font-semibold text-slate-700 hover:text-slate-950 dark:text-slate-300 dark:hover:text-slate-100">Open feed <span aria-hidden="true">↗</span></a>
+               <form data-feed-delete method="post"><button class="text-sm font-medium text-rose-600 hover:text-rose-700 dark:text-rose-400 dark:hover:text-rose-300" type="submit">Delete</button></form>
+             </div>
+           </div>
+         </article>
+       </template>
+     </section>
   </main>
 
   <footer class="mx-auto max-w-6xl px-5 pb-8 text-xs text-slate-400 sm:px-8">RSS Studio · Version {{.Version}}</footer>
 </div>
+<script>
+  (() => {
+    window.rssStudioRequest = async (endpoint, options = {}) => {
+      const headers = { ...(options.headers || {}), Accept: "application/json" };
+      if (options.body) headers["Content-Type"] = "application/json";
+      const response = await fetch(endpoint, { ...options, credentials: "same-origin", headers });
+      const data = await response.json().catch(() => null);
+      if (!response.ok) {
+        const message = data && data.error && typeof data.error.message === "string"
+          ? data.error.message
+          : "Request failed (HTTP " + response.status + ").";
+        throw new Error(message);
+      }
+      return data;
+    };
+  })();
+</script>
+<script>
+  (() => {
+    const form = document.getElementById("create-feed-form");
+    const content = document.getElementById("published-feed-content");
+    const cardTemplate = document.getElementById("feed-card-template");
+    const count = document.getElementById("published-feed-count");
+    const status = document.getElementById("create-status");
+    if (!form || !content || !cardTemplate || !status) return;
+
+    const setStatus = (message, error = false) => {
+      status.textContent = message;
+      status.classList.toggle("text-rose-700", error);
+      status.classList.toggle("dark:text-rose-300", error);
+    };
+    const updateCount = () => {
+      if (count) count.textContent = String(content.querySelectorAll("[data-feed-card]").length);
+    };
+    const feedPath = (path) => String(path || "").replace(/^\/feeds\//, "").replace(/\.xml$/, "");
+    const renderCard = (feed) => {
+      const fragment = cardTemplate.content.cloneNode(true);
+      const card = fragment.querySelector("[data-feed-card]");
+      const path = feedPath(feed.path);
+      const url = typeof feed.url === "string" ? feed.url : "/feeds/" + path + ".xml";
+      const labels = { contains: "Contains", starts_with: "Starts with", ends_with: "Ends with", equals: "Equals" };
+      card.dataset.feedPath = path;
+      card.querySelector("[data-feed-name]").textContent = feed.name || "Unnamed feed";
+      card.querySelector("[data-feed-filter]").textContent = (labels[feed.operator] || feed.operator || "Contains") + " “" + (feed.keyword || "") + "”";
+      const source = card.querySelector("[data-feed-source]");
+      source.textContent = "Source: " + (feed.source_url || "");
+      source.title = feed.source_url || "";
+      for (const link of [card.querySelector("[data-feed-url]"), card.querySelector("[data-feed-open]")]) {
+        link.href = url;
+      }
+      card.querySelector("[data-feed-url]").textContent = url;
+      card.querySelector("[data-feed-url]").title = url;
+      return fragment;
+    };
+    const appendCard = (feed) => {
+      let items = content.querySelector("[data-feed-items]");
+      if (!items) {
+        content.replaceChildren();
+        items = document.createElement("div");
+        items.dataset.feedItems = "";
+        items.className = "space-y-3";
+        content.appendChild(items);
+      }
+      items.appendChild(renderCard(feed));
+      updateCount();
+    };
+    const showEmpty = () => {
+      if (content.querySelector("[data-feed-card]")) return;
+      content.innerHTML = '<div data-feed-empty class="rounded-2xl border border-dashed border-slate-300 bg-white px-6 py-14 text-center dark:border-slate-700 dark:bg-slate-900"><div class="mx-auto flex h-11 w-11 items-center justify-center rounded-full bg-violet-50 text-xl text-violet-600 dark:bg-violet-950 dark:text-violet-300">＋</div><h3 class="mt-4 text-sm font-semibold text-slate-900 dark:text-slate-100">No filtered feeds yet</h3><p class="mt-1 text-sm text-slate-500 dark:text-slate-400">Create your first one above.</p></div>';
+    };
+
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      if (!form.reportValidity()) return;
+      const button = form.querySelector("button[type=submit]");
+      button.disabled = true;
+      setStatus("Publishing feed...");
+      try {
+        const data = await window.rssStudioRequest("/api/v1/feeds", {
+          method: "POST",
+          body: JSON.stringify({
+            name: form.elements.name.value.trim(),
+            source_url: form.elements.source_url.value.trim(),
+            operator: form.elements.operator.value,
+            keyword: form.elements.keyword.value.trim()
+          })
+        });
+        appendCard(data);
+        form.reset();
+        setStatus("Feed published without reloading the page.");
+      } catch (error) {
+        setStatus(error instanceof Error ? error.message : "Request failed.", true);
+      } finally {
+        button.disabled = false;
+      }
+    });
+
+    content.addEventListener("submit", async (event) => {
+      const deleteForm = event.target.closest("[data-feed-delete]");
+      if (!deleteForm) return;
+      event.preventDefault();
+      const card = deleteForm.closest("[data-feed-card]");
+      const button = deleteForm.querySelector("button");
+      button.disabled = true;
+      setStatus("Deleting feed...");
+      try {
+        await window.rssStudioRequest("/api/v1/feeds/" + encodeURIComponent(card.dataset.feedPath), { method: "DELETE" });
+        card.remove();
+        showEmpty();
+        updateCount();
+        setStatus("Feed deleted without reloading the page.");
+      } catch (error) {
+        button.disabled = false;
+        setStatus(error instanceof Error ? error.message : "Request failed.", true);
+      }
+    });
+  })();
+</script>
 <script>
   (() => {
     const root = document.documentElement;
@@ -1556,17 +1695,10 @@ var homeTemplate = template.Must(template.New("home").Parse(`<!doctype html>
       setBusy(true);
       showMessage(message, false);
       try {
-        const response = await fetch(endpoint, {
-          method: "POST",
-          credentials: "same-origin",
-          headers: { "Content-Type": "application/json", "Accept": "application/json" },
-          body: JSON.stringify(payload())
-        });
-        const data = await response.json().catch(() => null);
-        if (!response.ok) {
-          const message = data && typeof data.error === "string" && data.error ? data.error : "Request failed (HTTP " + response.status + ").";
-          throw new Error(message);
-        }
+         const data = await window.rssStudioRequest(endpoint, {
+           method: "POST",
+           body: JSON.stringify(payload())
+         });
         render(data);
       } catch (error) {
         showMessage(error instanceof Error ? error.message : "Request failed.", true);
@@ -1585,10 +1717,10 @@ var homeTemplate = template.Must(template.New("home").Parse(`<!doctype html>
     outputs.addEventListener("input", (event) => {
       if (event.target instanceof Element && event.target.matches("[data-output-name]")) updateRemoveButtons();
     });
-    previewButton.addEventListener("click", () => send("/preview", "Loading preview...", renderPreview));
+     previewButton.addEventListener("click", () => send("/api/v1/feeds/preview", "Loading preview...", renderPreview));
     form.addEventListener("submit", (event) => {
       event.preventDefault();
-      send("/feeds/split", "Publishing split feeds...", renderPublished);
+       send("/api/v1/feeds/split", "Publishing split feeds...", renderPublished);
     });
     updateRemoveButtons();
   })();
