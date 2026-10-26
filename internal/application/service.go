@@ -556,10 +556,6 @@ func withRollbackError(operationErr, rollbackErr error) error {
 	return errors.Join(operationErr, fmt.Errorf("split rollback failed: %w", rollbackErr))
 }
 
-func (s *Service) DeleteFeed(owner domain.User, path string) error {
-	return s.DeleteFeedContext(context.Background(), owner, path)
-}
-
 // DeleteFeedContext is the context-aware form used by HTTP and other
 // adapters so audit identity and request tracing reach the shared service.
 func (s *Service) DeleteFeedContext(ctx context.Context, owner domain.User, path string) (err error) {

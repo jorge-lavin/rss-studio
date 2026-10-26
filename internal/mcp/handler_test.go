@@ -34,10 +34,6 @@ type authenticatorStub struct {
 	err  error
 }
 
-func (a authenticatorStub) UserFromRequest(*http.Request) (domain.User, error) {
-	return a.user, a.err
-}
-
 func (a authenticatorStub) IdentityFromRequest(*http.Request) (policy.Identity, error) {
 	return policy.Identity{
 		User:           a.user,
