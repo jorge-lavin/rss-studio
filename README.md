@@ -70,6 +70,7 @@ Generated feeds are precomputed on disk. Requests return cached XML immediately,
 ## Public contract and versioned API
 
 The supported public management contract is [`docs/openapi.yaml`](docs/openapi.yaml).
+Completed documentation handoffs are recorded in [`docs/handoff-status.md`](docs/handoff-status.md).
 All versioned API requests and responses use JSON. Unknown request fields are
 rejected. API errors never redirect to the browser UI.
 

@@ -8,7 +8,19 @@ info:
     scope required by that operation. Generated RSS documents are public and
     are returned from `/feeds/{path}.xml`; new paths use opaque cryptographic
     hashes and exclude feed names. Delivery remains unauthenticated but
-    is limited to an aggregate 60 requests per feed URL per one-minute window.
+    is limited to an aggregate 60 requests per feed URL per one-minute fixed
+    window, shared by all readers of that URL.
+
+    Token-management endpoints require the `tokens:manage` scope. Feed
+    create and split mutations accept optional idempotency keys, and account quotas cover
+    published feeds, daily previews, daily creations, daily split operations,
+    and concurrent expensive operations. Feed responses expose `status` as
+    `ready` or `refreshing` while background source refresh runs.
+
+    RSS Studio also exposes a separate `POST /mcp` Streamable HTTP JSON-RPC
+    endpoint. It accepts expiring service tokens only and applies the same
+    scopes, operation limits, quotas, and mutation idempotency rules; see the
+    README for protocol versions and tool schemas.
   version: v1
   license:
     name: See repository license
