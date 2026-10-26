@@ -51,6 +51,26 @@ buckets only; it does not remove feeds or reset existing authentication data.
 Do not remove the idempotency or quota tables from a live database; that would
 discard retry protection or quota state and is not a supported rollback.
 
+Before upgrading, stop the service or take a consistent backup of the
+`rss-studio-data` volume, including `/data/rss-studio.db`. Start the new image
+with that same volume; migrations run automatically, and existing accounts,
+feed definitions, generated-feed cache files, and public feed paths remain in
+place. Verify that users can sign in again and that one known public feed still
+loads before removing the backup.
+
+Existing browser JWT sessions are not compatible with this release; users must
+sign in again after upgrading. Browser
+and API credential login intentionally issue a full-scope service token named
+`login` so existing browser and management routes continue to work. Use a
+separately created token with only required scopes for integrations. Revoking a
+token invalidates it immediately; browser logout clears its cookie but does not
+revoke the server-side token, so revoke it when immediate invalidation is needed.
+
+Expired and revoked service-token rows are retained for 30 days after their
+terminal time for metadata/audit visibility. Startup and token issuance delete
+older terminal rows; valid tokens are never removed by this cleanup. This is
+automatic and requires no operator job.
+
 To run the published image instead:
 
 ```sh
@@ -478,7 +498,10 @@ if none exists, deployment stops before changing production.
 For manual recovery, use an existing immutable release image. Before starting,
 confirm the target release exists in GHCR, the deployment secrets are
 configured, and no migration or other release-specific action is required.
-Existing service tokens remain in the `rss-studio-data` volume.
+Existing service tokens remain in the `rss-studio-data` volume. A release older
+than the scoped-token migration cannot open its migrated database; restore the
+pre-migration database backup before rolling back across that boundary. Do not
+delete the service-token table from a live database.
 
 In Forgejo, run **Roll back production** from `main`, enter an exact version such as
 `0.1.0` or `0.2.0` without the `v` prefix, and start the workflow. It rejects

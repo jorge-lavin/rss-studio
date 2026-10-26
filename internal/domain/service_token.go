@@ -26,7 +26,8 @@ var serviceTokenScopes = []string{
 }
 
 // AllServiceTokenScopes returns a fresh list suitable for issuing a fully
-// privileged bootstrap token.
+// privileged login or bootstrap token. Integrations should request only the
+// scopes they need.
 func AllServiceTokenScopes() []string {
 	return append([]string(nil), serviceTokenScopes...)
 }

@@ -37,9 +37,10 @@ var (
 )
 
 const (
-	idempotencyPending = "pending"
-	idempotencyDone    = "done"
-	idempotencyTTL     = 24 * time.Hour
+	idempotencyPending    = "pending"
+	idempotencyDone       = "done"
+	idempotencyTTL        = 24 * time.Hour
+	serviceTokenRetention = 30 * 24 * time.Hour
 )
 
 type IdempotencyClaim = idempotency.Claim
@@ -96,6 +97,9 @@ func NewSQLiteStore(path string) (*SQLiteStore, error) {
 	store := &SQLiteStore{db: db}
 	if err := store.Migrate(); err != nil {
 		return nil, err
+	}
+	if err := store.cleanupServiceTokens(time.Now().UTC()); err != nil {
+		return nil, fmt.Errorf("cleanup service tokens: %w", err)
 	}
 	closeOnError = false
 	return store, nil
@@ -693,18 +697,22 @@ func (s *SQLiteStore) CreateServiceToken(owner domain.User, name string, scopes 
 		return domain.ServiceToken{}, "", err
 	}
 	name = strings.TrimSpace(name)
-	if name == "" || len(name) > 100 || expiresAt.IsZero() || !expiresAt.After(time.Now()) {
+	now := time.Now().UTC()
+	if name == "" || len(name) > 100 || expiresAt.IsZero() || !expiresAt.After(now) {
 		return domain.ServiceToken{}, "", ErrInvalidServiceToken
 	}
 	scopes, err = domain.ParseServiceTokenScopes(scopes)
 	if err != nil {
 		return domain.ServiceToken{}, "", err
 	}
+	if err := s.cleanupServiceTokens(now); err != nil {
+		return domain.ServiceToken{}, "", fmt.Errorf("cleanup service tokens: %w", err)
+	}
 	raw, hash, err := newServiceToken()
 	if err != nil {
 		return domain.ServiceToken{}, "", fmt.Errorf("generate service token: %w", err)
 	}
-	createdAt := time.Now().UTC()
+	createdAt := now
 	scopesJSON, err := json.Marshal(scopes)
 	if err != nil {
 		return domain.ServiceToken{}, "", fmt.Errorf("encode service token scopes: %w", err)
@@ -724,6 +732,16 @@ func (s *SQLiteStore) CreateServiceToken(owner domain.User, name string, scopes 
 		ID: id, UserID: userID, Username: owner.Username, Name: name, Scopes: scopes,
 		CreatedAt: createdAt, ExpiresAt: expiresAt.UTC(),
 	}, raw, nil
+}
+
+func (s *SQLiteStore) cleanupServiceTokens(now time.Time) error {
+	cutoff := now.UTC().Add(-serviceTokenRetention).Format(time.RFC3339Nano)
+	if _, err := s.db.Exec(`
+		DELETE FROM service_tokens
+		WHERE COALESCE(revoked_at, expires_at) <= ?`, cutoff); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (s *SQLiteStore) ListServiceTokens(owner domain.User) ([]domain.ServiceToken, error) {

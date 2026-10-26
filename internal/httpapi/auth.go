@@ -15,8 +15,9 @@ import (
 )
 
 const (
-	defaultTokenTTL = 24 * time.Hour
-	authCookieName  = "rss_studio_token"
+	defaultTokenTTL       = 24 * time.Hour
+	authCookieName        = "rss_studio_token"
+	loginServiceTokenName = "login"
 )
 
 var (
@@ -91,7 +92,9 @@ func (a *Authenticator) IssueToken(username, password string) (string, time.Time
 	}
 	now := a.now().UTC()
 	expires := now.Add(a.ttl)
-	_, token, err := a.serviceTokens.CreateServiceToken(user, "login", domain.AllServiceTokenScopes(), expires)
+	// Login intentionally preserves the former full-session behavior. Long-lived
+	// integrations should use separately created, narrowly scoped tokens.
+	_, token, err := a.serviceTokens.CreateServiceToken(user, loginServiceTokenName, domain.AllServiceTokenScopes(), expires)
 	if err != nil {
 		return "", time.Time{}, err
 	}

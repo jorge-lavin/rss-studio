@@ -137,7 +137,7 @@ func loginTokenAs(t *testing.T, server *httptest.Server, username, password stri
 		t.Fatal(err)
 	}
 	if response.StatusCode != http.StatusOK || login.AccessToken == "" {
-		t.Fatalf("login failed: status=%d token=%q", response.StatusCode, login.AccessToken)
+		t.Fatalf("login failed: status=%d", response.StatusCode)
 	}
 	return login.AccessToken
 }
@@ -316,7 +316,7 @@ func TestServiceTokenManagementReturnsRawTokenOnceAndSupportsRevocation(t *testi
 	}
 	response.Body.Close()
 	if response.StatusCode != http.StatusCreated || created.ID == 0 || created.Token == "" {
-		t.Fatalf("service token creation failed: status=%d response=%#v", response.StatusCode, created)
+		t.Fatalf("service token creation failed: status=%d id=%d", response.StatusCode, created.ID)
 	}
 	if len(created.Scopes) != 2 || created.Scopes[0] != domain.ScopeFeedsRead || created.Scopes[1] != domain.ScopeFeedsWrite {
 		t.Fatalf("scopes were not canonicalized: %#v", created.Scopes)
@@ -337,7 +337,7 @@ func TestServiceTokenManagementReturnsRawTokenOnceAndSupportsRevocation(t *testi
 		t.Fatal(err)
 	}
 	if response.StatusCode != http.StatusOK || strings.Contains(string(body), created.Token) {
-		t.Fatalf("service token list leaked raw token: status=%d body=%s", response.StatusCode, body)
+		t.Fatalf("service token list leaked raw token: status=%d body-bytes=%d", response.StatusCode, len(body))
 	}
 
 	request, err = http.NewRequest(http.MethodGet, server.URL+"/api/v1/feeds", nil)
@@ -467,7 +467,7 @@ func TestAuthenticatedHandlerProtectsManagementAndLeavesFeedsPublic(t *testing.T
 	}
 	response.Body.Close()
 	if response.StatusCode != http.StatusOK || login.AccessToken == "" {
-		t.Fatalf("login failed: status=%d token=%q", response.StatusCode, login.AccessToken)
+		t.Fatalf("login failed: status=%d", response.StatusCode)
 	}
 
 	request, err := http.NewRequest(http.MethodGet, server.URL+"/", nil)

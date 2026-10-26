@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"errors"
+	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
@@ -62,7 +63,7 @@ func TestAuthenticatorIssuesAndValidatesToken(t *testing.T) {
 		t.Fatalf("unexpected expiry: %s", expires)
 	}
 	if strings.Contains(token, ".") {
-		t.Fatalf("service token has signed-token shape: %q", token)
+		t.Fatal("service token has signed-token shape")
 	}
 	if err := auth.ValidateToken(token); err != nil {
 		t.Fatalf("valid token rejected: %v", err)
@@ -70,12 +71,33 @@ func TestAuthenticatorIssuesAndValidatesToken(t *testing.T) {
 
 	request := httptest.NewRequest("GET", "/", nil)
 	request.Header.Set("Authorization", "Bearer "+token)
+	identity, err := auth.IdentityFromRequest(request)
+	if err != nil {
+		t.Fatalf("login token identity rejected: %v", err)
+	}
+	if identity.TokenName != loginServiceTokenName || len(identity.Scopes) != len(domain.AllServiceTokenScopes()) {
+		t.Fatalf("unexpected login token metadata: name=%q scopes=%v", identity.TokenName, identity.Scopes)
+	}
+	for i, scope := range domain.AllServiceTokenScopes() {
+		if identity.Scopes[i] != scope {
+			t.Fatalf("unexpected login token scope at index %d: %q", i, identity.Scopes[i])
+		}
+	}
 	if err := auth.ValidateRequest(request); err != nil {
 		t.Fatalf("valid request rejected: %v", err)
 	}
 	subject, err := auth.Subject(request)
 	if err != nil || subject != "admin" {
 		t.Fatalf("unexpected authenticated subject: %q, %v", subject, err)
+	}
+}
+
+func TestAuthenticatorRejectsLegacyBrowserJWTCookie(t *testing.T) {
+	auth := testAuthenticator(t)
+	request := httptest.NewRequest("GET", "/", nil)
+	request.AddCookie(&http.Cookie{Name: authCookieName, Value: "legacy.browser.session"})
+	if err := auth.ValidateRequest(request); !errors.Is(err, ErrInvalidToken) {
+		t.Fatalf("expected legacy browser session to be rejected, got %v", err)
 	}
 }
 

@@ -278,6 +278,127 @@ func TestSQLiteStoreServiceTokensAreHashedScopedExpiringAndRevocable(t *testing.
 	}
 }
 
+func TestSQLiteStoreCleansTerminalServiceTokensAfterRetention(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "rss-studio.db")
+	store, err := NewSQLiteStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	owner, err := store.CreateUser("alice", "password")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+
+	oldExpired, _, err := store.CreateServiceToken(owner, "old-expired", []string{domain.ScopeFeedsRead}, now.Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldRevoked, _, err := store.CreateServiceToken(owner, "old-revoked", []string{domain.ScopeFeedsRead}, now.Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	recentExpired, _, err := store.CreateServiceToken(owner, "recent-expired", []string{domain.ScopeFeedsRead}, now.Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	active, _, err := store.CreateServiceToken(owner, "active", []string{domain.ScopeFeedsRead}, now.Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.Exec("UPDATE service_tokens SET expires_at = ? WHERE id = ?", now.Add(-serviceTokenRetention-time.Hour).Format(time.RFC3339Nano), oldExpired.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RevokeServiceToken(owner, oldRevoked.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.Exec("UPDATE service_tokens SET revoked_at = ? WHERE id = ?", now.Add(-serviceTokenRetention-time.Hour).Format(time.RFC3339Nano), oldRevoked.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.Exec("UPDATE service_tokens SET expires_at = ? WHERE id = ?", now.Add(-time.Hour).Format(time.RFC3339Nano), recentExpired.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store, err = NewSQLiteStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var count int
+	if err := store.db.QueryRow("SELECT COUNT(*) FROM service_tokens WHERE id IN (?, ?)", oldExpired.ID, oldRevoked.ID).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Fatalf("old terminal service tokens were retained: %d", count)
+	}
+	var retained int
+	if err := store.db.QueryRow("SELECT COUNT(*) FROM service_tokens WHERE id IN (?, ?)", recentExpired.ID, active.ID).Scan(&retained); err != nil {
+		t.Fatal(err)
+	}
+	if retained != 2 {
+		t.Fatalf("recent terminal or active service token was removed: %d", retained)
+	}
+}
+
+func TestSQLiteStoreUpgradePreservesUsersAndFeeds(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "rss-studio.db")
+	store, err := NewSQLiteStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner, err := store.CreateUser("alice", "password")
+	if err != nil {
+		store.Close()
+		t.Fatal(err)
+	}
+	feed, err := store.Create(owner, "News", "https://example.test/news.xml", "news")
+	if err != nil {
+		store.Close()
+		t.Fatal(err)
+	}
+	for _, statement := range []string{
+		"DROP TABLE quota_usage_buckets",
+		"DROP TABLE rate_limit_buckets",
+		"DROP TABLE idempotency_keys",
+		"DROP TABLE service_tokens",
+		"DELETE FROM schema_migrations WHERE version >= 4",
+	} {
+		if _, err := store.db.Exec(statement); err != nil {
+			store.Close()
+			t.Fatalf("prepare pre-service-token database: %v", err)
+		}
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	upgraded, err := NewSQLiteStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer upgraded.Close()
+	version, err := upgraded.SchemaVersion()
+	if err != nil || version != 7 {
+		t.Fatalf("unexpected upgraded schema version: version=%d err=%v", version, err)
+	}
+	if _, err := upgraded.Authenticate("alice", "password"); err != nil {
+		t.Fatalf("existing user was not preserved: %v", err)
+	}
+	feeds, err := upgraded.List(owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(feeds) != 1 || feeds[0].Path != feed.Path {
+		t.Fatalf("existing feed was not preserved: %#v", feeds)
+	}
+	var serviceTokenTable int
+	if err := upgraded.db.QueryRow("SELECT COUNT(*) FROM service_tokens").Scan(&serviceTokenTable); err != nil {
+		t.Fatalf("service token table was not recreated: %v", err)
+	}
+}
+
 func TestSQLiteStoreReclaimsExpiredIdempotencyClaim(t *testing.T) {
 	store, err := NewSQLiteStore(filepath.Join(t.TempDir(), "rss-studio.db"))
 	if err != nil {
