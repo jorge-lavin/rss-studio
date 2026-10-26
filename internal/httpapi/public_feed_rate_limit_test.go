@@ -64,7 +64,6 @@ func newPublicFeedFixture(t *testing.T, now func() time.Time) *publicFeedFixture
 		t.Fatal(err)
 	}
 	auth, err := httpapi.NewAuthenticator(httpapi.AuthConfig{
-		JWTSecret: strings.Repeat("x", 32),
 		UserStore: store,
 	})
 	if err != nil {

@@ -229,18 +229,22 @@ curl -fsS -X DELETE "$BASE_URL/api/v1/feeds/${feed_path#/feeds/}" -H "Authorizat
 
 ### Public RSS
 
-Generated URLs do not require authentication. Use the
-`path` or `url` returned by create/split and give the URL to any RSS reader:
+Generated URLs do not require authentication. RSS readers need no API
+credential or bearer token. Use the `path` or `url` returned by create/split and
+give the URL to any RSS reader:
 
 ```bash
 public_url=$(jq -r '.outputs[0].url' <<<"$split")
 curl -fsS "$public_url"
 ```
 
-Public delivery is not account-quota or API-rate-limit protected. Put a
-reverse proxy in front of the service and apply IP/request controls before
-exposing `/feeds/*.xml` to the Internet. The proxy must also preserve the
-client IP used for login protection according to its own trusted-proxy policy.
+Public delivery allows an aggregate 60 requests per feed URL per one-minute
+fixed window, shared by all readers of that URL. It does not consume account
+quota or authenticated API-rate-limit buckets. Put a reverse proxy in front of
+the service before exposing `/feeds/*.xml` to the Internet. Application limiting
+does not replace proxy bandwidth controls, IP/request controls, or distributed
+denial-of-service protection. The proxy must also preserve the client IP used
+for login protection according to its own trusted-proxy policy.
 
 ## Limits, quotas, and operations
 
@@ -254,6 +258,7 @@ client IP used for login protection according to its own trusted-proxy policy.
 | API delete/revoke | 10 requests per account and credential per minute |
 | API create/token creation | 10 requests per account and credential per minute |
 | API split | 5 requests per account and credential per minute |
+| Public RSS delivery | 60 aggregate requests per feed URL per one-minute fixed window, shared by all readers; no authentication required |
 | Published feeds | 50 per account, permanent ceiling |
 | Previews | 100 per account per UTC day |
 | Single-feed creations | 20 per account per UTC day |
@@ -279,10 +284,12 @@ preview reserves one preview and one concurrent operation. Failed upstream work
 refunds reservations; successful deletion decrements the published-feed
 counter. Daily counters reset at UTC midnight.
 
-The SQLite rate-limit counters and in-memory login limiter are designed for one
-application instance. They do not provide a safe distributed coordinator for
-multiple replicas. Run one instance or add a shared rate-limit service before
-horizontal scaling; also enforce proxy/IP controls for public RSS.
+The SQLite rate-limit counters, including public RSS limits, and in-memory
+login limiter are designed for the existing single-instance deployment model.
+They do not provide a safe distributed coordinator for multiple replicas. Run
+one instance or add a shared rate-limit service before horizontal scaling;
+also enforce proxy bandwidth, IP/request, and distributed-denial-of-service
+controls for public RSS.
 
 ### Operator settings
 
@@ -516,10 +523,13 @@ request limits shared by account and credential. Successful limited responses
 include `RateLimit-Limit`, `RateLimit-Remaining`, and `RateLimit-Reset`; a
 limited request returns JSON error code `rate_limited`, HTTP 429, and
 `Retry-After`. Cheap reads are generous, previews and deletes are lower, and
-feed creation/splitting are more restrictive. Public RSS delivery is not
-account-quota limited; protect it with reverse-proxy/IP controls.
+feed creation/splitting are more restrictive. Public RSS delivery remains
+unauthenticated and is limited to an aggregate 60 requests per feed URL per
+one-minute fixed window; protect it with reverse-proxy bandwidth, IP/request,
+and distributed-denial-of-service controls because application limiting does
+not replace them.
 
-Rate-limit counters are stored in the same SQLite database and are suitable
-for one application instance. Multiple application instances do not share a
-safe distributed rate-limit coordinator; use one instance or add a shared
-rate-limit service before scaling horizontally.
+Rate-limit counters are stored in the same SQLite database and are intended
+for the existing single-instance deployment model. Multiple application
+instances do not share a safe distributed rate-limit coordinator; use one
+instance or add a shared rate-limit service before scaling horizontally.

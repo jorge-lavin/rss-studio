@@ -5,8 +5,9 @@ info:
     Versioned management API for tenant-scoped filtered RSS feeds.
 
     Every management operation requires an expiring service token with the
-    scope required by that operation. Generated
-    RSS documents are public and are returned from `/feeds/{slug}.xml`.
+    scope required by that operation. Generated RSS documents are public and
+    are returned from `/feeds/{slug}.xml`; delivery remains unauthenticated but
+    is limited to an aggregate 60 requests per feed URL per one-minute window.
   version: v1
   license:
     name: See repository license
