@@ -1494,7 +1494,7 @@ func sameOriginRequest(request *http.Request) bool {
 	return strings.EqualFold(parsed.Scheme, scheme) && strings.EqualFold(parsed.Host, request.Host)
 }
 
-var homeTemplate = template.Must(template.New("home").Parse(`<!doctype html>
+var homeTemplate = template.Must(template.New("home").Funcs(template.FuncMap{"filterSummary": filterSummary}).Parse(`<!doctype html>
 <html lang="en" class="h-full bg-slate-100 dark:bg-slate-950">
 <head>
   <meta charset="utf-8">
@@ -1689,7 +1689,7 @@ var homeTemplate = template.Must(template.New("home").Parse(`<!doctype html>
             <div class="min-w-0">
               <div class="flex flex-wrap items-center gap-3">
                 <h3 class="text-base font-semibold text-slate-900 dark:text-slate-100">{{.Name}}</h3>
-                 <span class="rounded-full bg-violet-50 px-2.5 py-1 text-xs font-medium text-violet-700 dark:bg-violet-950 dark:text-violet-300">{{if eq (len .Filters) 1}}{{.Operator.Label}} “{{.Keyword}}”{{else}}{{.Match.Label}} filters{{end}}</span>
+                  <span class="rounded-full bg-violet-50 px-2.5 py-1 text-xs font-medium text-violet-700 dark:bg-violet-950 dark:text-violet-300">{{filterSummary .Match .Filters}}</span>
               </div>
               <p class="mt-2 truncate text-sm text-slate-500 dark:text-slate-400" title="{{.SourceURL}}">Source: {{.SourceURL}}</p>
               <a href="/feeds/{{.Path}}.xml" class="mt-3 block truncate text-sm font-medium text-violet-600 hover:text-violet-700 hover:underline dark:text-violet-400 dark:hover:text-violet-300" title="{{$.BaseURL}}/feeds/{{.Path}}.xml">{{$.BaseURL}}/feeds/{{.Path}}.xml</a>
@@ -1729,6 +1729,18 @@ var homeTemplate = template.Must(template.New("home").Parse(`<!doctype html>
 </div>
 <script>
   (() => {
+    window.rssStudioFilterSummary = (match, filters, operator, keyword) => {
+      const labels = { contains: "Contains", starts_with: "Starts with", ends_with: "Ends with", equals: "Equals" };
+      const conditions = Array.isArray(filters) && filters.length ? filters : [{ operator, keyword }];
+      const separator = match === "all" ? " and " : " or ";
+      const summary = conditions.map((filter) => {
+        const label = labels[filter.operator] || filter.operator || "Contains";
+        const value = typeof filter.keyword === "string" ? filter.keyword : "";
+        return label + " “" + value + "”";
+      }).join(separator);
+      const characters = Array.from(summary);
+      return characters.length > 80 ? characters.slice(0, 77).join("").trimEnd() + "..." : summary;
+    };
     window.rssStudioRenderPreview = (status, data, headingText) => {
       status.replaceChildren();
       status.classList.remove("text-rose-700", "dark:text-rose-300");
@@ -1855,13 +1867,9 @@ var homeTemplate = template.Must(template.New("home").Parse(`<!doctype html>
     const renderCard = (feed) => {
       const fragment = cardTemplate.content.cloneNode(true);
       const card = fragment.querySelector("[data-feed-card]");
-      const path = feedPath(feed.path);
+       const path = feedPath(feed.path);
        const url = typeof feed.url === "string" ? feed.url : "/feeds/" + path + ".xml";
-       const labels = { contains: "Contains", starts_with: "Starts with", ends_with: "Ends with", equals: "Equals" };
-       const filters = Array.isArray(feed.filters) ? feed.filters : [];
-       const filterText = filters.length > 1
-         ? (feed.match === "all" ? "All" : "Any") + " filters"
-         : (labels[feed.operator] || feed.operator || "Contains") + " “" + (feed.keyword || "") + "”";
+       const filterText = window.rssStudioFilterSummary(feed.match, feed.filters, feed.operator, feed.keyword);
        card.dataset.feedPath = path;
        card.querySelector("[data-feed-name]").textContent = feed.name || "Unnamed feed";
        card.querySelector("[data-feed-filter]").textContent = filterText;
@@ -2085,7 +2093,7 @@ var homeTemplate = template.Must(template.New("home").Parse(`<!doctype html>
         const item = document.createElement("li");
         const name = typeof output.name === "string" ? output.name : "Output";
         const url = typeof output.url === "string" ? output.url : "";
-        item.textContent = name + (url ? ": " + url : "");
+        item.textContent = name + ": " + window.rssStudioFilterSummary(output.match, output.filters, output.operator, output.keyword) + (url ? " · " + url : "");
         list.appendChild(item);
       });
       status.appendChild(list);
