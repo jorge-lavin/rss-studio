@@ -18,6 +18,7 @@ import (
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
 	"rss-studio/internal/observability"
+	"rss-studio/internal/version"
 )
 
 const (
@@ -128,7 +129,7 @@ func (s *HTTPSource) do(ctx context.Context, method, sourceURL string) (*http.Re
 	if err != nil {
 		return nil, wrapSourceError("source request could not be created", err)
 	}
-	request.Header.Set("User-Agent", "RSS-Studio/0.1")
+	request.Header.Set("User-Agent", "RSS-Studio/"+version.Version)
 	request.Header.Set("Accept", "application/rss+xml, application/xml, text/xml;q=0.9, */*;q=0.1")
 	response, err := s.client.Do(request)
 	if err != nil {

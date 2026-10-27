@@ -60,7 +60,6 @@ type SQLiteStore struct {
 
 type legacyFeedRecord struct {
 	Name      string    `json:"name"`
-	Slug      string    `json:"slug"`
 	SourceURL string    `json:"source_url"`
 	Keyword   string    `json:"keyword"`
 	CreatedAt time.Time `json:"created_at"`
@@ -1111,7 +1110,7 @@ func (s *SQLiteStore) List(owner domain.User) ([]domain.Feed, error) {
 		return nil, err
 	}
 	rows, err := s.db.Query(`
-		SELECT id, user_id, name, slug, path, source_url, filter_operator, keyword, filter_match, filter_conditions, created_at
+		SELECT id, user_id, name, path, source_url, filter_operator, keyword, filter_match, filter_conditions, created_at
 		FROM feeds
 		WHERE user_id = ?
 		ORDER BY created_at DESC, id DESC`, userID)
@@ -1136,7 +1135,7 @@ func (s *SQLiteStore) List(owner domain.User) ([]domain.Feed, error) {
 
 func (s *SQLiteStore) Get(path string) (domain.Feed, bool, error) {
 	feed, err := scanFeed(s.db.QueryRow(`
-		SELECT id, user_id, name, slug, path, source_url, filter_operator, keyword, filter_match, filter_conditions, created_at
+		SELECT id, user_id, name, path, source_url, filter_operator, keyword, filter_match, filter_conditions, created_at
 		FROM feeds
 		WHERE path = ?`, path))
 	if errors.Is(err, sql.ErrNoRows) {
@@ -1167,14 +1166,6 @@ func (s *SQLiteStore) CreateWithFilters(owner domain.User, name, sourceURL strin
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	base := domain.Slugify(name)
-	if base == "" {
-		base = "feed"
-	}
-	slug, err := uniqueFeedValue(tx, "slug", base, userID, true)
-	if err != nil {
-		return domain.Feed{}, fmt.Errorf("choose feed slug: %w", err)
-	}
 	path, err := uniqueFeedPath(tx)
 	if err != nil {
 		return domain.Feed{}, fmt.Errorf("choose feed path: %w", err)
@@ -1187,7 +1178,7 @@ func (s *SQLiteStore) CreateWithFilters(owner domain.User, name, sourceURL strin
 	result, err := tx.Exec(`
 		INSERT INTO feeds (user_id, name, slug, path, source_url, filter_operator, keyword, filter_match, filter_conditions, created_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		userID, name, slug, path, sourceURL, filters[0].Operator, filters[0].Keyword, match, string(conditions), createdAt.Format(time.RFC3339Nano))
+		userID, name, path, path, sourceURL, filters[0].Operator, filters[0].Keyword, match, string(conditions), createdAt.Format(time.RFC3339Nano))
 	if err != nil {
 		return domain.Feed{}, fmt.Errorf("create feed: %w", err)
 	}
@@ -1198,7 +1189,7 @@ func (s *SQLiteStore) CreateWithFilters(owner domain.User, name, sourceURL strin
 	if err := tx.Commit(); err != nil {
 		return domain.Feed{}, fmt.Errorf("commit feed creation: %w", err)
 	}
-	return domain.Feed{ID: id, TenantID: userID, Name: name, Slug: slug, Path: path, SourceURL: sourceURL, Operator: filters[0].Operator, Keyword: filters[0].Keyword, Match: match, Filters: filters, CreatedAt: createdAt}, nil
+	return domain.Feed{ID: id, TenantID: userID, Name: name, Path: path, SourceURL: sourceURL, Operator: filters[0].Operator, Keyword: filters[0].Keyword, Match: match, Filters: filters, CreatedAt: createdAt}, nil
 }
 
 func (s *SQLiteStore) Delete(owner domain.User, path string) error {
@@ -1270,13 +1261,6 @@ func (s *SQLiteStore) ImportLegacyFeeds(path string, owner domain.User) error {
 	defer func() { _ = tx.Rollback() }()
 
 	for _, record := range records {
-		base := domain.Slugify(record.Slug)
-		if base == "" {
-			base = domain.Slugify(record.Name)
-		}
-		if base == "" {
-			base = "feed"
-		}
 		createdAt := record.CreatedAt
 		if createdAt.IsZero() {
 			createdAt = time.Now().UTC()
@@ -1291,10 +1275,6 @@ func (s *SQLiteStore) ImportLegacyFeeds(path string, owner domain.User) error {
 		if exists {
 			continue
 		}
-		slug, err := uniqueFeedValue(tx, "slug", base, userID, true)
-		if err != nil {
-			return fmt.Errorf("choose legacy feed slug: %w", err)
-		}
 		feedPath, err := uniqueFeedPath(tx)
 		if err != nil {
 			return fmt.Errorf("choose legacy feed path: %w", err)
@@ -1302,7 +1282,7 @@ func (s *SQLiteStore) ImportLegacyFeeds(path string, owner domain.User) error {
 		if _, err := tx.Exec(`
 			INSERT INTO feeds (user_id, name, slug, path, source_url, filter_operator, keyword, created_at)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-			userID, record.Name, slug, feedPath, record.SourceURL, domain.FilterContains, record.Keyword, createdAt.UTC().Format(time.RFC3339Nano)); err != nil {
+			userID, record.Name, feedPath, feedPath, record.SourceURL, domain.FilterContains, record.Keyword, createdAt.UTC().Format(time.RFC3339Nano)); err != nil {
 			return fmt.Errorf("import legacy feed: %w", err)
 		}
 	}
@@ -1339,28 +1319,6 @@ func (s *SQLiteStore) ownerID(owner domain.User) (int64, error) {
 	return id, nil
 }
 
-func uniqueFeedValue(tx *sql.Tx, column, base string, userID int64, scoped bool) (string, error) {
-	for suffix := 1; ; suffix++ {
-		candidate := base
-		if suffix > 1 {
-			candidate = fmt.Sprintf("%s-%d", base, suffix)
-		}
-		query := "SELECT EXISTS(SELECT 1 FROM feeds WHERE " + column + " = ?)"
-		args := []any{candidate}
-		if scoped {
-			query = "SELECT EXISTS(SELECT 1 FROM feeds WHERE user_id = ? AND " + column + " = ?)"
-			args = []any{userID, candidate}
-		}
-		var exists bool
-		if err := tx.QueryRow(query, args...).Scan(&exists); err != nil {
-			return "", err
-		}
-		if !exists {
-			return candidate, nil
-		}
-	}
-}
-
 func uniqueFeedPath(tx *sql.Tx) (string, error) {
 	for {
 		path, err := newFeedPath()
@@ -1395,7 +1353,7 @@ func scanFeed(row rowScanner) (domain.Feed, error) {
 	var match string
 	var filtersJSON string
 	var createdAt string
-	if err := row.Scan(&feed.ID, &feed.TenantID, &feed.Name, &feed.Slug, &feed.Path, &feed.SourceURL, &feed.Operator, &feed.Keyword, &match, &filtersJSON, &createdAt); err != nil {
+	if err := row.Scan(&feed.ID, &feed.TenantID, &feed.Name, &feed.Path, &feed.SourceURL, &feed.Operator, &feed.Keyword, &match, &filtersJSON, &createdAt); err != nil {
 		return domain.Feed{}, err
 	}
 	feed.Match = domain.FilterMatch(match)

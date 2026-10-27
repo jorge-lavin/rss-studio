@@ -74,7 +74,7 @@ func RateLimitSpecFor(operation string) (RateLimitSpec, bool) {
 }
 
 // RateLimitOperationForHTTP maps versioned API routes to stable operations.
-// Other adapters, including future MCP handlers, should use the same operation
+// Other adapters, including the MCP handler, should use the same operation
 // names when entering the shared policy boundary.
 func RateLimitOperationForHTTP(method, path string) (string, bool) {
 	switch {

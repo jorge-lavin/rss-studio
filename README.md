@@ -60,12 +60,12 @@ place. Verify that users can sign in again and that one known public feed still
 loads before removing the backup.
 
 Existing browser JWT sessions are not compatible with this release; users must
-sign in again after upgrading. Browser
-and API credential login intentionally issue a full-scope service token named
-`login` so existing browser and management routes continue to work. Use a
+sign in again after upgrading. API credential login issues a full-scope service
+token named `login` so existing management routes continue to work. Browser
+login instead issues a separate database-backed browser session. Use a
 separately created token with only required scopes for integrations. Revoking a
-token invalidates it immediately; browser logout clears its cookie but does not
-revoke the server-side token, so revoke it when immediate invalidation is needed.
+service token invalidates it immediately, and browser logout revokes the current
+browser session.
 
 Expired and revoked service-token rows are retained for 30 days after their
 terminal time for metadata/audit visibility. Startup and token issuance delete
@@ -584,7 +584,7 @@ normal release deployment publish and deploy it.
 
 ## Development
 
-Requires Go 1.23 or newer.
+Requires Go 1.27 or newer.
 
 ```sh
 go test ./...

@@ -194,6 +194,20 @@ func TestHandlerInitializesAndListsTools(t *testing.T) {
 	}
 }
 
+func TestFilterSchemaDefaultsOmittedOperator(t *testing.T) {
+	items := filtersSchema()["items"].(map[string]any)
+	properties := items["properties"].(map[string]any)
+	operator := properties["operator"].(map[string]any)
+	if operator["default"] != string(domain.FilterContains) {
+		t.Fatalf("filter operator default = %#v, want %q", operator["default"], domain.FilterContains)
+	}
+	for _, required := range items["required"].([]string) {
+		if required == "operator" {
+			t.Fatal("filter operator is still required by MCP schema")
+		}
+	}
+}
+
 func TestHandlerManagesFeedsThroughTools(t *testing.T) {
 	handler, owner := newTestHandler(t)
 	result := toolCall(t, handler, 1, "create_feed", map[string]any{

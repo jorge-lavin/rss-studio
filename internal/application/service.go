@@ -911,10 +911,6 @@ func (s *Service) triggerRefresh(feed domain.Feed) {
 	}()
 }
 
-func validateFeed(name, sourceURL string, operator domain.FilterOperator, keyword string) error {
-	return validateFilterSet(name, sourceURL, domain.FilterAny, []domain.FilterCondition{{Operator: operator, Keyword: keyword}})
-}
-
 const MaxFilterConditions = 32
 
 func normalizeFilters(operator domain.FilterOperator, keyword string, match domain.FilterMatch, filters []domain.FilterCondition) (domain.FilterMatch, []domain.FilterCondition, error) {

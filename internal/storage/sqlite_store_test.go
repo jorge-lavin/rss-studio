@@ -237,7 +237,6 @@ func TestSQLiteStoreImportsAndRemovesLegacyFeedStore(t *testing.T) {
 	createdAt := time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)
 	data, err := json.Marshal([]legacyFeedRecord{{
 		Name:      "News Feed",
-		Slug:      "news-feed",
 		SourceURL: "https://example.test/rss",
 		Keyword:   "news",
 		CreatedAt: createdAt,

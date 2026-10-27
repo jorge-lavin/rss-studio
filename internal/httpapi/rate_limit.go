@@ -29,10 +29,6 @@ type loginRateLimiter struct {
 	now         func() time.Time
 }
 
-func newLoginRateLimiter() *loginRateLimiter {
-	return newLoginRateLimiterWithClock(time.Now)
-}
-
 func newLoginRateLimiterWithClock(now func() time.Time) *loginRateLimiter {
 	if now == nil {
 		now = time.Now

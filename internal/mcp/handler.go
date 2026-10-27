@@ -211,9 +211,9 @@ var tools = []tool{
 		InputSchema: objectSchema(map[string]any{
 			"name":            map[string]any{"type": "string"},
 			"source_url":      map[string]any{"type": "string"},
-			"operator":        map[string]any{"type": "string", "enum": operators()},
+			"operator":        map[string]any{"type": "string", "enum": operators(), "default": string(domain.FilterContains)},
 			"keyword":         map[string]any{"type": "string"},
-			"match":           map[string]any{"type": "string", "enum": filterMatches()},
+			"match":           map[string]any{"type": "string", "enum": filterMatches(), "default": string(domain.FilterAny)},
 			"filters":         filtersSchema(),
 			"idempotency_key": map[string]any{"type": "string", "minLength": 1, "maxLength": 255},
 		}, []string{"name", "source_url"}),
@@ -769,9 +769,9 @@ func previewSchema() map[string]any {
 				"type": "object",
 				"properties": map[string]any{
 					"name":     map[string]any{"type": "string"},
-					"operator": map[string]any{"type": "string", "enum": operators()},
+					"operator": map[string]any{"type": "string", "enum": operators(), "default": string(domain.FilterContains)},
 					"keyword":  map[string]any{"type": "string"},
-					"match":    map[string]any{"type": "string", "enum": filterMatches()},
+					"match":    map[string]any{"type": "string", "enum": filterMatches(), "default": string(domain.FilterAny)},
 					"filters":  filtersSchema(),
 				},
 				"required":             []string{"name"},
@@ -803,10 +803,10 @@ func filtersSchema() map[string]any {
 		"items": map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"operator": map[string]any{"type": "string", "enum": operators()},
+				"operator": map[string]any{"type": "string", "enum": operators(), "default": string(domain.FilterContains)},
 				"keyword":  map[string]any{"type": "string"},
 			},
-			"required": []string{"operator", "keyword"}, "additionalProperties": false,
+			"required": []string{"keyword"}, "additionalProperties": false,
 		},
 	}
 }

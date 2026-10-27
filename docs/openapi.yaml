@@ -828,11 +828,12 @@ components:
     FilterCondition:
       type: object
       additionalProperties: false
-      required: [operator, keyword]
+      required: [keyword]
       properties:
         operator:
           type: string
           enum: [contains, starts_with, ends_with, equals]
+          default: contains
         keyword: { type: string, maxLength: 200 }
     OutputRequest:
       type: object

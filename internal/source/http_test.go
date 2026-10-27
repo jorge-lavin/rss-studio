@@ -17,6 +17,7 @@ import (
 	"go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	"rss-studio/internal/observability"
+	"rss-studio/internal/version"
 )
 
 type upstreamEventRecorder struct {
@@ -150,6 +151,21 @@ func TestHTTPSourceRedirectValidation(t *testing.T) {
 				t.Fatalf("error exposes redirect URL: %v", err)
 			}
 		})
+	}
+}
+
+func TestHTTPSourceUsesBuildVersionInUserAgent(t *testing.T) {
+	var userAgent string
+	source := &HTTPSource{client: &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		userAgent = request.Header.Get("User-Agent")
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`<rss version="2.0"><channel/></rss>`))}, nil
+	})}}
+
+	if _, _, err := source.Get(context.Background(), "https://feed.example/rss.xml"); err != nil {
+		t.Fatalf("source get failed: %v", err)
+	}
+	if want := "RSS-Studio/" + version.Version; userAgent != want {
+		t.Fatalf("User-Agent = %q, want %q", userAgent, want)
 	}
 }
 

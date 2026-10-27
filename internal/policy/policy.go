@@ -1,5 +1,5 @@
 // Package policy contains authentication-independent authorization decisions
-// shared by HTTP and future non-HTTP adapters.
+// shared by HTTP and non-HTTP adapters.
 package policy
 
 import (
@@ -44,8 +44,8 @@ func IdentityFromContext(ctx context.Context) (Identity, bool) {
 	return identity, ok
 }
 
-// Authorize applies one shared policy decision for API endpoints and future
-// adapters. Unscoped identities cannot authorize operations.
+// Authorize applies one shared policy decision for API endpoints and adapters.
+// Unscoped identities cannot authorize operations.
 func Authorize(identity Identity, requiredScope string) error {
 	if requiredScope == "" {
 		return nil
