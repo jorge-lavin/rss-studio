@@ -15,6 +15,22 @@ const (
 	maxXMLDepth        = 256
 )
 
+type diagnosticError struct {
+	class   string
+	message string
+	cause   error
+}
+
+func (e *diagnosticError) Error() string { return e.message }
+
+func (e *diagnosticError) Unwrap() error { return e.cause }
+
+func (e *diagnosticError) FailureClass() string { return e.class }
+
+func newDiagnosticError(class, message string, cause error) error {
+	return &diagnosticError{class: class, message: message, cause: cause}
+}
+
 // FilterRule names one filtered output and its title conditions.
 type FilterRule struct {
 	Name     string
@@ -153,7 +169,7 @@ func FilterWithConditions(source []byte, match domain.FilterMatch, filters []dom
 
 func parseDocument(source []byte) (*etree.Document, error) {
 	if len(source) > maxSourceFeedBytes {
-		return nil, fmt.Errorf("parse source feed: input exceeds %d-byte limit", maxSourceFeedBytes)
+		return nil, newDiagnosticError("input_too_large", fmt.Sprintf("parse source feed: input exceeds %d-byte limit", maxSourceFeedBytes), nil)
 	}
 	document := etree.NewDocument()
 	document.ReadSettings = etree.ReadSettings{
@@ -162,12 +178,12 @@ func parseDocument(source []byte) (*etree.Document, error) {
 	}
 	if err := document.ReadFromBytes(source); err != nil {
 		if errors.Is(err, etree.ErrMaxDepth) {
-			return nil, fmt.Errorf("parse source feed: XML depth exceeds limit of %d: %w", maxXMLDepth, err)
+			return nil, newDiagnosticError("xml_depth_limit", fmt.Sprintf("parse source feed: XML depth exceeds limit of %d: %v", maxXMLDepth, err), err)
 		}
-		return nil, fmt.Errorf("parse source feed: %w", err)
+		return nil, newDiagnosticError("invalid_xml", fmt.Sprintf("parse source feed: %v", err), err)
 	}
 	if document.FindElement("/rss/channel") == nil {
-		return nil, fmt.Errorf("source is not an RSS 2.0 feed")
+		return nil, newDiagnosticError("invalid_rss", "source is not an RSS 2.0 feed", nil)
 	}
 	return document, nil
 }
@@ -175,7 +191,7 @@ func parseDocument(source []byte) (*etree.Document, error) {
 func filterDocument(document *etree.Document, match domain.FilterMatch, filters []domain.FilterCondition, outputTitle string) ([]byte, int, []string, error) {
 	channel := document.FindElement("/rss/channel")
 	if channel == nil {
-		return nil, 0, nil, fmt.Errorf("source is not an RSS 2.0 feed")
+		return nil, 0, nil, newDiagnosticError("invalid_rss", "source is not an RSS 2.0 feed", nil)
 	}
 
 	matched := 0
@@ -199,7 +215,7 @@ func filterDocument(document *etree.Document, match domain.FilterMatch, filters 
 	document.Indent(2)
 	result, err := document.WriteToBytes()
 	if err != nil {
-		return nil, 0, nil, fmt.Errorf("write filtered feed: %w", err)
+		return nil, 0, nil, newDiagnosticError("output_write", fmt.Sprintf("write filtered feed: %v", err), err)
 	}
 	return result, matched, titles, nil
 }

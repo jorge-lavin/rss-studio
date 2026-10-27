@@ -20,6 +20,11 @@ type eventRecorder struct {
 	events []Event
 }
 
+type classifiedFailureError struct{}
+
+func (classifiedFailureError) Error() string        { return "private parser detail" }
+func (classifiedFailureError) FailureClass() string { return "invalid_xml" }
+
 func (r *eventRecorder) Record(event Event) {
 	r.events = append(r.events, event)
 }
@@ -109,5 +114,34 @@ func TestRecordFailureAddsSafeStageAndType(t *testing.T) {
 		if attribute.Key == "exception.message" && strings.Contains(attribute.Value.AsString(), "private.example") {
 			t.Fatalf("failure event exposed request data: %#v", spanData.Events)
 		}
+	}
+}
+
+func TestRecordFailureAddsStableClass(t *testing.T) {
+	exporter := tracetest.NewInMemoryExporter()
+	provider := trace.NewTracerProvider(trace.WithSyncer(exporter))
+	previous := otel.GetTracerProvider()
+	otel.SetTracerProvider(provider)
+	t.Cleanup(func() {
+		_ = provider.Shutdown(context.Background())
+		otel.SetTracerProvider(previous)
+	})
+
+	ctx, span := otel.Tracer("test").Start(context.Background(), "feed operation")
+	RecordFailure(ctx, "rss.preview", classifiedFailureError{})
+	span.End()
+
+	spans := exporter.GetSpans()
+	if len(spans) != 1 {
+		t.Fatalf("expected one span, got %d", len(spans))
+	}
+	var class string
+	for _, attribute := range spans[0].Attributes {
+		if attribute.Key == failureClassAttr {
+			class = attribute.Value.AsString()
+		}
+	}
+	if class != "invalid_xml" {
+		t.Fatalf("failure class = %q", class)
 	}
 }

@@ -64,6 +64,32 @@ func TestFilterRejectsHostileXMLDepth(t *testing.T) {
 	}
 }
 
+func TestFilterReportsSafeFailureClasses(t *testing.T) {
+	tests := []struct {
+		name   string
+		source []byte
+		class  string
+	}{
+		{name: "invalid XML", source: []byte(`<rss><channel>`), class: "invalid_xml"},
+		{name: "invalid RSS", source: []byte(`<feed></feed>`), class: "invalid_rss"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			_, _, err := Filter(test.source, "foo", "Feed")
+			if err == nil {
+				t.Fatal("expected filtering to fail")
+			}
+			classifier, ok := err.(interface{ FailureClass() string })
+			if !ok {
+				t.Fatalf("error does not expose failure class: %T", err)
+			}
+			if classifier.FailureClass() != test.class {
+				t.Fatalf("failure class = %q, want %q", classifier.FailureClass(), test.class)
+			}
+		})
+	}
+}
+
 func TestFilterMany(t *testing.T) {
 	source := []byte(`<?xml version="1.0"?><rss version="2.0" xmlns:itunes="http://www.itunes.com/dtds/podcast-1.0.dtd"><channel><title>Original</title><link>https://example.test/feed</link><item><title>AI weekly</title><guid>one</guid><enclosure url="https://media.test/one.mp3" type="audio/mpeg"/><itunes:duration>10</itunes:duration></item><item><title>AI news</title><guid>two</guid><enclosure url="https://media.test/two.mp3" type="audio/mpeg"/></item><item><title>Other show</title><guid>three</guid></item></channel></rss>`)
 

@@ -3,6 +3,7 @@ package observability
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/url"
@@ -39,6 +40,7 @@ const (
 	auditUpstreamDurationAttr = "rss_studio.upstream.duration_ms"
 	failureStageAttr          = "rss_studio.failure.stage"
 	failureTypeAttr           = "rss_studio.failure.type"
+	failureClassAttr          = "rss_studio.failure.class"
 )
 
 // Event is the safe, structured audit record shared by HTTP, application, and
@@ -231,8 +233,23 @@ func RecordFailure(ctx context.Context, stage string, err error) {
 		attribute.String(failureStageAttr, stage),
 		attribute.String(failureTypeAttr, errorType),
 	)
+	if class := failureClass(err); class != "" {
+		span.SetAttributes(attribute.String(failureClassAttr, class))
+	}
 	span.RecordError(fmt.Errorf("%s: %s", stage, errorType))
 	span.SetStatus(codes.Error, stage)
+}
+
+type failureClassifier interface {
+	FailureClass() string
+}
+
+func failureClass(err error) string {
+	var classifier failureClassifier
+	if errors.As(err, &classifier) {
+		return safeField(classifier.FailureClass())
+	}
+	return ""
 }
 
 // ActorIDs returns authenticated account and service-token identifiers. The

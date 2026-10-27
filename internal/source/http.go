@@ -228,6 +228,8 @@ func (e *sourceError) Unwrap() error {
 	return e.cause
 }
 
+func (e *sourceError) FailureClass() string { return e.class }
+
 func wrapSourceError(message string, cause error) error {
 	return &sourceError{message: message, cause: cause, class: classifyError(cause)}
 }
@@ -239,6 +241,8 @@ type redirectError struct {
 func (e *redirectError) Error() string { return "source redirect rejected" }
 
 func (e *redirectError) Unwrap() error { return e.cause }
+
+func (e *redirectError) FailureClass() string { return errorClassRedirect }
 
 const (
 	errorClassDNS      = "dns"
