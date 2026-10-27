@@ -3,13 +3,24 @@ package source
 import (
 	"context"
 	"errors"
+	"io"
 	"net"
 	"net/http"
 	"net/netip"
 	"strings"
 	"testing"
 	"time"
+
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 )
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	return f(request)
+}
 
 func TestHTTPSourceRejectsLoopback(t *testing.T) {
 	client := NewHTTPSource(&http.Client{})
@@ -140,5 +151,50 @@ func TestHTTPSourcePreservesContextCancellation(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), "example.com") {
 		t.Fatalf("error exposes source URL: %v", err)
+	}
+}
+
+func TestHTTPSourceTracesUpstreamStatusWithoutSourceURL(t *testing.T) {
+	exporter := tracetest.NewInMemoryExporter()
+	provider := trace.NewTracerProvider(trace.WithSyncer(exporter))
+	previous := otel.GetTracerProvider()
+	otel.SetTracerProvider(provider)
+	t.Cleanup(func() {
+		_ = provider.Shutdown(context.Background())
+		otel.SetTracerProvider(previous)
+	})
+
+	source := &HTTPSource{client: &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusBadGateway,
+			Body:       io.NopCloser(strings.NewReader("private upstream response")),
+		}, nil
+	})}}
+	_, _, err := source.Get(context.Background(), "https://private.example/rss")
+	if err == nil {
+		t.Fatal("expected upstream status error")
+	}
+
+	spans := exporter.GetSpans()
+	if len(spans) != 1 {
+		t.Fatalf("expected one source span, got %d", len(spans))
+	}
+	span := spans[0]
+	if span.Name != "source.get" || len(span.Events) != 1 {
+		t.Fatalf("unexpected source span: %#v", span)
+	}
+	var status int64
+	for _, attribute := range span.Attributes {
+		if attribute.Key == sourceStatusCodeAttr {
+			status = attribute.Value.AsInt64()
+		}
+	}
+	if status != http.StatusBadGateway {
+		t.Fatalf("source status = %d, want %d", status, http.StatusBadGateway)
+	}
+	for _, attribute := range span.Events[0].Attributes {
+		if attribute.Key == "exception.message" && strings.Contains(attribute.Value.AsString(), "private.example") {
+			t.Fatalf("source span exposed source URL: %#v", span.Events)
+		}
 	}
 }

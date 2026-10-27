@@ -8,10 +8,23 @@ import (
 	"net/http"
 	"net/netip"
 	"net/url"
+	"strings"
 	"time"
+
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 )
 
-const maxFeedSize = 25 << 20
+const (
+	maxFeedSize          = 25 << 20
+	sourceTracerName     = "rss-studio/source"
+	sourceMethodAttr     = "rss_studio.source.method"
+	sourceStatusCodeAttr = "rss_studio.source.status_code"
+	sourceBytesAttr      = "rss_studio.source.bytes"
+	sourceErrorTypeAttr  = "rss_studio.source.error_type"
+)
 
 type HTTPSource struct {
 	client *http.Client
@@ -44,22 +57,28 @@ func NewHTTPSource(client *http.Client) *HTTPSource {
 	return &HTTPSource{client: &configured}
 }
 
-func (s *HTTPSource) Head(ctx context.Context, sourceURL string) (time.Time, error) {
+func (s *HTTPSource) Head(ctx context.Context, sourceURL string) (lastModified time.Time, err error) {
+	ctx, span := startSourceSpan(ctx, http.MethodHead)
+	defer func() { finishSourceSpan(span, err, 0) }()
 	response, err := s.do(ctx, http.MethodHead, sourceURL)
 	if err != nil {
 		return time.Time{}, err
 	}
 	defer response.Body.Close()
+	span.SetAttributes(attribute.Int(sourceStatusCodeAttr, response.StatusCode))
 	return parseLastModified(response.Header.Get("Last-Modified")), nil
 }
 
-func (s *HTTPSource) Get(ctx context.Context, sourceURL string) ([]byte, time.Time, error) {
+func (s *HTTPSource) Get(ctx context.Context, sourceURL string) (data []byte, lastModified time.Time, err error) {
+	ctx, span := startSourceSpan(ctx, http.MethodGet)
+	defer func() { finishSourceSpan(span, err, len(data)) }()
 	response, err := s.do(ctx, http.MethodGet, sourceURL)
 	if err != nil {
 		return nil, time.Time{}, err
 	}
 	defer response.Body.Close()
-	data, err := io.ReadAll(io.LimitReader(response.Body, maxFeedSize+1))
+	span.SetAttributes(attribute.Int(sourceStatusCodeAttr, response.StatusCode))
+	data, err = io.ReadAll(io.LimitReader(response.Body, maxFeedSize+1))
 	if err != nil {
 		return nil, time.Time{}, wrapSourceError("source feed read failed", err)
 	}
@@ -67,6 +86,23 @@ func (s *HTTPSource) Get(ctx context.Context, sourceURL string) ([]byte, time.Ti
 		return nil, time.Time{}, fmt.Errorf("source feed exceeds %d bytes", maxFeedSize)
 	}
 	return data, parseLastModified(response.Header.Get("Last-Modified")), nil
+}
+
+func startSourceSpan(ctx context.Context, method string) (context.Context, trace.Span) {
+	ctx, span := otel.Tracer(sourceTracerName).Start(ctx, "source."+strings.ToLower(method))
+	span.SetAttributes(attribute.String(sourceMethodAttr, method))
+	return ctx, span
+}
+
+func finishSourceSpan(span trace.Span, err error, bytes int) {
+	span.SetAttributes(attribute.Int(sourceBytesAttr, bytes))
+	if err != nil {
+		errorType := fmt.Sprintf("%T", err)
+		span.SetAttributes(attribute.String(sourceErrorTypeAttr, errorType))
+		span.RecordError(fmt.Errorf("source operation failed: %s", errorType))
+		span.SetStatus(codes.Error, "source failure")
+	}
+	span.End()
 }
 
 func (s *HTTPSource) do(ctx context.Context, method, sourceURL string) (*http.Response, error) {
@@ -84,6 +120,7 @@ func (s *HTTPSource) do(ctx context.Context, method, sourceURL string) (*http.Re
 		return nil, wrapSourceError("source request failed", err)
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		trace.SpanFromContext(ctx).SetAttributes(attribute.Int(sourceStatusCodeAttr, response.StatusCode))
 		response.Body.Close()
 		return nil, fmt.Errorf("source %s returned status %d", method, response.StatusCode)
 	}

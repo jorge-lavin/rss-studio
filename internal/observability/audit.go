@@ -3,11 +3,13 @@ package observability
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"strings"
 	"time"
 
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
 
 	"rss-studio/internal/policy"
@@ -30,6 +32,8 @@ const (
 	auditRateRejectedAttr    = "rss_studio.rate_rejected"
 	auditQuotaRejectedAttr   = "rss_studio.quota_rejected"
 	auditUpstreamFailureAttr = "rss_studio.upstream_failure"
+	failureStageAttr         = "rss_studio.failure.stage"
+	failureTypeAttr          = "rss_studio.failure.type"
 )
 
 // Event is the safe, structured audit record shared by HTTP, application, and
@@ -148,6 +152,27 @@ func SetOperationAttributes(ctx context.Context, operation string, actorID, toke
 		attribute.Int64(auditActorIDAttr, actorID),
 		attribute.Int64(auditTokenIDAttr, tokenID),
 	)
+}
+
+// RecordFailure adds a safe failure location and error type to the active
+// span. It deliberately omits the error message because wrapped errors may
+// contain source URLs or other request data.
+func RecordFailure(ctx context.Context, stage string, err error) {
+	if ctx == nil || err == nil {
+		return
+	}
+	span := trace.SpanFromContext(ctx)
+	if !span.IsRecording() {
+		return
+	}
+	stage = safeField(stage)
+	errorType := safeField(fmt.Sprintf("%T", err))
+	span.SetAttributes(
+		attribute.String(failureStageAttr, stage),
+		attribute.String(failureTypeAttr, errorType),
+	)
+	span.RecordError(fmt.Errorf("%s: %s", stage, errorType))
+	span.SetStatus(codes.Error, stage)
 }
 
 // ActorIDs returns authenticated account and service-token identifiers. The

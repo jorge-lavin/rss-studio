@@ -387,10 +387,12 @@ func (s *Service) preview(ctx context.Context, owner domain.User, sourceURL stri
 
 	sourceData, _, err := s.source.Get(ctx, sourceURL)
 	if err != nil {
+		observability.RecordFailure(ctx, "source.fetch", err)
 		return nil, fmt.Errorf("%w: %v", ErrSourceUnavailable, err)
 	}
 	filtered, err := rss.PreviewMany(sourceData, filterRules)
 	if err != nil {
+		observability.RecordFailure(ctx, "rss.preview", err)
 		return nil, fmt.Errorf("%w: %v", ErrSourceUnavailable, err)
 	}
 
@@ -494,9 +496,11 @@ func (s *Service) CreateFeedWithFilters(ctx context.Context, owner domain.User, 
 		return domain.Feed{}, fmt.Errorf("%w: operator-aware feed storage is unavailable", ErrInvalidFeed)
 	}
 	if err != nil {
+		observability.RecordFailure(ctx, "feed.store.create", err)
 		return domain.Feed{}, err
 	}
 	if err := s.refreshFeed(ctx, feed, true); err != nil {
+		observability.RecordFailure(ctx, "feed.refresh", err)
 		if deleteErr := s.store.Delete(owner, feed.Path); deleteErr != nil {
 			log.Printf("roll back feed: %T", deleteErr)
 		}
@@ -574,6 +578,7 @@ func (s *Service) CreateSplitFeeds(ctx context.Context, owner domain.User, sourc
 
 	sourceData, lastModified, err := s.source.Get(ctx, sourceURL)
 	if err != nil {
+		observability.RecordFailure(ctx, "source.fetch", err)
 		return nil, fmt.Errorf("%w: %v", ErrSourceUnavailable, err)
 	}
 	if splitAggregateSizeExceeded(len(sourceData), len(filterRules)) {
@@ -581,6 +586,7 @@ func (s *Service) CreateSplitFeeds(ctx context.Context, owner domain.User, sourc
 	}
 	filtered, err := rss.FilterMany(sourceData, filterRules)
 	if err != nil {
+		observability.RecordFailure(ctx, "rss.filter", err)
 		return nil, fmt.Errorf("%w: %v", ErrSourceUnavailable, err)
 	}
 	generatedSize := 0
@@ -608,10 +614,12 @@ func (s *Service) CreateSplitFeeds(ctx context.Context, owner domain.User, sourc
 			return nil, withRollbackError(fmt.Errorf("%w: operator-aware feed storage is unavailable", ErrInvalidFeed), s.rollbackSplit(owner, feeds))
 		}
 		if err != nil {
+			observability.RecordFailure(ctx, "feed.store.create", err)
 			return nil, withRollbackError(err, s.rollbackSplit(owner, feeds))
 		}
 		feeds = append(feeds, feed)
 		if err := s.cache.Write(feed, result.Feed, lastModified); err != nil {
+			observability.RecordFailure(ctx, "feed.cache.write", err)
 			return nil, withRollbackError(err, s.rollbackSplit(owner, feeds))
 		}
 	}
