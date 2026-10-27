@@ -385,16 +385,43 @@ func (s *Service) preview(ctx context.Context, owner domain.User, sourceURL stri
 
 	previews = make([]PreviewResult, len(filtered))
 	for i, result := range filtered {
+		episodes := make([]PreviewEpisode, len(result.Episodes))
+		for j, episode := range result.Episodes {
+			episodes[j] = PreviewEpisode{
+				Title:    episode.Title,
+				ImageURL: previewImageURL(episode.ImageURL, sourceURL),
+			}
+		}
 		previews[i] = PreviewResult{
-			Name:     result.Name,
-			Operator: filterRules[i].Operator,
-			Keyword:  filterRules[i].Keyword,
-			Count:    result.Count,
-			Titles:   result.Titles,
+			Name:         result.Name,
+			Operator:     filterRules[i].Operator,
+			Keyword:      filterRules[i].Keyword,
+			Count:        result.Count,
+			Titles:       result.Titles,
+			FeedImageURL: previewImageURL(result.FeedImageURL, sourceURL),
+			Episodes:     episodes,
 		}
 	}
 	succeeded = true
 	return previews, nil
+}
+
+func previewImageURL(value, sourceURL string) string {
+	parsed, err := url.Parse(strings.TrimSpace(value))
+	if err != nil || parsed.String() == "" {
+		return ""
+	}
+	if !parsed.IsAbs() {
+		base, baseErr := url.Parse(sourceURL)
+		if baseErr != nil {
+			return ""
+		}
+		parsed = base.ResolveReference(parsed)
+	}
+	if parsed.Hostname() == "" || parsed.User != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+		return ""
+	}
+	return parsed.String()
 }
 
 func (s *Service) CreateFeed(ctx context.Context, owner domain.User, name, sourceURL, keyword string) (domain.Feed, error) {

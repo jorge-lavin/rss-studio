@@ -94,6 +94,8 @@ input::placeholder {
 [class~="h-full"] { height: 100%; }
 [class~="h-8"] { height: 2rem; }
 [class~="h-11"] { height: 2.75rem; }
+[class~="h-14"] { height: 3.5rem; }
+[class~="h-16"] { height: 4rem; }
 [class~="min-h-full"] { min-height: 100%; }
 [class~="min-h-screen"] { min-height: 100vh; }
 [class~="min-h-[46px]"] { min-height: 46px; }
@@ -101,6 +103,7 @@ input::placeholder {
 [class~="w-full"] { width: 100%; }
 [class~="w-8"] { width: 2rem; }
 [class~="w-11"] { width: 2.75rem; }
+[class~="w-14"] { width: 3.5rem; }
 [class~="w-16"] { width: 4rem; }
 [class~="max-w-md"] { max-width: 28rem; }
 [class~="max-w-2xl"] { max-width: 42rem; }
@@ -172,6 +175,7 @@ input::placeholder {
 [class~="overflow-x-auto"] { overflow-x: auto; }
 [class~="break-all"] { word-break: break-all; }
 [class~="truncate"] { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+[class~="object-cover"] { object-fit: cover; }
 
 [class~="border"] { border-width: 1px; }
 [class~="border-b"] { border-bottom-width: 1px; }

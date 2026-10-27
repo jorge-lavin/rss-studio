@@ -183,8 +183,9 @@ characters, and source URLs must be HTTP or HTTPS without user information.
 `status` is `ready` or `refreshing` and reports background refresh state for the
 feed's source. Create
 returns one feed object with HTTP 201. Preview returns
-`{ "outputs": [{"name","operator","keyword","count","sample_titles"}] }`;
-sample titles contain at most five entries. Split accepts one to 32 outputs and
+`{ "outputs": [{"name","operator","keyword","count","sample_titles","feed_image_url","episodes"}] }`;
+sample titles and episode previews contain at most five entries; each episode
+preview contains its `title` and optional `image_url`. Split accepts one to 32 outputs and
 returns `{ "outputs": [{"name","operator","keyword","path","url","status"}] }`
 with HTTP 201. Delete returns `{ "deleted": true, "path": "opaque-id" }`;
 new feed paths use 64-character cryptographic hashes and exclude the feed name.

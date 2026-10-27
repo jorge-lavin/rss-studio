@@ -38,7 +38,7 @@ func isOpaqueFeedPath(path string) bool {
 func (sourceStub) Head(context.Context, string) (time.Time, error) { return time.Time{}, nil }
 
 func (sourceStub) Get(context.Context, string) ([]byte, time.Time, error) {
-	return []byte(`<rss version="2.0"><channel><title>Source</title><item><title>Keep foo</title><guid>1</guid></item><item><title>Drop</title><guid>2</guid></item></channel></rss>`), time.Time{}, nil
+	return []byte(`<rss version="2.0" xmlns:itunes="http://www.itunes.com/dtds/podcast-1.0.dtd"><channel><title>Source</title><itunes:image href="https://images.test/show.jpg"/><item><title>Keep foo</title><itunes:image href="https://images.test/episode.jpg"/><guid>1</guid></item><item><title>Drop</title><guid>2</guid></item></channel></rss>`), time.Time{}, nil
 }
 
 type failingMutationCache struct {
@@ -474,6 +474,9 @@ func TestHomeRendersSplitFeedWorkflow(t *testing.T) {
 
 	page := recorder.Body.String()
 	for _, marker := range []string{
+		`id="create-feed-form"`,
+		`id="create-preview"`,
+		"Preview feed",
 		`id="split-form"`,
 		`action="/feeds/split"`,
 		"Split feeds",
@@ -498,6 +501,9 @@ func TestHomeRendersSplitFeedWorkflow(t *testing.T) {
 		`aria-live="polite"`,
 		`"/api/v1/feeds/preview"`,
 		`"/api/v1/feeds/split"`,
+		`rssStudioRenderPreview`,
+		`feed_image_url`,
+		`image_url`,
 		`credentials: "same-origin"`,
 	} {
 		if !strings.Contains(page, marker) {
@@ -646,12 +652,17 @@ func TestPreviewEndpointReturnsSamplesAndRequiresAuthentication(t *testing.T) {
 			Keyword      string   `json:"keyword"`
 			Count        int      `json:"count"`
 			SampleTitles []string `json:"sample_titles"`
+			FeedImageURL string   `json:"feed_image_url"`
+			Episodes     []struct {
+				Title    string `json:"title"`
+				ImageURL string `json:"image_url"`
+			} `json:"episodes"`
 		} `json:"outputs"`
 	}
 	if err := json.NewDecoder(response.Body).Decode(&body); err != nil {
 		t.Fatal(err)
 	}
-	if len(body.Outputs) != 1 || body.Outputs[0].Name != "Foo" || body.Outputs[0].Operator != "starts_with" || body.Outputs[0].Keyword != "keep" || body.Outputs[0].Count != 1 || len(body.Outputs[0].SampleTitles) != 1 {
+	if len(body.Outputs) != 1 || body.Outputs[0].Name != "Foo" || body.Outputs[0].Operator != "starts_with" || body.Outputs[0].Keyword != "keep" || body.Outputs[0].Count != 1 || len(body.Outputs[0].SampleTitles) != 1 || body.Outputs[0].FeedImageURL != "https://images.test/show.jpg" || len(body.Outputs[0].Episodes) != 1 || body.Outputs[0].Episodes[0].Title != "Keep foo" || body.Outputs[0].Episodes[0].ImageURL != "https://images.test/episode.jpg" {
 		t.Fatalf("unexpected preview response: %#v", body)
 	}
 }

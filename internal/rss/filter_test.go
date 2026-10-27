@@ -138,12 +138,15 @@ func TestFilterManyUsesEachRuleOperator(t *testing.T) {
 }
 
 func TestPreviewManyReturnsMetadataWithoutFeeds(t *testing.T) {
-	source := []byte(`<rss version="2.0"><channel><title>Source</title><item><title>AI one</title></item><item><title>Other</title></item></channel></rss>`)
+	source := []byte(`<rss version="2.0" xmlns:itunes="http://www.itunes.com/dtds/podcast-1.0.dtd"><channel><title>Source</title><itunes:image href="https://images.test/show.jpg"/><item><title>AI one</title><itunes:image href="https://images.test/episode.jpg"/></item><item><title>Other</title></item></channel></rss>`)
 	results, err := PreviewMany(source, []FilterRule{{Name: "AI", Keyword: "ai"}, {Name: "Other", Keyword: "other"}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(results) != 2 || results[0].Name != "AI" || results[0].Count != 1 || len(results[0].Titles) != 1 || results[1].Count != 1 {
 		t.Fatalf("unexpected preview results: %#v", results)
+	}
+	if results[0].FeedImageURL != "https://images.test/show.jpg" || len(results[0].Episodes) != 1 || results[0].Episodes[0].Title != "AI one" || results[0].Episodes[0].ImageURL != "https://images.test/episode.jpg" {
+		t.Fatalf("preview image metadata was not extracted: %#v", results[0])
 	}
 }

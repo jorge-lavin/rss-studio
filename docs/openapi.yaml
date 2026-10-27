@@ -496,7 +496,7 @@ paths:
               $ref: '#/components/schemas/SplitRequest'
       responses:
         '200':
-          description: Match counts and up to five sample titles for each output.
+          description: Match counts, podcast artwork, and up to five matching episode previews for each output.
           content:
             application/json:
               schema:
@@ -868,7 +868,7 @@ components:
           items: { $ref: '#/components/schemas/PreviewOutput' }
     PreviewOutput:
       type: object
-      required: [name, operator, keyword, count, sample_titles]
+      required: [name, operator, keyword, count, sample_titles, episodes]
       properties:
         name: { type: string }
         operator:
@@ -880,6 +880,24 @@ components:
           type: array
           maxItems: 5
           items: { type: string }
+        feed_image_url:
+          type: string
+          format: uri
+          description: Podcast artwork URL when supplied by the source feed.
+        episodes:
+          type: array
+          maxItems: 5
+          items:
+            $ref: '#/components/schemas/PreviewEpisode'
+    PreviewEpisode:
+      type: object
+      required: [title]
+      properties:
+        title: { type: string }
+        image_url:
+          type: string
+          format: uri
+          description: Episode artwork URL when supplied by the source feed.
     SplitResponse:
       type: object
       required: [outputs]

@@ -79,11 +79,18 @@ type previewResponse struct {
 }
 
 type previewResponseOutput struct {
-	Name         string   `json:"name"`
-	Operator     string   `json:"operator"`
-	Keyword      string   `json:"keyword"`
-	Count        int      `json:"count"`
-	SampleTitles []string `json:"sample_titles"`
+	Name         string                   `json:"name"`
+	Operator     string                   `json:"operator"`
+	Keyword      string                   `json:"keyword"`
+	Count        int                      `json:"count"`
+	SampleTitles []string                 `json:"sample_titles"`
+	FeedImageURL string                   `json:"feed_image_url,omitempty"`
+	Episodes     []previewResponseEpisode `json:"episodes"`
+}
+
+type previewResponseEpisode struct {
+	Title    string `json:"title"`
+	ImageURL string `json:"image_url,omitempty"`
 }
 
 type feedListResponse struct {
@@ -1111,6 +1118,14 @@ func previewResponseFor(results []application.PreviewResult) previewResponse {
 			Keyword:      result.Keyword,
 			Count:        result.Count,
 			SampleTitles: result.Titles,
+			FeedImageURL: result.FeedImageURL,
+			Episodes: func() []previewResponseEpisode {
+				episodes := make([]previewResponseEpisode, len(result.Episodes))
+				for j, episode := range result.Episodes {
+					episodes[j] = previewResponseEpisode{Title: episode.Title, ImageURL: episode.ImageURL}
+				}
+				return episodes
+			}(),
 		}
 	}
 	return response
@@ -1503,7 +1518,10 @@ var homeTemplate = template.Must(template.New("home").Parse(`<!doctype html>
         </div>
         <button type="submit" class="inline-flex min-h-[46px] items-center justify-center gap-2 rounded-lg bg-violet-600 px-5 py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-violet-700 focus:outline-none focus:ring-4 focus:ring-violet-600/20 lg:mb-0">Publish feed <span aria-hidden="true">→</span></button>
       </form>
-      <div id="create-status" role="status" aria-live="polite" aria-atomic="true" class="mt-4 text-sm text-slate-600 dark:text-slate-300"></div>
+       <div class="mt-5 flex flex-wrap gap-3">
+         <button id="create-preview" type="button" class="inline-flex min-h-[46px] items-center justify-center rounded-lg border border-violet-600 px-5 py-3 text-sm font-semibold text-violet-700 shadow-sm transition hover:bg-violet-50 focus:outline-none focus:ring-4 focus:ring-violet-600/20 dark:text-violet-300 dark:hover:bg-violet-950/50">Preview feed</button>
+       </div>
+       <div id="create-status" role="status" aria-live="polite" aria-atomic="true" class="mt-4 space-y-3 text-sm text-slate-600 dark:text-slate-300"></div>
     </section>
 
     <section class="mt-8 rounded-2xl bg-white p-6 shadow-xl shadow-slate-900/5 ring-1 ring-slate-200 dark:bg-slate-900 dark:ring-slate-800 sm:p-8" aria-labelledby="split-heading">
@@ -1640,6 +1658,73 @@ var homeTemplate = template.Must(template.New("home").Parse(`<!doctype html>
 </div>
 <script>
   (() => {
+    window.rssStudioRenderPreview = (status, data, headingText) => {
+      status.replaceChildren();
+      status.classList.remove("text-rose-700", "dark:text-rose-300");
+      const heading = document.createElement("p");
+      heading.className = "font-semibold text-slate-800 dark:text-slate-200";
+      heading.textContent = headingText || "Preview results";
+      status.appendChild(heading);
+      const results = data && Array.isArray(data.outputs) ? data.outputs : [];
+      results.forEach((output) => {
+        const section = document.createElement("section");
+        section.className = "space-y-3 rounded-xl border border-slate-200 p-4 dark:border-slate-800";
+        const header = document.createElement("div");
+        header.className = "flex items-center gap-3";
+        const feedImageURL = typeof output.feed_image_url === "string" ? output.feed_image_url : "";
+        if (feedImageURL) {
+          const image = document.createElement("img");
+          image.className = "h-16 w-16 shrink-0 rounded-xl object-cover";
+          image.src = feedImageURL;
+          image.alt = "Podcast feed artwork";
+          image.loading = "lazy";
+          image.decoding = "async";
+          image.referrerPolicy = "no-referrer";
+          header.appendChild(image);
+        }
+        const summary = document.createElement("p");
+        summary.className = "font-medium text-slate-800 dark:text-slate-200";
+        const name = typeof output.name === "string" ? output.name : "Output";
+        const count = Number.isFinite(output.count) ? output.count : 0;
+        summary.textContent = name + ": " + count + " matching episode" + (count === 1 ? "" : "s");
+        header.appendChild(summary);
+        section.appendChild(header);
+        const episodes = Array.isArray(output.episodes) ? output.episodes.slice(0, 5) : [];
+        if (episodes.length === 0) {
+          const empty = document.createElement("p");
+          empty.className = "text-slate-500 dark:text-slate-400";
+          empty.textContent = "No matching episode titles.";
+          section.appendChild(empty);
+          return;
+        }
+        const list = document.createElement("div");
+        list.className = "space-y-2";
+        episodes.forEach((episode) => {
+          const item = document.createElement("article");
+          item.className = "flex items-center gap-3 rounded-lg border border-slate-100 p-2 dark:border-slate-800";
+          if (episode && typeof episode.image_url === "string" && episode.image_url) {
+            const image = document.createElement("img");
+            image.className = "h-14 w-14 shrink-0 rounded-lg object-cover";
+            image.src = episode.image_url;
+            image.alt = "";
+            image.loading = "lazy";
+            image.decoding = "async";
+            image.referrerPolicy = "no-referrer";
+            item.appendChild(image);
+          }
+          const title = document.createElement("p");
+          title.className = "text-slate-600 dark:text-slate-400";
+          title.textContent = episode && typeof episode.title === "string" ? episode.title : "Untitled episode";
+          item.appendChild(title);
+          list.appendChild(item);
+        });
+        section.appendChild(list);
+      });
+    };
+  })();
+</script>
+<script>
+  (() => {
     window.rssStudioRequest = async (endpoint, options = {}) => {
       const headers = { ...(options.headers || {}), Accept: "application/json" };
       if (options.body) headers["Content-Type"] = "application/json";
@@ -1664,7 +1749,8 @@ var homeTemplate = template.Must(template.New("home").Parse(`<!doctype html>
     const cardTemplate = document.getElementById("feed-card-template");
     const count = document.getElementById("published-feed-count");
     const status = document.getElementById("create-status");
-    if (!form || !content || !cardTemplate || !status) return;
+    const previewButton = document.getElementById("create-preview");
+    if (!form || !content || !cardTemplate || !status || !previewButton) return;
 
     const setStatus = (message, error = false) => {
       status.textContent = message;
@@ -1710,6 +1796,32 @@ var homeTemplate = template.Must(template.New("home").Parse(`<!doctype html>
       if (content.querySelector("[data-feed-card]")) return;
       content.innerHTML = '<div data-feed-empty class="rounded-2xl border border-dashed border-slate-300 bg-white px-6 py-14 text-center dark:border-slate-700 dark:bg-slate-900"><div class="mx-auto flex h-11 w-11 items-center justify-center rounded-full bg-violet-50 text-xl text-violet-600 dark:bg-violet-950 dark:text-violet-300">＋</div><h3 class="mt-4 text-sm font-semibold text-slate-900 dark:text-slate-100">No filtered feeds yet</h3><p class="mt-1 text-sm text-slate-500 dark:text-slate-400">Create your first one above.</p></div>';
     };
+
+    previewButton.addEventListener("click", async () => {
+      if (!form.reportValidity()) return;
+      previewButton.disabled = true;
+      form.querySelector("button[type=submit]").disabled = true;
+      status.textContent = "Loading preview...";
+      try {
+        const data = await window.rssStudioRequest("/api/v1/feeds/preview", {
+          method: "POST",
+          body: JSON.stringify({
+            source_url: form.elements.source_url.value.trim(),
+            outputs: [{
+              name: form.elements.name.value.trim(),
+              operator: form.elements.operator.value,
+              keyword: form.elements.keyword.value.trim()
+            }]
+          })
+        });
+        window.rssStudioRenderPreview(status, data, "Feed preview");
+      } catch (error) {
+        setStatus(error instanceof Error ? error.message : "Request failed.", true);
+      } finally {
+        previewButton.disabled = false;
+        form.querySelector("button[type=submit]").disabled = false;
+      }
+    });
 
     form.addEventListener("submit", async (event) => {
       event.preventDefault();
@@ -1850,39 +1962,7 @@ var homeTemplate = template.Must(template.New("home").Parse(`<!doctype html>
       outputs.appendChild(row);
       updateRemoveButtons();
     };
-    const renderPreview = (data) => {
-      clearStatus();
-      const heading = document.createElement("p");
-      heading.className = "font-semibold text-slate-800 dark:text-slate-200";
-      heading.textContent = "Preview results";
-      status.appendChild(heading);
-      const results = data && Array.isArray(data.outputs) ? data.outputs : [];
-      results.forEach((output) => {
-        const section = document.createElement("section");
-        const title = document.createElement("p");
-        const name = typeof output.name === "string" ? output.name : "Output";
-        const count = Number.isFinite(output.count) ? output.count : 0;
-        title.textContent = name + ": " + count + " matching episode" + (count === 1 ? "" : "s");
-        section.appendChild(title);
-        const samples = Array.isArray(output.sample_titles) ? output.sample_titles.slice(0, 5) : [];
-        if (samples.length === 0) {
-          const empty = document.createElement("p");
-          empty.className = "text-slate-500 dark:text-slate-400";
-          empty.textContent = "No matching episode titles.";
-          section.appendChild(empty);
-        } else {
-          const list = document.createElement("ul");
-          list.className = "list-disc pl-5 text-slate-500 dark:text-slate-400";
-          samples.forEach((sample) => {
-            const item = document.createElement("li");
-            item.textContent = typeof sample === "string" ? sample : String(sample);
-            list.appendChild(item);
-          });
-          section.appendChild(list);
-        }
-        status.appendChild(section);
-      });
-    };
+     const renderPreview = (data) => window.rssStudioRenderPreview(status, data, "Split preview");
     const renderPublished = (data) => {
       clearStatus();
       const heading = document.createElement("p");

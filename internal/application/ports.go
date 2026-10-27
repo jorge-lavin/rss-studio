@@ -45,9 +45,16 @@ type PreviewRule struct {
 }
 
 type PreviewResult struct {
-	Name     string
-	Operator domain.FilterOperator
-	Keyword  string
-	Count    int
-	Titles   []string
+	Name         string
+	Operator     domain.FilterOperator
+	Keyword      string
+	Count        int
+	Titles       []string
+	FeedImageURL string
+	Episodes     []PreviewEpisode
+}
+
+type PreviewEpisode struct {
+	Title    string
+	ImageURL string
 }

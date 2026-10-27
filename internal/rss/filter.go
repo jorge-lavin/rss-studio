@@ -32,9 +32,18 @@ type FilterResult struct {
 
 // PreviewResult contains matching episode metadata without a generated feed.
 type PreviewResult struct {
-	Name   string
-	Count  int
-	Titles []string
+	Name         string
+	Count        int
+	Titles       []string
+	FeedImageURL string
+	Episodes     []EpisodePreview
+}
+
+// EpisodePreview contains the small amount of episode metadata needed by the
+// preview UI without returning or generating the full feed.
+type EpisodePreview struct {
+	Title    string
+	ImageURL string
 }
 
 // PreviewMany parses one source feed and returns matching metadata for each rule.
@@ -51,7 +60,12 @@ func PreviewMany(source []byte, rules []FilterRule) ([]PreviewResult, error) {
 		if operator == "" {
 			operator = domain.FilterContains
 		}
-		result := PreviewResult{Name: rule.Name, Titles: make([]string, 0, 5)}
+		result := PreviewResult{
+			Name:         rule.Name,
+			Titles:       make([]string, 0, 5),
+			FeedImageURL: imageURL(channel),
+			Episodes:     make([]EpisodePreview, 0, 5),
+		}
 		for _, item := range channel.SelectElements("item") {
 			title := item.SelectElement("title")
 			if title == nil || !matches(strings.ToLower(strings.TrimSpace(title.Text())), operator, needle) {
@@ -60,11 +74,41 @@ func PreviewMany(source []byte, rules []FilterRule) ([]PreviewResult, error) {
 			result.Count++
 			if len(result.Titles) < 5 {
 				result.Titles = append(result.Titles, title.Text())
+				result.Episodes = append(result.Episodes, EpisodePreview{Title: title.Text(), ImageURL: imageURL(item)})
 			}
 		}
 		results = append(results, result)
 	}
 	return results, nil
+}
+
+func imageURL(element *etree.Element) string {
+	for _, child := range element.ChildElements() {
+		tag := child.Tag
+		if child.Space != "" {
+			tag = child.Space + ":" + tag
+		}
+		switch tag {
+		case "itunes:image":
+			if value := child.SelectAttrValue("href", ""); value != "" {
+				return strings.TrimSpace(value)
+			}
+		case "image":
+			if nested := child.SelectElement("url"); nested != nil {
+				return strings.TrimSpace(nested.Text())
+			}
+		case "media:thumbnail":
+			if value := child.SelectAttrValue("url", ""); value != "" {
+				return strings.TrimSpace(value)
+			}
+		case "media:content":
+			contentType := strings.ToLower(strings.TrimSpace(child.SelectAttrValue("type", "")))
+			if strings.EqualFold(child.SelectAttrValue("medium", ""), "image") || strings.HasPrefix(contentType, "image/") {
+				return strings.TrimSpace(child.SelectAttrValue("url", ""))
+			}
+		}
+	}
+	return ""
 }
 
 // FilterMany generates one filtered RSS feed for each rule, in rule order.

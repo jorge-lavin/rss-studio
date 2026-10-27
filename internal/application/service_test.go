@@ -294,6 +294,30 @@ func TestServicePreviewsWithoutPersisting(t *testing.T) {
 	if results[0].Titles[0] != "AI episode 1" || results[0].Titles[4] != "AI episode 5" {
 		t.Fatalf("unexpected sample titles: %#v", results[0].Titles)
 	}
+	if results[0].FeedImageURL != "https://example.test/show.jpg" || results[0].Episodes[0].ImageURL != "https://example.test/episodes/1.jpg" {
+		t.Fatalf("unexpected preview image metadata: %#v", results[0])
+	}
+}
+
+func TestPreviewImageURLOnlyReturnsHTTPImages(t *testing.T) {
+	base := "https://example.test/path/feed.xml"
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{name: "relative", in: "../art/show.jpg", want: "https://example.test/art/show.jpg"},
+		{name: "https", in: "https://images.test/show.jpg", want: "https://images.test/show.jpg"},
+		{name: "javascript", in: "javascript:alert(1)"},
+		{name: "userinfo", in: "https://user:pass@images.test/show.jpg"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := previewImageURL(test.in, base); got != test.want {
+				t.Fatalf("previewImageURL(%q) = %q, want %q", test.in, got, test.want)
+			}
+		})
+	}
 }
 
 func TestServiceAuditEventsAttributeQuotaAndUpstreamOutcomes(t *testing.T) {
@@ -752,7 +776,7 @@ func (s *previewSourceStub) Head(context.Context, string) (time.Time, error) {
 
 func (s *previewSourceStub) Get(context.Context, string) ([]byte, time.Time, error) {
 	s.getCount++
-	return []byte(`<rss version="2.0"><channel><title>Source</title><item><title>AI episode 1</title></item><item><title>AI episode 2</title></item><item><title>AI episode 3</title></item><item><title>AI episode 4</title></item><item><title>AI episode 5</title></item><item><title>AI episode 6</title></item><item><title>Other</title></item></channel></rss>`), time.Time{}, nil
+	return []byte(`<rss version="2.0" xmlns:itunes="http://www.itunes.com/dtds/podcast-1.0.dtd"><channel><title>Source</title><itunes:image href="/show.jpg"/><item><title>AI episode 1</title><itunes:image href="episodes/1.jpg"/></item><item><title>AI episode 2</title></item><item><title>AI episode 3</title></item><item><title>AI episode 4</title></item><item><title>AI episode 5</title></item><item><title>AI episode 6</title></item><item><title>Other</title></item></channel></rss>`), time.Time{}, nil
 }
 
 func testSQLiteStore(t *testing.T) (*storage.SQLiteStore, domain.User) {

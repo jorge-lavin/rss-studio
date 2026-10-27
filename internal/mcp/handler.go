@@ -162,11 +162,18 @@ type feedOutput struct {
 }
 
 type previewOutput struct {
-	Name         string   `json:"name"`
-	Operator     string   `json:"operator"`
-	Keyword      string   `json:"keyword"`
-	Count        int      `json:"count"`
-	SampleTitles []string `json:"sample_titles"`
+	Name         string           `json:"name"`
+	Operator     string           `json:"operator"`
+	Keyword      string           `json:"keyword"`
+	Count        int              `json:"count"`
+	SampleTitles []string         `json:"sample_titles"`
+	FeedImageURL string           `json:"feed_image_url,omitempty"`
+	Episodes     []previewEpisode `json:"episodes"`
+}
+
+type previewEpisode struct {
+	Title    string `json:"title"`
+	ImageURL string `json:"image_url,omitempty"`
 }
 
 var tools = []tool{
@@ -177,7 +184,7 @@ var tools = []tool{
 	},
 	{
 		Name:        "preview_feed",
-		Description: "Preview matching episode titles without publishing a feed.",
+		Description: "Preview matching episodes and artwork without publishing a feed.",
 		InputSchema: previewSchema(),
 	},
 	{
@@ -340,9 +347,14 @@ func (h *Handler) callTool(ctx context.Context, request *http.Request, owner dom
 		}
 		result := make([]previewOutput, len(previews))
 		for i, preview := range previews {
+			episodes := make([]previewEpisode, len(preview.Episodes))
+			for j, episode := range preview.Episodes {
+				episodes[j] = previewEpisode{Title: episode.Title, ImageURL: episode.ImageURL}
+			}
 			result[i] = previewOutput{
 				Name: preview.Name, Operator: string(preview.Operator), Keyword: preview.Keyword,
-				Count: preview.Count, SampleTitles: preview.Titles,
+				Count: preview.Count, SampleTitles: preview.Titles, FeedImageURL: preview.FeedImageURL,
+				Episodes: episodes,
 			}
 		}
 		return jsonToolResult(result), nil
