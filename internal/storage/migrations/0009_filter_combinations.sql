@@ -1,0 +1,2 @@
+ALTER TABLE feeds ADD COLUMN filter_match TEXT NOT NULL DEFAULT 'any';
+ALTER TABLE feeds ADD COLUMN filter_conditions TEXT NOT NULL DEFAULT '[]';

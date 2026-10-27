@@ -76,11 +76,11 @@ func main() {
 	if err != nil {
 		log.Fatalf("configure account quotas: %v", err)
 	}
-	service := application.NewServiceWithOperatorAndQuotas(
+	service := application.NewServiceWithConditionsAndQuotas(
 		database,
 		cache.NewFileCache(filepath.Join(dataDirectory, "cache")),
 		source.NewHTTPSource(&http.Client{Timeout: 20 * time.Second}),
-		rss.FilterWithOperator,
+		rss.FilterWithConditions,
 		quotas,
 	)
 	mux := http.NewServeMux()

@@ -15,6 +15,18 @@ const (
 	FilterEquals     FilterOperator = "equals"
 )
 
+type FilterMatch string
+
+const (
+	FilterAny FilterMatch = "any"
+	FilterAll FilterMatch = "all"
+)
+
+type FilterCondition struct {
+	Operator FilterOperator `json:"operator"`
+	Keyword  string         `json:"keyword"`
+}
+
 func (operator FilterOperator) Valid() bool {
 	switch operator {
 	case FilterContains, FilterStartsWith, FilterEndsWith, FilterEquals:
@@ -39,6 +51,17 @@ func (operator FilterOperator) Label() string {
 	}
 }
 
+func (match FilterMatch) Valid() bool {
+	return match == FilterAny || match == FilterAll
+}
+
+func (match FilterMatch) Label() string {
+	if match == FilterAll {
+		return "All"
+	}
+	return "Any"
+}
+
 type Feed struct {
 	ID        int64
 	TenantID  int64
@@ -48,6 +71,8 @@ type Feed struct {
 	SourceURL string
 	Operator  FilterOperator
 	Keyword   string
+	Match     FilterMatch
+	Filters   []FilterCondition
 	CreatedAt time.Time
 }
 

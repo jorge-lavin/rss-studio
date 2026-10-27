@@ -1111,7 +1111,7 @@ func (s *SQLiteStore) List(owner domain.User) ([]domain.Feed, error) {
 		return nil, err
 	}
 	rows, err := s.db.Query(`
-		SELECT id, user_id, name, slug, path, source_url, filter_operator, keyword, created_at
+		SELECT id, user_id, name, slug, path, source_url, filter_operator, keyword, filter_match, filter_conditions, created_at
 		FROM feeds
 		WHERE user_id = ?
 		ORDER BY created_at DESC, id DESC`, userID)
@@ -1136,7 +1136,7 @@ func (s *SQLiteStore) List(owner domain.User) ([]domain.Feed, error) {
 
 func (s *SQLiteStore) Get(path string) (domain.Feed, bool, error) {
 	feed, err := scanFeed(s.db.QueryRow(`
-		SELECT id, user_id, name, slug, path, source_url, filter_operator, keyword, created_at
+		SELECT id, user_id, name, slug, path, source_url, filter_operator, keyword, filter_match, filter_conditions, created_at
 		FROM feeds
 		WHERE path = ?`, path))
 	if errors.Is(err, sql.ErrNoRows) {
@@ -1153,6 +1153,10 @@ func (s *SQLiteStore) Create(owner domain.User, name, sourceURL, keyword string)
 }
 
 func (s *SQLiteStore) CreateWithOperator(owner domain.User, name, sourceURL string, operator domain.FilterOperator, keyword string) (domain.Feed, error) {
+	return s.CreateWithFilters(owner, name, sourceURL, domain.FilterAny, []domain.FilterCondition{{Operator: operator, Keyword: keyword}})
+}
+
+func (s *SQLiteStore) CreateWithFilters(owner domain.User, name, sourceURL string, match domain.FilterMatch, filters []domain.FilterCondition) (domain.Feed, error) {
 	userID, err := s.ownerID(owner)
 	if err != nil {
 		return domain.Feed{}, err
@@ -1175,11 +1179,15 @@ func (s *SQLiteStore) CreateWithOperator(owner domain.User, name, sourceURL stri
 	if err != nil {
 		return domain.Feed{}, fmt.Errorf("choose feed path: %w", err)
 	}
+	conditions, err := json.Marshal(filters)
+	if err != nil {
+		return domain.Feed{}, fmt.Errorf("encode feed filters: %w", err)
+	}
 	createdAt := time.Now().UTC()
 	result, err := tx.Exec(`
-		INSERT INTO feeds (user_id, name, slug, path, source_url, filter_operator, keyword, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		userID, name, slug, path, sourceURL, operator, keyword, createdAt.Format(time.RFC3339Nano))
+		INSERT INTO feeds (user_id, name, slug, path, source_url, filter_operator, keyword, filter_match, filter_conditions, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		userID, name, slug, path, sourceURL, filters[0].Operator, filters[0].Keyword, match, string(conditions), createdAt.Format(time.RFC3339Nano))
 	if err != nil {
 		return domain.Feed{}, fmt.Errorf("create feed: %w", err)
 	}
@@ -1190,7 +1198,7 @@ func (s *SQLiteStore) CreateWithOperator(owner domain.User, name, sourceURL stri
 	if err := tx.Commit(); err != nil {
 		return domain.Feed{}, fmt.Errorf("commit feed creation: %w", err)
 	}
-	return domain.Feed{ID: id, TenantID: userID, Name: name, Slug: slug, Path: path, SourceURL: sourceURL, Operator: operator, Keyword: keyword, CreatedAt: createdAt}, nil
+	return domain.Feed{ID: id, TenantID: userID, Name: name, Slug: slug, Path: path, SourceURL: sourceURL, Operator: filters[0].Operator, Keyword: filters[0].Keyword, Match: match, Filters: filters, CreatedAt: createdAt}, nil
 }
 
 func (s *SQLiteStore) Delete(owner domain.User, path string) error {
@@ -1384,9 +1392,23 @@ type rowScanner interface {
 
 func scanFeed(row rowScanner) (domain.Feed, error) {
 	var feed domain.Feed
+	var match string
+	var filtersJSON string
 	var createdAt string
-	if err := row.Scan(&feed.ID, &feed.TenantID, &feed.Name, &feed.Slug, &feed.Path, &feed.SourceURL, &feed.Operator, &feed.Keyword, &createdAt); err != nil {
+	if err := row.Scan(&feed.ID, &feed.TenantID, &feed.Name, &feed.Slug, &feed.Path, &feed.SourceURL, &feed.Operator, &feed.Keyword, &match, &filtersJSON, &createdAt); err != nil {
 		return domain.Feed{}, err
+	}
+	feed.Match = domain.FilterMatch(match)
+	if feed.Match == "" {
+		feed.Match = domain.FilterAny
+	}
+	if filtersJSON != "" && filtersJSON != "[]" {
+		if err := json.Unmarshal([]byte(filtersJSON), &feed.Filters); err != nil {
+			return domain.Feed{}, fmt.Errorf("parse feed filters: %w", err)
+		}
+	}
+	if len(feed.Filters) == 0 {
+		feed.Filters = []domain.FilterCondition{{Operator: feed.Operator, Keyword: feed.Keyword}}
 	}
 	var err error
 	feed.CreatedAt, err = time.Parse(time.RFC3339Nano, createdAt)

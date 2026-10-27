@@ -104,7 +104,7 @@ curl -fsS '{{.BaseURL}}/api/v1/feeds' \
         <div class="mb-5">
           <p class="text-xs font-semibold uppercase tracking-widest text-slate-400">Common payload</p>
           <h2 class="mt-2 text-xl font-semibold tracking-tight">Create a feed</h2>
-          <p class="mt-1 text-sm text-slate-500 dark:text-slate-400">Operators are case-insensitive and default to contains.</p>
+           <p class="mt-1 text-sm text-slate-500 dark:text-slate-400">Use one filter or combine up to 32 filters with any (OR) or all (AND).</p>
         </div>
         <pre class="overflow-x-auto rounded-xl bg-slate-950 p-4 text-xs leading-6 text-slate-300"><code>curl -fsS -X POST '{{.BaseURL}}/api/v1/feeds' \
   -H "Authorization: Bearer $token" \
@@ -112,8 +112,8 @@ curl -fsS '{{.BaseURL}}/api/v1/feeds' \
   -d '{
     "name": "AI episodes",
     "source_url": "https://example.com/podcast.xml",
-    "operator": "contains",
-    "keyword": "AI"
+     "match": "any",
+     "filters": [{"operator": "contains", "keyword": "AI"}]
   }'</code></pre>
         <div class="mt-4 flex flex-wrap gap-2 text-xs">
           <code class="rounded-full bg-violet-50 px-2.5 py-1 text-violet-700 dark:bg-violet-950 dark:text-violet-300">contains</code>

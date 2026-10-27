@@ -130,6 +130,13 @@ type outputInput struct {
 	Name     string                `json:"name"`
 	Operator domain.FilterOperator `json:"operator"`
 	Keyword  string                `json:"keyword"`
+	Match    domain.FilterMatch    `json:"match"`
+	Filters  []filterInput         `json:"filters"`
+}
+
+type filterInput struct {
+	Operator domain.FilterOperator `json:"operator"`
+	Keyword  string                `json:"keyword"`
 }
 
 type createFeedInput struct {
@@ -137,6 +144,8 @@ type createFeedInput struct {
 	SourceURL      string                `json:"source_url"`
 	Operator       domain.FilterOperator `json:"operator"`
 	Keyword        string                `json:"keyword"`
+	Match          domain.FilterMatch    `json:"match"`
+	Filters        []filterInput         `json:"filters"`
 	IdempotencyKey string                `json:"idempotency_key"`
 }
 
@@ -158,6 +167,8 @@ type feedOutput struct {
 	SourceURL string    `json:"source_url"`
 	Operator  string    `json:"operator"`
 	Keyword   string    `json:"keyword"`
+	Match     string    `json:"match"`
+	Filters   []filterOutput `json:"filters"`
 	CreatedAt time.Time `json:"created_at"`
 }
 
@@ -165,10 +176,17 @@ type previewOutput struct {
 	Name         string           `json:"name"`
 	Operator     string           `json:"operator"`
 	Keyword      string           `json:"keyword"`
+	Match        string           `json:"match"`
+	Filters      []filterOutput   `json:"filters"`
 	Count        int              `json:"count"`
 	SampleTitles []string         `json:"sample_titles"`
 	FeedImageURL string           `json:"feed_image_url,omitempty"`
 	Episodes     []previewEpisode `json:"episodes"`
+}
+
+type filterOutput struct {
+	Operator string `json:"operator"`
+	Keyword  string `json:"keyword"`
 }
 
 type previewEpisode struct {
@@ -195,8 +213,10 @@ var tools = []tool{
 			"source_url":      map[string]any{"type": "string"},
 			"operator":        map[string]any{"type": "string", "enum": operators()},
 			"keyword":         map[string]any{"type": "string"},
+			"match":           map[string]any{"type": "string", "enum": filterMatches()},
+			"filters":         filtersSchema(),
 			"idempotency_key": map[string]any{"type": "string", "minLength": 1, "maxLength": 255},
-		}, []string{"name", "source_url", "keyword"}),
+		}, []string{"name", "source_url"}),
 	},
 	{
 		Name:        "create_split_feeds",
@@ -352,7 +372,7 @@ func (h *Handler) callTool(ctx context.Context, request *http.Request, owner dom
 				episodes[j] = previewEpisode{Title: episode.Title, ImageURL: episode.ImageURL}
 			}
 			result[i] = previewOutput{
-				Name: preview.Name, Operator: string(preview.Operator), Keyword: preview.Keyword,
+				Name: preview.Name, Operator: string(preview.Operator), Keyword: preview.Keyword, Match: string(preview.Match), Filters: filterOutputs(preview.Filters),
 				Count: preview.Count, SampleTitles: preview.Titles, FeedImageURL: preview.FeedImageURL,
 				Episodes: episodes,
 			}
@@ -372,12 +392,14 @@ func (h *Handler) callTool(ctx context.Context, request *http.Request, owner dom
 			SourceURL string                `json:"source_url"`
 			Operator  domain.FilterOperator `json:"operator"`
 			Keyword   string                `json:"keyword"`
-		}{args.Name, args.SourceURL, args.Operator, args.Keyword})
+			Match     domain.FilterMatch    `json:"match"`
+			Filters   []filterInput         `json:"filters"`
+		}{args.Name, args.SourceURL, args.Operator, args.Keyword, args.Match, args.Filters})
 		if err != nil {
 			return toolError("Could not create feed."), nil
 		}
 		result, err := h.service.ExecuteIdempotent(ctx, owner, identity.CredentialHash, args.IdempotencyKey, requestHash, func() (any, error) {
-			feed, err := h.service.CreateFeedWithOperator(ctx, owner, args.Name, args.SourceURL, args.Operator, args.Keyword)
+			feed, err := h.service.CreateFeedWithFilters(ctx, owner, args.Name, args.SourceURL, args.Match, filterConditions(args.Operator, args.Keyword, args.Filters))
 			if err != nil {
 				return nil, err
 			}
@@ -489,7 +511,7 @@ func toolPolicy(name string) (scope, operation string, ok bool) {
 }
 
 func validCreateFeedInput(input createFeedInput) bool {
-	return input.Name != "" && input.SourceURL != "" && input.Keyword != "" && validIdempotencyKey(input.IdempotencyKey)
+	return input.Name != "" && input.SourceURL != "" && (input.Keyword != "" || len(input.Filters) > 0) && validIdempotencyKey(input.IdempotencyKey)
 }
 
 func validSplitFeedInput(input splitFeedInput) bool {
@@ -519,9 +541,28 @@ func validIdempotencyKey(value string) bool {
 func previewRules(outputs []outputInput) []application.PreviewRule {
 	rules := make([]application.PreviewRule, len(outputs))
 	for i, output := range outputs {
-		rules[i] = application.PreviewRule{Name: output.Name, Operator: output.Operator, Keyword: output.Keyword}
+		rules[i] = application.PreviewRule{Name: output.Name, Operator: output.Operator, Keyword: output.Keyword, Match: output.Match, Filters: filterConditions(output.Operator, output.Keyword, output.Filters)}
 	}
 	return rules
+}
+
+func filterConditions(operator domain.FilterOperator, keyword string, filters []filterInput) []domain.FilterCondition {
+	if len(filters) == 0 {
+		return []domain.FilterCondition{{Operator: operator, Keyword: keyword}}
+	}
+	conditions := make([]domain.FilterCondition, len(filters))
+	for i, filter := range filters {
+		conditions[i] = domain.FilterCondition{Operator: filter.Operator, Keyword: filter.Keyword}
+	}
+	return conditions
+}
+
+func filterOutputs(filters []domain.FilterCondition) []filterOutput {
+	output := make([]filterOutput, len(filters))
+	for i, filter := range filters {
+		output[i] = filterOutput{Operator: string(filter.Operator), Keyword: filter.Keyword}
+	}
+	return output
 }
 
 func feedOutputFor(request *http.Request, feed domain.Feed) feedOutput {
@@ -529,6 +570,7 @@ func feedOutputFor(request *http.Request, feed domain.Feed) feedOutput {
 	return feedOutput{
 		Name: feed.Name, Path: path, URL: baseURL(request) + path,
 		SourceURL: feed.SourceURL, Operator: string(feed.Operator), Keyword: feed.Keyword,
+		Match: string(feed.Match), Filters: filterOutputs(feed.Filters),
 		CreatedAt: feed.CreatedAt,
 	}
 }
@@ -729,8 +771,10 @@ func previewSchema() map[string]any {
 					"name":     map[string]any{"type": "string"},
 					"operator": map[string]any{"type": "string", "enum": operators()},
 					"keyword":  map[string]any{"type": "string"},
+					"match":    map[string]any{"type": "string", "enum": filterMatches()},
+					"filters":  filtersSchema(),
 				},
-				"required":             []string{"name", "keyword"},
+				"required":             []string{"name"},
 				"additionalProperties": false,
 			},
 		},
@@ -747,4 +791,22 @@ func splitSchema() map[string]any {
 
 func operators() []string {
 	return []string{string(domain.FilterContains), string(domain.FilterStartsWith), string(domain.FilterEndsWith), string(domain.FilterEquals)}
+}
+
+func filterMatches() []string {
+	return []string{string(domain.FilterAny), string(domain.FilterAll)}
+}
+
+func filtersSchema() map[string]any {
+	return map[string]any{
+		"type": "array", "minItems": 1, "maxItems": application.MaxFilterConditions,
+		"items": map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"operator": map[string]any{"type": "string", "enum": operators()},
+				"keyword":  map[string]any{"type": "string"},
+			},
+			"required": []string{"operator", "keyword"}, "additionalProperties": false,
+		},
+	}
 }

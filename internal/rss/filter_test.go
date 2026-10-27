@@ -137,6 +137,26 @@ func TestFilterManyUsesEachRuleOperator(t *testing.T) {
 	}
 }
 
+func TestFilterManyCombinesConditions(t *testing.T) {
+	source := []byte(`<rss version="2.0"><channel><title>Source</title><item><title>Alpha episode</title></item><item><title>Beta episode</title></item><item><title>Gamma episode</title></item><item><title>Alpha Beta</title></item></channel></rss>`)
+	results, err := FilterMany(source, []FilterRule{
+		{Name: "Any", Match: domain.FilterAny, Filters: []domain.FilterCondition{
+			{Operator: domain.FilterStartsWith, Keyword: "alpha"},
+			{Operator: domain.FilterStartsWith, Keyword: "beta"},
+		}},
+		{Name: "All", Match: domain.FilterAll, Filters: []domain.FilterCondition{
+			{Operator: domain.FilterContains, Keyword: "alpha"},
+			{Operator: domain.FilterContains, Keyword: "beta"},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := []int{results[0].Count, results[1].Count}; !reflect.DeepEqual(got, []int{3, 1}) {
+		t.Fatalf("unexpected combined counts: %v", got)
+	}
+}
+
 func TestPreviewManyReturnsMetadataWithoutFeeds(t *testing.T) {
 	source := []byte(`<rss version="2.0" xmlns:itunes="http://www.itunes.com/dtds/podcast-1.0.dtd"><channel><title>Source</title><itunes:image href="https://images.test/show.jpg"/><item><title>AI one</title><itunes:image href="https://images.test/episode.jpg"/></item><item><title>Other</title></item></channel></rss>`)
 	results, err := PreviewMany(source, []FilterRule{{Name: "AI", Keyword: "ai"}, {Name: "Other", Keyword: "other"}})

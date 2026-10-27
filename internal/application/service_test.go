@@ -407,6 +407,37 @@ func TestServiceCreatesSplitFeedsWithDifferentOperators(t *testing.T) {
 	}
 }
 
+func TestServiceCreatesCombinedFeedAndPersistsConditions(t *testing.T) {
+	store, owner := testSQLiteStore(t)
+	cache := newSplitMemoryCache()
+	service := NewServiceWithConditions(store, cache, &sourceStub{}, rss.FilterWithConditions)
+
+	feed, err := service.CreateFeedWithFilters(context.Background(), owner, "Keep or drop", "https://example.test/rss", domain.FilterAny, []domain.FilterCondition{
+		{Operator: domain.FilterStartsWith, Keyword: "keep"},
+		{Operator: domain.FilterEquals, Keyword: "drop"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if feed.Match != domain.FilterAny || len(feed.Filters) != 2 || feed.Filters[1].Operator != domain.FilterEquals {
+		t.Fatalf("combined conditions were not returned: %#v", feed)
+	}
+	stored, found, err := store.Get(feed.Path)
+	if err != nil || !found {
+		t.Fatalf("combined feed was not stored: found=%v err=%v", found, err)
+	}
+	if stored.Match != domain.FilterAny || len(stored.Filters) != 2 || stored.Filters[0].Keyword != "keep" {
+		t.Fatalf("combined conditions were not persisted: %#v", stored)
+	}
+	data, err := cache.Read(feed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "Keep foo") || !strings.Contains(string(data), "Drop") {
+		t.Fatalf("combined feed did not include both matches: %s", data)
+	}
+}
+
 func TestServiceRejectsOversizedSplitAggregateBeforeFiltering(t *testing.T) {
 	source := &sizedSourceStub{data: bytes.Repeat([]byte("x"), MaxSplitAggregateBytes/4+1)}
 	service := NewService(nil, nil, source, rss.Filter)

@@ -18,6 +18,10 @@ type OperatorFeedStore interface {
 	CreateWithOperator(owner domain.User, name, sourceURL string, operator domain.FilterOperator, keyword string) (domain.Feed, error)
 }
 
+type FilterFeedStore interface {
+	CreateWithFilters(owner domain.User, name, sourceURL string, match domain.FilterMatch, filters []domain.FilterCondition) (domain.Feed, error)
+}
+
 type Source interface {
 	Head(ctx context.Context, sourceURL string) (time.Time, error)
 	Get(ctx context.Context, sourceURL string) ([]byte, time.Time, error)
@@ -38,16 +42,22 @@ type Filter func(source []byte, keyword, outputTitle string) ([]byte, int, error
 
 type OperatorFilter func(source []byte, operator domain.FilterOperator, keyword, outputTitle string) ([]byte, int, error)
 
+type ConditionsFilter func(source []byte, match domain.FilterMatch, filters []domain.FilterCondition, outputTitle string) ([]byte, int, error)
+
 type PreviewRule struct {
 	Name     string
 	Operator domain.FilterOperator
 	Keyword  string
+	Match    domain.FilterMatch
+	Filters  []domain.FilterCondition
 }
 
 type PreviewResult struct {
 	Name         string
 	Operator     domain.FilterOperator
 	Keyword      string
+	Match        domain.FilterMatch
+	Filters      []domain.FilterCondition
 	Count        int
 	Titles       []string
 	FeedImageURL string

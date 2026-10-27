@@ -173,13 +173,15 @@ alias for the revoke POST.
 ### Feed request and response shapes
 
 Create and preview output objects use `name`, `source_url`, `operator`, and
-`keyword`. Operators are `contains`, `starts_with`, `ends_with`, and `equals`;
-matching is case-insensitive. Omitted operators default to `contains`. Names
+`keyword` for one filter. To combine filters, use `filters` with `match` set to
+`any` (OR) or `all` (AND); each filter has an `operator` and `keyword`.
+Operators are `contains`, `starts_with`, `ends_with`, and `equals`; matching is
+case-insensitive. Omitted operators default to `contains`. Names
 are limited to 120 characters, source URLs to 2048 characters, keywords to 200
 characters, and source URLs must be HTTP or HTTPS without user information.
 
 `GET /api/v1/feeds` returns `{ "feeds": [...] }`. Each feed has `name`, `path`,
-`url`, `source_url`, `operator`, `keyword`, `status`, and RFC3339 `created_at`.
+`url`, `source_url`, `operator`, `keyword`, `match`, `filters`, `status`, and RFC3339 `created_at`.
 `status` is `ready` or `refreshing` and reports background refresh state for the
 feed's source. Create
 returns one feed object with HTTP 201. Preview returns

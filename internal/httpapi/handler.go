@@ -66,12 +66,21 @@ type createFeedRequest struct {
 	SourceURL string                `json:"source_url"`
 	Operator  domain.FilterOperator `json:"operator"`
 	Keyword   string                `json:"keyword"`
+	Match     domain.FilterMatch    `json:"match"`
+	Filters   []filterInput         `json:"filters"`
+}
+
+type filterInput struct {
+	Operator domain.FilterOperator `json:"operator"`
+	Keyword  string                `json:"keyword"`
 }
 
 type previewOutput struct {
 	Name     string                `json:"name"`
 	Operator domain.FilterOperator `json:"operator"`
 	Keyword  string                `json:"keyword"`
+	Match    domain.FilterMatch    `json:"match"`
+	Filters  []filterInput         `json:"filters"`
 }
 
 type previewResponse struct {
@@ -82,10 +91,17 @@ type previewResponseOutput struct {
 	Name         string                   `json:"name"`
 	Operator     string                   `json:"operator"`
 	Keyword      string                   `json:"keyword"`
+	Match        string                   `json:"match"`
+	Filters      []filterResponse         `json:"filters"`
 	Count        int                      `json:"count"`
 	SampleTitles []string                 `json:"sample_titles"`
 	FeedImageURL string                   `json:"feed_image_url,omitempty"`
 	Episodes     []previewResponseEpisode `json:"episodes"`
+}
+
+type filterResponse struct {
+	Operator string `json:"operator"`
+	Keyword  string `json:"keyword"`
 }
 
 type previewResponseEpisode struct {
@@ -98,14 +114,16 @@ type feedListResponse struct {
 }
 
 type feedListResponseFeed struct {
-	Name      string    `json:"name"`
-	Path      string    `json:"path"`
-	URL       string    `json:"url"`
-	SourceURL string    `json:"source_url"`
-	Operator  string    `json:"operator"`
-	Keyword   string    `json:"keyword"`
-	Status    string    `json:"status"`
-	CreatedAt time.Time `json:"created_at"`
+	Name      string           `json:"name"`
+	Path      string           `json:"path"`
+	URL       string           `json:"url"`
+	SourceURL string           `json:"source_url"`
+	Operator  string           `json:"operator"`
+	Keyword   string           `json:"keyword"`
+	Match     string           `json:"match"`
+	Filters   []filterResponse `json:"filters"`
+	Status    string           `json:"status"`
+	CreatedAt time.Time        `json:"created_at"`
 }
 
 type splitResponse struct {
@@ -113,12 +131,14 @@ type splitResponse struct {
 }
 
 type splitResponseOutput struct {
-	Name     string `json:"name"`
-	Operator string `json:"operator"`
-	Keyword  string `json:"keyword"`
-	Path     string `json:"path"`
-	URL      string `json:"url"`
-	Status   string `json:"status"`
+	Name     string           `json:"name"`
+	Operator string           `json:"operator"`
+	Keyword  string           `json:"keyword"`
+	Match    string           `json:"match"`
+	Filters  []filterResponse `json:"filters"`
+	Path     string           `json:"path"`
+	URL      string           `json:"url"`
+	Status   string           `json:"status"`
 }
 
 type serviceTokenCreateRequest struct {
@@ -490,7 +510,7 @@ func (h *Handler) apiCreateFeed(writer http.ResponseWriter, request *http.Reques
 		return
 	}
 	result, err := h.service.ExecuteIdempotent(request.Context(), h.requestUser(request), requestCredentialHash(request), key, requestHash, func() (any, error) {
-		feed, err := h.service.CreateFeedWithOperator(request.Context(), h.requestUser(request), input.Name, input.SourceURL, input.Operator, input.Keyword)
+		feed, err := h.service.CreateFeedWithFilters(request.Context(), h.requestUser(request), input.Name, input.SourceURL, input.Match, filterConditions(input.Operator, input.Keyword, input.Filters))
 		if err != nil {
 			return nil, err
 		}
@@ -660,9 +680,28 @@ func requestCredentialHash(request *http.Request) string {
 func previewRulesFor(outputs []previewOutput) []application.PreviewRule {
 	rules := make([]application.PreviewRule, len(outputs))
 	for i, output := range outputs {
-		rules[i] = application.PreviewRule{Name: output.Name, Operator: output.Operator, Keyword: output.Keyword}
+		rules[i] = application.PreviewRule{Name: output.Name, Operator: output.Operator, Keyword: output.Keyword, Match: output.Match, Filters: filterConditions(output.Operator, output.Keyword, output.Filters)}
 	}
 	return rules
+}
+
+func filterConditions(operator domain.FilterOperator, keyword string, filters []filterInput) []domain.FilterCondition {
+	if len(filters) == 0 {
+		return []domain.FilterCondition{{Operator: operator, Keyword: keyword}}
+	}
+	conditions := make([]domain.FilterCondition, len(filters))
+	for i, filter := range filters {
+		conditions[i] = domain.FilterCondition{Operator: filter.Operator, Keyword: filter.Keyword}
+	}
+	return conditions
+}
+
+func filterResponses(filters []domain.FilterCondition) []filterResponse {
+	response := make([]filterResponse, len(filters))
+	for i, filter := range filters {
+		response[i] = filterResponse{Operator: string(filter.Operator), Keyword: filter.Keyword}
+	}
+	return response
 }
 
 func (h *Handler) login(writer http.ResponseWriter, request *http.Request) {
@@ -1046,7 +1085,7 @@ func (h *Handler) createFeed(writer http.ResponseWriter, request *http.Request) 
 		h.renderHome(writer, request, "Could not read form.", http.StatusBadRequest)
 		return
 	}
-	_, err := h.service.CreateFeedWithOperator(request.Context(), h.requestUser(request), request.FormValue("name"), request.FormValue("source_url"), domain.FilterOperator(request.FormValue("operator")), request.FormValue("keyword"))
+	_, err := h.service.CreateFeedWithFilters(request.Context(), h.requestUser(request), request.FormValue("name"), request.FormValue("source_url"), domain.FilterMatch(request.FormValue("match")), formFilterConditions(request))
 	if err != nil {
 		switch {
 		case errors.Is(err, application.ErrQuotaExceeded):
@@ -1066,6 +1105,16 @@ func (h *Handler) createFeed(writer http.ResponseWriter, request *http.Request) 
 	http.Redirect(writer, request, "/", http.StatusSeeOther)
 }
 
+func formFilterConditions(request *http.Request) []domain.FilterCondition {
+	conditions := []domain.FilterCondition{{Operator: domain.FilterOperator(request.FormValue("operator")), Keyword: request.FormValue("keyword")}}
+	operators := request.Form["extra_operator"]
+	keywords := request.Form["extra_keyword"]
+	for i := 0; i < len(operators) && i < len(keywords); i++ {
+		conditions = append(conditions, domain.FilterCondition{Operator: domain.FilterOperator(operators[i]), Keyword: keywords[i]})
+	}
+	return conditions
+}
+
 func (h *Handler) preview(writer http.ResponseWriter, request *http.Request) {
 	var input previewRequest
 	request.Body = http.MaxBytesReader(writer, request.Body, maxJSONRequestBody)
@@ -1079,10 +1128,7 @@ func (h *Handler) preview(writer http.ResponseWriter, request *http.Request) {
 		return
 	}
 
-	rules := make([]application.PreviewRule, len(input.Outputs))
-	for i, output := range input.Outputs {
-		rules[i] = application.PreviewRule{Name: output.Name, Operator: output.Operator, Keyword: output.Keyword}
-	}
+	rules := previewRulesFor(input.Outputs)
 	results, err := h.service.PreviewForOwner(request.Context(), h.requestUser(request), input.SourceURL, rules)
 	if err != nil {
 		switch {
@@ -1116,6 +1162,8 @@ func previewResponseFor(results []application.PreviewResult) previewResponse {
 			Name:         result.Name,
 			Operator:     string(result.Operator),
 			Keyword:      result.Keyword,
+			Match:        string(result.Match),
+			Filters:      filterResponses(result.Filters),
 			Count:        result.Count,
 			SampleTitles: result.Titles,
 			FeedImageURL: result.FeedImageURL,
@@ -1136,6 +1184,7 @@ func (h *Handler) feedListResponseFeedFor(request *http.Request, feed domain.Fee
 	return feedListResponseFeed{
 		Name: feed.Name, Path: path, URL: baseURL(request) + path,
 		SourceURL: feed.SourceURL, Operator: string(feed.Operator), Keyword: feed.Keyword,
+		Match: string(feed.Match), Filters: filterResponses(feed.Filters),
 		Status: string(h.service.RefreshStatus(feed)), CreatedAt: feed.CreatedAt,
 	}
 }
@@ -1153,10 +1202,7 @@ func (h *Handler) splitFeeds(writer http.ResponseWriter, request *http.Request) 
 		return
 	}
 
-	rules := make([]application.PreviewRule, len(input.Outputs))
-	for i, output := range input.Outputs {
-		rules[i] = application.PreviewRule{Name: output.Name, Operator: output.Operator, Keyword: output.Keyword}
-	}
+	rules := previewRulesFor(input.Outputs)
 	feeds, err := h.service.CreateSplitFeeds(request.Context(), h.requestUser(request), input.SourceURL, rules)
 	if err != nil {
 		switch {
@@ -1192,6 +1238,8 @@ func (h *Handler) splitResponseFor(request *http.Request, feeds []domain.Feed) s
 			Name:     feed.Name,
 			Operator: string(feed.Operator),
 			Keyword:  feed.Keyword,
+			Match:    string(feed.Match),
+			Filters:  filterResponses(feed.Filters),
 			Path:     path,
 			URL:      baseURL(request) + path,
 			Status:   string(h.service.RefreshStatus(feed)),
@@ -1512,12 +1560,27 @@ var homeTemplate = template.Must(template.New("home").Parse(`<!doctype html>
             <option value="equals">Equals</option>
           </select>
         </div>
-        <div>
-          <label for="keyword" class="mb-2 block text-sm font-medium text-slate-700 dark:text-slate-300">Match title</label>
-          <input id="keyword" name="keyword" maxlength="200" placeholder="e.g. AI" required class="block w-full rounded-lg border border-slate-300 bg-white px-3.5 py-3 text-sm text-slate-900 shadow-sm outline-none transition placeholder:text-slate-400 focus:border-violet-600 focus:ring-4 focus:ring-violet-600/10 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 dark:placeholder:text-slate-500">
-        </div>
-        <button type="submit" class="inline-flex min-h-[46px] items-center justify-center gap-2 rounded-lg bg-violet-600 px-5 py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-violet-700 focus:outline-none focus:ring-4 focus:ring-violet-600/20 lg:mb-0">Publish feed <span aria-hidden="true">→</span></button>
-      </form>
+         <div>
+           <label for="keyword" class="mb-2 block text-sm font-medium text-slate-700 dark:text-slate-300">Match title</label>
+           <input id="keyword" name="keyword" maxlength="200" placeholder="e.g. AI" required class="block w-full rounded-lg border border-slate-300 bg-white px-3.5 py-3 text-sm text-slate-900 shadow-sm outline-none transition placeholder:text-slate-400 focus:border-violet-600 focus:ring-4 focus:ring-violet-600/10 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 dark:placeholder:text-slate-500">
+         </div>
+         <div class="lg:col-span-full flex flex-wrap items-end gap-3">
+           <div>
+             <label for="filter-match" class="mb-2 block text-sm font-medium text-slate-700 dark:text-slate-300">Combine filters</label>
+             <select id="filter-match" name="match" class="block rounded-lg border border-slate-300 bg-white px-3.5 py-3 text-sm dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"><option value="any">Any filter (OR)</option><option value="all">All filters (AND)</option></select>
+           </div>
+           <button id="add-create-filter" type="button" class="inline-flex min-h-[46px] items-center rounded-lg border border-slate-300 px-4 py-3 text-sm font-medium text-slate-600 hover:border-violet-400 hover:text-violet-600 dark:border-slate-700 dark:text-slate-300">Add filter</button>
+           <div id="create-filter-rows" class="w-full space-y-3"></div>
+         </div>
+         <button type="submit" class="inline-flex min-h-[46px] items-center justify-center gap-2 rounded-lg bg-violet-600 px-5 py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-violet-700 focus:outline-none focus:ring-4 focus:ring-violet-600/20 lg:mb-0">Publish feed <span aria-hidden="true">→</span></button>
+       </form>
+       <template id="create-filter-row-template">
+         <div data-create-filter-row class="flex flex-wrap items-end gap-3 rounded-xl border border-slate-200 p-3 dark:border-slate-800">
+           <div><label class="mb-2 block text-sm font-medium text-slate-700 dark:text-slate-300">Operator</label><select data-create-filter-operator name="extra_operator" class="block rounded-lg border border-slate-300 bg-white px-3.5 py-3 text-sm dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"><option value="contains">Contains</option><option value="starts_with">Starts with</option><option value="ends_with">Ends with</option><option value="equals">Equals</option></select></div>
+           <div class="min-w-48 flex-1"><label class="mb-2 block text-sm font-medium text-slate-700 dark:text-slate-300">Match title</label><input data-create-filter-keyword name="extra_keyword" maxlength="200" placeholder="e.g. AI" required class="block w-full rounded-lg border border-slate-300 bg-white px-3.5 py-3 text-sm dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"></div>
+           <button type="button" data-remove-create-filter class="min-h-[46px] rounded-lg border border-slate-300 px-4 py-3 text-sm font-medium text-slate-500 hover:border-rose-300 hover:text-rose-600 dark:border-slate-700 dark:text-slate-400">Remove</button>
+         </div>
+       </template>
        <div class="mt-5 flex flex-wrap gap-3">
          <button id="create-preview" type="button" class="inline-flex min-h-[46px] items-center justify-center rounded-lg border border-violet-600 px-5 py-3 text-sm font-semibold text-violet-700 shadow-sm transition hover:bg-violet-50 focus:outline-none focus:ring-4 focus:ring-violet-600/20 dark:text-violet-300 dark:hover:bg-violet-950/50">Preview feed</button>
        </div>
@@ -1550,16 +1613,20 @@ var homeTemplate = template.Must(template.New("home").Parse(`<!doctype html>
               </div>
                <div>
                  <label for="split-output-operator-1" class="mb-2 block text-sm font-medium text-slate-700 dark:text-slate-300">Operator</label>
-                 <select id="split-output-operator-1" data-output-operator name="output_operator" class="block w-full rounded-lg border border-slate-300 bg-white px-3.5 py-3 text-sm text-slate-900 shadow-sm outline-none transition focus:border-violet-600 focus:ring-4 focus:ring-violet-600/10 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100">
+                  <select id="split-output-operator-1" data-output-operator name="output_operator" class="block w-full rounded-lg border border-slate-300 bg-white px-3.5 py-3 text-sm text-slate-900 shadow-sm outline-none transition focus:border-violet-600 focus:ring-4 focus:ring-violet-600/10 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100">
                    <option value="contains">Contains</option>
                    <option value="starts_with">Starts with</option>
                    <option value="ends_with">Ends with</option>
                    <option value="equals">Equals</option>
-                 </select>
-               </div>
-               <div>
+                  </select>
+                  <label class="mt-3 mb-2 block text-sm font-medium text-slate-700 dark:text-slate-300">Combine</label>
+                  <select data-output-match name="output_match" class="block w-full rounded-lg border border-slate-300 bg-white px-3.5 py-3 text-sm dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"><option value="any">Any (OR)</option><option value="all">All (AND)</option></select>
+                </div>
+                <div>
                  <label for="split-output-keyword-1" class="mb-2 block text-sm font-medium text-slate-700 dark:text-slate-300">Match title</label>
-                <input id="split-output-keyword-1" data-output-keyword name="output_keyword" maxlength="200" placeholder="e.g. AI" required class="block w-full rounded-lg border border-slate-300 bg-white px-3.5 py-3 text-sm text-slate-900 shadow-sm outline-none transition placeholder:text-slate-400 focus:border-violet-600 focus:ring-4 focus:ring-violet-600/10 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 dark:placeholder:text-slate-500">
+                 <input id="split-output-keyword-1" data-output-keyword name="output_keyword" maxlength="200" placeholder="e.g. AI" required class="block w-full rounded-lg border border-slate-300 bg-white px-3.5 py-3 text-sm text-slate-900 shadow-sm outline-none transition placeholder:text-slate-400 focus:border-violet-600 focus:ring-4 focus:ring-violet-600/10 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 dark:placeholder:text-slate-500">
+                 <div data-output-extra-filters class="mt-3 space-y-2"></div>
+                 <button type="button" data-add-output-filter class="mt-2 text-sm font-semibold text-violet-600 hover:text-violet-700 dark:text-violet-400">Add filter</button>
               </div>
               <button type="button" data-remove-output disabled aria-disabled="true" aria-label="Remove output 1" class="min-h-[46px] rounded-lg border border-slate-300 px-4 py-3 text-sm font-medium text-slate-500 transition hover:border-rose-300 hover:text-rose-600 focus:outline-none focus:ring-4 focus:ring-violet-600/10 disabled:cursor-not-allowed disabled:opacity-50 dark:border-slate-700 dark:text-slate-400 dark:hover:border-rose-700 dark:hover:text-rose-400">Remove</button>
             </div>
@@ -1572,16 +1639,20 @@ var homeTemplate = template.Must(template.New("home").Parse(`<!doctype html>
               </div>
                <div>
                  <label data-output-operator-label class="mb-2 block text-sm font-medium text-slate-700 dark:text-slate-300">Operator</label>
-                 <select data-output-operator name="output_operator" class="block w-full rounded-lg border border-slate-300 bg-white px-3.5 py-3 text-sm text-slate-900 shadow-sm outline-none transition focus:border-violet-600 focus:ring-4 focus:ring-violet-600/10 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100">
+                  <select data-output-operator name="output_operator" class="block w-full rounded-lg border border-slate-300 bg-white px-3.5 py-3 text-sm text-slate-900 shadow-sm outline-none transition focus:border-violet-600 focus:ring-4 focus:ring-violet-600/10 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100">
                    <option value="contains">Contains</option>
                    <option value="starts_with">Starts with</option>
                    <option value="ends_with">Ends with</option>
                    <option value="equals">Equals</option>
-                 </select>
+                  </select>
+                  <label class="mt-3 mb-2 block text-sm font-medium text-slate-700 dark:text-slate-300">Combine</label>
+                  <select data-output-match name="output_match" class="block w-full rounded-lg border border-slate-300 bg-white px-3.5 py-3 text-sm dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"><option value="any">Any (OR)</option><option value="all">All (AND)</option></select>
                </div>
                <div>
                  <label data-output-keyword-label class="mb-2 block text-sm font-medium text-slate-700 dark:text-slate-300">Match title</label>
-                <input data-output-keyword name="output_keyword" maxlength="200" placeholder="e.g. AI" required class="block w-full rounded-lg border border-slate-300 bg-white px-3.5 py-3 text-sm text-slate-900 shadow-sm outline-none transition placeholder:text-slate-400 focus:border-violet-600 focus:ring-4 focus:ring-violet-600/10 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 dark:placeholder:text-slate-500">
+                 <input data-output-keyword name="output_keyword" maxlength="200" placeholder="e.g. AI" required class="block w-full rounded-lg border border-slate-300 bg-white px-3.5 py-3 text-sm text-slate-900 shadow-sm outline-none transition placeholder:text-slate-400 focus:border-violet-600 focus:ring-4 focus:ring-violet-600/10 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 dark:placeholder:text-slate-500">
+                 <div data-output-extra-filters class="mt-3 space-y-2"></div>
+                 <button type="button" data-add-output-filter class="mt-2 text-sm font-semibold text-violet-600 hover:text-violet-700 dark:text-violet-400">Add filter</button>
               </div>
               <button type="button" data-remove-output aria-label="Remove output 2" class="min-h-[46px] rounded-lg border border-slate-300 px-4 py-3 text-sm font-medium text-slate-500 transition hover:border-rose-300 hover:text-rose-600 focus:outline-none focus:ring-4 focus:ring-violet-600/10 disabled:cursor-not-allowed disabled:opacity-50 dark:border-slate-700 dark:text-slate-400 dark:hover:border-rose-700 dark:hover:text-rose-400">Remove</button>
             </div>
@@ -1618,7 +1689,7 @@ var homeTemplate = template.Must(template.New("home").Parse(`<!doctype html>
             <div class="min-w-0">
               <div class="flex flex-wrap items-center gap-3">
                 <h3 class="text-base font-semibold text-slate-900 dark:text-slate-100">{{.Name}}</h3>
-                <span class="rounded-full bg-violet-50 px-2.5 py-1 text-xs font-medium text-violet-700 dark:bg-violet-950 dark:text-violet-300">{{.Operator.Label}} “{{.Keyword}}”</span>
+                 <span class="rounded-full bg-violet-50 px-2.5 py-1 text-xs font-medium text-violet-700 dark:bg-violet-950 dark:text-violet-300">{{if eq (len .Filters) 1}}{{.Operator.Label}} “{{.Keyword}}”{{else}}{{.Match.Label}} filters{{end}}</span>
               </div>
               <p class="mt-2 truncate text-sm text-slate-500 dark:text-slate-400" title="{{.SourceURL}}">Source: {{.SourceURL}}</p>
               <a href="/feeds/{{.Path}}.xml" class="mt-3 block truncate text-sm font-medium text-violet-600 hover:text-violet-700 hover:underline dark:text-violet-400 dark:hover:text-violet-300" title="{{$.BaseURL}}/feeds/{{.Path}}.xml">{{$.BaseURL}}/feeds/{{.Path}}.xml</a>
@@ -1745,6 +1816,19 @@ var homeTemplate = template.Must(template.New("home").Parse(`<!doctype html>
 <script>
   (() => {
     const form = document.getElementById("create-feed-form");
+    const addButton = document.getElementById("add-create-filter");
+    const rows = document.getElementById("create-filter-rows");
+    const template = document.getElementById("create-filter-row-template");
+    if (!form || !addButton || !rows || !template) return;
+    addButton.addEventListener("click", () => rows.appendChild(template.content.cloneNode(true)));
+    rows.addEventListener("click", (event) => {
+      if (event.target instanceof Element && event.target.matches("[data-remove-create-filter]")) event.target.closest("[data-create-filter-row]").remove();
+    });
+  })();
+</script>
+<script>
+  (() => {
+    const form = document.getElementById("create-feed-form");
     const content = document.getElementById("published-feed-content");
     const cardTemplate = document.getElementById("feed-card-template");
     const count = document.getElementById("published-feed-count");
@@ -1752,11 +1836,18 @@ var homeTemplate = template.Must(template.New("home").Parse(`<!doctype html>
     const previewButton = document.getElementById("create-preview");
     if (!form || !content || !cardTemplate || !status || !previewButton) return;
 
-    const setStatus = (message, error = false) => {
+     const setStatus = (message, error = false) => {
       status.textContent = message;
       status.classList.toggle("text-rose-700", error);
       status.classList.toggle("dark:text-rose-300", error);
-    };
+     };
+     const filters = () => [{
+       operator: form.elements.operator.value,
+       keyword: form.elements.keyword.value.trim()
+     }, ...Array.from(form.querySelectorAll("[data-create-filter-row]")).map((row) => ({
+       operator: row.querySelector("[data-create-filter-operator]").value,
+       keyword: row.querySelector("[data-create-filter-keyword]").value.trim()
+     }))];
     const updateCount = () => {
       if (count) count.textContent = String(content.querySelectorAll("[data-feed-card]").length);
     };
@@ -1765,11 +1856,15 @@ var homeTemplate = template.Must(template.New("home").Parse(`<!doctype html>
       const fragment = cardTemplate.content.cloneNode(true);
       const card = fragment.querySelector("[data-feed-card]");
       const path = feedPath(feed.path);
-      const url = typeof feed.url === "string" ? feed.url : "/feeds/" + path + ".xml";
-      const labels = { contains: "Contains", starts_with: "Starts with", ends_with: "Ends with", equals: "Equals" };
-      card.dataset.feedPath = path;
-      card.querySelector("[data-feed-name]").textContent = feed.name || "Unnamed feed";
-      card.querySelector("[data-feed-filter]").textContent = (labels[feed.operator] || feed.operator || "Contains") + " “" + (feed.keyword || "") + "”";
+       const url = typeof feed.url === "string" ? feed.url : "/feeds/" + path + ".xml";
+       const labels = { contains: "Contains", starts_with: "Starts with", ends_with: "Ends with", equals: "Equals" };
+       const filters = Array.isArray(feed.filters) ? feed.filters : [];
+       const filterText = filters.length > 1
+         ? (feed.match === "all" ? "All" : "Any") + " filters"
+         : (labels[feed.operator] || feed.operator || "Contains") + " “" + (feed.keyword || "") + "”";
+       card.dataset.feedPath = path;
+       card.querySelector("[data-feed-name]").textContent = feed.name || "Unnamed feed";
+       card.querySelector("[data-feed-filter]").textContent = filterText;
       const source = card.querySelector("[data-feed-source]");
       source.textContent = "Source: " + (feed.source_url || "");
       source.title = feed.source_url || "";
@@ -1809,8 +1904,8 @@ var homeTemplate = template.Must(template.New("home").Parse(`<!doctype html>
             source_url: form.elements.source_url.value.trim(),
             outputs: [{
               name: form.elements.name.value.trim(),
-              operator: form.elements.operator.value,
-              keyword: form.elements.keyword.value.trim()
+               match: form.elements.match.value,
+               filters: filters()
             }]
           })
         });
@@ -1835,12 +1930,13 @@ var homeTemplate = template.Must(template.New("home").Parse(`<!doctype html>
           body: JSON.stringify({
             name: form.elements.name.value.trim(),
             source_url: form.elements.source_url.value.trim(),
-            operator: form.elements.operator.value,
-            keyword: form.elements.keyword.value.trim()
+             match: form.elements.match.value,
+             filters: filters()
           })
         });
-        appendCard(data);
-        form.reset();
+         appendCard(data);
+         form.reset();
+         document.getElementById("create-filter-rows").replaceChildren();
         setStatus("Feed published without reloading the page.");
       } catch (error) {
         setStatus(error instanceof Error ? error.message : "Request failed.", true);
@@ -1938,13 +2034,26 @@ var homeTemplate = template.Must(template.New("home").Parse(`<!doctype html>
       status.setAttribute("aria-busy", String(value));
     };
      const payload = () => ({
-       source_url: form.querySelector('[name="source_url"]').value.trim(),
-       outputs: Array.from(outputs.querySelectorAll("[data-output-row]")).map((row) => ({
-         name: row.querySelector("[data-output-name]").value.trim(),
-         operator: row.querySelector("[data-output-operator]").value,
-         keyword: row.querySelector("[data-output-keyword]").value.trim()
-       }))
-    });
+        source_url: form.querySelector('[name="source_url"]').value.trim(),
+        outputs: Array.from(outputs.querySelectorAll("[data-output-row]")).map((row) => ({
+          name: row.querySelector("[data-output-name]").value.trim(),
+          match: row.querySelector("[data-output-match]").value,
+          filters: [{
+            operator: row.querySelector("[data-output-operator]").value,
+            keyword: row.querySelector("[data-output-keyword]").value.trim()
+          }, ...Array.from(row.querySelectorAll("[data-output-extra-filter]")).map((filter) => ({
+            operator: filter.querySelector("[data-output-extra-operator]").value,
+            keyword: filter.querySelector("[data-output-extra-keyword]").value.trim()
+          }))]
+        }))
+     });
+     const addOutputFilter = (row) => {
+       const filter = document.createElement("div");
+       filter.dataset.outputExtraFilter = "";
+       filter.className = "flex gap-2";
+       filter.innerHTML = '<select data-output-extra-operator class="min-w-0 rounded-lg border border-slate-300 bg-white px-2 py-2 text-sm dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"><option value="contains">Contains</option><option value="starts_with">Starts with</option><option value="ends_with">Ends with</option><option value="equals">Equals</option></select><input data-output-extra-keyword maxlength="200" placeholder="e.g. AI" required class="min-w-0 flex-1 rounded-lg border border-slate-300 bg-white px-2 py-2 text-sm dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"><button type="button" data-remove-output-filter class="px-2 text-sm text-rose-600">Remove</button>';
+       row.querySelector("[data-output-extra-filters]").appendChild(filter);
+     };
     const addOutput = () => {
       if (busy || outputs.children.length >= maxOutputs) return;
       const fragment = rowTemplate.content.cloneNode(true);
@@ -1999,9 +2108,18 @@ var homeTemplate = template.Must(template.New("home").Parse(`<!doctype html>
     };
 
     addButton.addEventListener("click", addOutput);
-    outputs.addEventListener("click", (event) => {
-      const target = event.target;
-      if (!(target instanceof Element) || !target.matches("[data-remove-output]") || target.disabled || busy) return;
+     outputs.addEventListener("click", (event) => {
+       const target = event.target;
+       if (!(target instanceof Element) || busy) return;
+       if (target.matches("[data-add-output-filter]")) {
+         addOutputFilter(target.closest("[data-output-row]"));
+         return;
+       }
+       if (target.matches("[data-remove-output-filter]")) {
+         target.closest("[data-output-extra-filter]").remove();
+         return;
+       }
+       if (!target.matches("[data-remove-output]") || target.disabled) return;
       target.closest("[data-output-row]").remove();
       updateRemoveButtons();
     });

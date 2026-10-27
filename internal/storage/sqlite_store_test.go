@@ -27,8 +27,8 @@ func TestSQLiteStoreMigratesAndPersistsMultipleUsers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if version != 8 {
-		t.Fatalf("expected schema version 8, got %d", version)
+	if version != 9 {
+		t.Fatalf("expected schema version 9, got %d", version)
 	}
 	if err := store.Migrate(); err != nil {
 		t.Fatalf("rerunning migrations: %v", err)
@@ -442,6 +442,8 @@ func TestSQLiteStoreUpgradePreservesUsersAndFeeds(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, statement := range []string{
+		"ALTER TABLE feeds DROP COLUMN filter_conditions",
+		"ALTER TABLE feeds DROP COLUMN filter_match",
 		"DROP TABLE quota_usage_buckets",
 		"DROP TABLE rate_limit_buckets",
 		"DROP TABLE idempotency_keys",
@@ -463,7 +465,7 @@ func TestSQLiteStoreUpgradePreservesUsersAndFeeds(t *testing.T) {
 	}
 	defer upgraded.Close()
 	version, err := upgraded.SchemaVersion()
-	if err != nil || version != 8 {
+	if err != nil || version != 9 {
 		t.Fatalf("unexpected upgraded schema version: version=%d err=%v", version, err)
 	}
 	if _, err := upgraded.Authenticate("alice", "password-1234"); err != nil {

@@ -49,12 +49,13 @@ const (
 const MaxSplitOutputs = 32
 
 type Service struct {
-	store          FeedStore
-	cache          FeedCache
-	source         Source
-	filter         Filter
-	operatorFilter OperatorFilter
-	quotaLimits    policy.QuotaLimits
+	store            FeedStore
+	cache            FeedCache
+	source           Source
+	filter           Filter
+	operatorFilter   OperatorFilter
+	conditionsFilter ConditionsFilter
+	quotaLimits      policy.QuotaLimits
 
 	refreshMu  sync.Mutex
 	stateMu    sync.Mutex
@@ -87,11 +88,15 @@ type refreshKey struct {
 }
 
 func NewService(store FeedStore, cache FeedCache, source Source, filter Filter) *Service {
-	return newService(store, cache, source, filter, nil, policy.DefaultQuotaLimits())
+	return newService(store, cache, source, filter, nil, nil, policy.DefaultQuotaLimits())
 }
 
 func NewServiceWithOperator(store FeedStore, cache FeedCache, source Source, filter OperatorFilter) *Service {
-	return newService(store, cache, source, nil, filter, policy.DefaultQuotaLimits())
+	return newService(store, cache, source, nil, filter, nil, policy.DefaultQuotaLimits())
+}
+
+func NewServiceWithConditions(store FeedStore, cache FeedCache, source Source, filter ConditionsFilter) *Service {
+	return newService(store, cache, source, nil, nil, filter, policy.DefaultQuotaLimits())
 }
 
 // QuotaConfig is kept in the application package so callers do not need to
@@ -103,23 +108,28 @@ func DefaultQuotaConfig() QuotaConfig {
 }
 
 func NewServiceWithQuotas(store FeedStore, cache FeedCache, source Source, filter Filter, quotas QuotaConfig) *Service {
-	return newService(store, cache, source, filter, nil, quotas)
+	return newService(store, cache, source, filter, nil, nil, quotas)
 }
 
 func NewServiceWithOperatorAndQuotas(store FeedStore, cache FeedCache, source Source, filter OperatorFilter, quotas QuotaConfig) *Service {
-	return newService(store, cache, source, nil, filter, quotas)
+	return newService(store, cache, source, nil, filter, nil, quotas)
 }
 
-func newService(store FeedStore, cache FeedCache, source Source, filter Filter, operatorFilter OperatorFilter, quotas policy.QuotaLimits) *Service {
+func NewServiceWithConditionsAndQuotas(store FeedStore, cache FeedCache, source Source, filter ConditionsFilter, quotas QuotaConfig) *Service {
+	return newService(store, cache, source, nil, nil, filter, quotas)
+}
+
+func newService(store FeedStore, cache FeedCache, source Source, filter Filter, operatorFilter OperatorFilter, conditionsFilter ConditionsFilter, quotas policy.QuotaLimits) *Service {
 	return &Service{
-		store:          store,
-		cache:          cache,
-		source:         source,
-		filter:         filter,
-		operatorFilter: operatorFilter,
-		quotaLimits:    quotas,
-		refreshing:     make(map[refreshKey]bool),
-		checkedAt:      make(map[refreshKey]time.Time),
+		store:            store,
+		cache:            cache,
+		source:           source,
+		filter:           filter,
+		operatorFilter:   operatorFilter,
+		conditionsFilter: conditionsFilter,
+		quotaLimits:      quotas,
+		refreshing:       make(map[refreshKey]bool),
+		checkedAt:        make(map[refreshKey]time.Time),
 	}
 }
 
@@ -358,13 +368,14 @@ func (s *Service) preview(ctx context.Context, owner domain.User, sourceURL stri
 		name := strings.TrimSpace(rule.Name)
 		operator := domain.FilterOperator(strings.TrimSpace(string(rule.Operator)))
 		keyword := strings.TrimSpace(rule.Keyword)
-		if operator == "" {
-			operator = domain.FilterContains
-		}
-		if err := validateFeed(name, sourceURL, operator, keyword); err != nil {
+		match, filters, err := normalizeFilters(operator, keyword, rule.Match, rule.Filters)
+		if err != nil {
 			return nil, err
 		}
-		filterRules[i] = rss.FilterRule{Name: name, Operator: operator, Keyword: keyword}
+		if err := validateFilterSet(name, sourceURL, match, filters); err != nil {
+			return nil, err
+		}
+		filterRules[i] = rss.FilterRule{Name: name, Operator: filters[0].Operator, Keyword: filters[0].Keyword, Match: match, Filters: filters}
 	}
 
 	lease, err := s.reserveQuota(owner, policy.QuotaUsage{Previews: 1, ConcurrentOperations: 1})
@@ -394,8 +405,10 @@ func (s *Service) preview(ctx context.Context, owner domain.User, sourceURL stri
 		}
 		previews[i] = PreviewResult{
 			Name:         result.Name,
-			Operator:     filterRules[i].Operator,
-			Keyword:      filterRules[i].Keyword,
+			Operator:     filterRules[i].Filters[0].Operator,
+			Keyword:      filterRules[i].Filters[0].Keyword,
+			Match:        filterRules[i].Match,
+			Filters:      filterRules[i].Filters,
 			Count:        result.Count,
 			Titles:       result.Titles,
 			FeedImageURL: previewImageURL(result.FeedImageURL, sourceURL),
@@ -429,6 +442,10 @@ func (s *Service) CreateFeed(ctx context.Context, owner domain.User, name, sourc
 }
 
 func (s *Service) CreateFeedWithOperator(ctx context.Context, owner domain.User, name, sourceURL string, operator domain.FilterOperator, keyword string) (feed domain.Feed, err error) {
+	return s.CreateFeedWithFilters(ctx, owner, name, sourceURL, domain.FilterAny, []domain.FilterCondition{{Operator: operator, Keyword: keyword}})
+}
+
+func (s *Service) CreateFeedWithFilters(ctx context.Context, owner domain.User, name, sourceURL string, match domain.FilterMatch, filters []domain.FilterCondition) (feed domain.Feed, err error) {
 	started := time.Now()
 	defer func() {
 		observability.Record(ctx, observability.Event{
@@ -443,16 +460,17 @@ func (s *Service) CreateFeedWithOperator(ctx context.Context, owner domain.User,
 	}()
 	name = strings.TrimSpace(name)
 	sourceURL = strings.TrimSpace(sourceURL)
-	operator = domain.FilterOperator(strings.TrimSpace(string(operator)))
-	keyword = strings.TrimSpace(keyword)
-	if operator == "" {
-		operator = domain.FilterContains
+	match, filters, err = normalizeFilters("", "", match, filters)
+	if err != nil {
+		return domain.Feed{}, err
 	}
-	if err := validateFeed(name, sourceURL, operator, keyword); err != nil {
+	if err := validateFilterSet(name, sourceURL, match, filters); err != nil {
 		return domain.Feed{}, err
 	}
 	operatorStore, hasOperatorStore := s.store.(OperatorFeedStore)
-	if !hasOperatorStore && operator != domain.FilterContains {
+	filterStore, hasFilterStore := s.store.(FilterFeedStore)
+	legacyStore := len(filters) == 1 && filters[0].Operator == domain.FilterContains
+	if !hasFilterStore && !hasOperatorStore && !legacyStore {
 		return domain.Feed{}, fmt.Errorf("%w: operator-aware feed storage is unavailable", ErrInvalidFeed)
 	}
 	lease, err := s.reserveQuota(owner, policy.QuotaUsage{PublishedFeeds: 1, Creations: 1, ConcurrentOperations: 1})
@@ -462,11 +480,16 @@ func (s *Service) CreateFeedWithOperator(ctx context.Context, owner domain.User,
 	succeeded := false
 	defer func() { s.quotaFinished(lease, succeeded) }()
 
-	if hasOperatorStore {
-		feed, err = operatorStore.CreateWithOperator(owner, name, sourceURL, operator, keyword)
-	} else if operator == domain.FilterContains {
-		feed, err = s.store.Create(owner, name, sourceURL, keyword)
-		feed.Operator = operator
+	if hasFilterStore {
+		feed, err = filterStore.CreateWithFilters(owner, name, sourceURL, match, filters)
+	} else if hasOperatorStore {
+		feed, err = operatorStore.CreateWithOperator(owner, name, sourceURL, filters[0].Operator, filters[0].Keyword)
+		feed.Match = match
+		feed.Filters = filters
+	} else if legacyStore {
+		feed, err = s.store.Create(owner, name, sourceURL, filters[0].Keyword)
+		feed.Match = match
+		feed.Filters = filters
 	} else {
 		return domain.Feed{}, fmt.Errorf("%w: operator-aware feed storage is unavailable", ErrInvalidFeed)
 	}
@@ -517,22 +540,27 @@ func (s *Service) CreateSplitFeeds(ctx context.Context, owner domain.User, sourc
 		name := strings.TrimSpace(rule.Name)
 		operator := domain.FilterOperator(strings.TrimSpace(string(rule.Operator)))
 		keyword := strings.TrimSpace(rule.Keyword)
-		if operator == "" {
-			operator = domain.FilterContains
-		}
-		if err := validateFeed(name, sourceURL, operator, keyword); err != nil {
+		match, filters, err := normalizeFilters(operator, keyword, rule.Match, rule.Filters)
+		if err != nil {
 			return nil, err
 		}
-		normalized[i] = PreviewRule{Name: name, Operator: operator, Keyword: keyword}
-		filterRules[i] = rss.FilterRule{Name: name, Operator: operator, Keyword: keyword}
+		if err := validateFilterSet(name, sourceURL, match, filters); err != nil {
+			return nil, err
+		}
+		normalized[i] = PreviewRule{Name: name, Operator: filters[0].Operator, Keyword: filters[0].Keyword, Match: match, Filters: filters}
+		filterRules[i] = rss.FilterRule{Name: name, Operator: filters[0].Operator, Keyword: filters[0].Keyword, Match: match, Filters: filters}
 	}
 	operatorStore, hasOperatorStore := s.store.(OperatorFeedStore)
-	if !hasOperatorStore {
-		for _, rule := range normalized {
-			if rule.Operator != domain.FilterContains {
-				return nil, fmt.Errorf("%w: operator-aware feed storage is unavailable", ErrInvalidFeed)
-			}
+	filterStore, hasFilterStore := s.store.(FilterFeedStore)
+	legacyStore := true
+	for _, rule := range normalized {
+		if len(rule.Filters) != 1 || rule.Filters[0].Operator != domain.FilterContains {
+			legacyStore = false
+			break
 		}
+	}
+	if !hasFilterStore && !hasOperatorStore && !legacyStore {
+		return nil, fmt.Errorf("%w: operator-aware feed storage is unavailable", ErrInvalidFeed)
 	}
 	lease, err := s.reserveQuota(owner, policy.QuotaUsage{PublishedFeeds: len(normalized), Splits: 1, ConcurrentOperations: 1})
 	if err != nil {
@@ -566,11 +594,16 @@ func (s *Service) CreateSplitFeeds(ctx context.Context, owner domain.User, sourc
 	feeds = make([]domain.Feed, 0, len(filtered))
 	for i, result := range filtered {
 		var feed domain.Feed
-		if hasOperatorStore {
-			feed, err = operatorStore.CreateWithOperator(owner, normalized[i].Name, sourceURL, normalized[i].Operator, normalized[i].Keyword)
-		} else if normalized[i].Operator == domain.FilterContains {
-			feed, err = s.store.Create(owner, normalized[i].Name, sourceURL, normalized[i].Keyword)
-			feed.Operator = normalized[i].Operator
+		if hasFilterStore {
+			feed, err = filterStore.CreateWithFilters(owner, normalized[i].Name, sourceURL, normalized[i].Match, normalized[i].Filters)
+		} else if hasOperatorStore {
+			feed, err = operatorStore.CreateWithOperator(owner, normalized[i].Name, sourceURL, normalized[i].Filters[0].Operator, normalized[i].Filters[0].Keyword)
+			feed.Match = normalized[i].Match
+			feed.Filters = normalized[i].Filters
+		} else if legacyStore {
+			feed, err = s.store.Create(owner, normalized[i].Name, sourceURL, normalized[i].Filters[0].Keyword)
+			feed.Match = normalized[i].Match
+			feed.Filters = normalized[i].Filters
 		} else {
 			return nil, withRollbackError(fmt.Errorf("%w: operator-aware feed storage is unavailable", ErrInvalidFeed), s.rollbackSplit(owner, feeds))
 		}
@@ -697,7 +730,9 @@ func (s *Service) refreshFeed(ctx context.Context, feed domain.Feed, force bool)
 	}
 	var filtered []byte
 	var matched int
-	if s.operatorFilter != nil {
+	if s.conditionsFilter != nil {
+		filtered, matched, err = s.conditionsFilter(sourceData, feed.Match, feed.Filters, feed.Name)
+	} else if s.operatorFilter != nil {
 		filtered, matched, err = s.operatorFilter(sourceData, feed.Operator, feed.Keyword, feed.Name)
 	} else {
 		filtered, matched, err = s.filter(sourceData, feed.Keyword, feed.Name)
@@ -818,7 +853,7 @@ func (s *Service) refreshFeedGroup(ctx context.Context, feed domain.Feed) error 
 	}
 	rules := make([]rss.FilterRule, len(group))
 	for i, candidate := range group {
-		rules[i] = rss.FilterRule{Name: candidate.Name, Operator: candidate.Operator, Keyword: candidate.Keyword}
+		rules[i] = rss.FilterRule{Name: candidate.Name, Operator: candidate.Operator, Keyword: candidate.Keyword, Match: candidate.Match, Filters: candidate.Filters}
 	}
 	filtered, err := rss.FilterMany(sourceData, rules)
 	if err != nil {
@@ -865,14 +900,59 @@ func (s *Service) triggerRefresh(feed domain.Feed) {
 }
 
 func validateFeed(name, sourceURL string, operator domain.FilterOperator, keyword string) error {
-	if name == "" || sourceURL == "" || operator == "" || keyword == "" {
-		return fmt.Errorf("%w: name, source URL, operator, and keyword are required", ErrInvalidFeed)
+	return validateFilterSet(name, sourceURL, domain.FilterAny, []domain.FilterCondition{{Operator: operator, Keyword: keyword}})
+}
+
+const MaxFilterConditions = 32
+
+func normalizeFilters(operator domain.FilterOperator, keyword string, match domain.FilterMatch, filters []domain.FilterCondition) (domain.FilterMatch, []domain.FilterCondition, error) {
+	if len(filters) == 0 {
+		if operator == "" {
+			operator = domain.FilterContains
+		}
+		filters = []domain.FilterCondition{{Operator: operator, Keyword: keyword}}
 	}
-	if !operator.Valid() {
-		return fmt.Errorf("%w: unsupported filter operator", ErrInvalidFeed)
+	if match == "" {
+		match = domain.FilterAny
 	}
-	if len(name) > 120 || len(sourceURL) > 2048 || len(keyword) > 200 {
+	match = domain.FilterMatch(strings.TrimSpace(string(match)))
+	normalized := make([]domain.FilterCondition, len(filters))
+	for i, filter := range filters {
+		operator := domain.FilterOperator(strings.TrimSpace(string(filter.Operator)))
+		if operator == "" {
+			operator = domain.FilterContains
+		}
+		normalized[i] = domain.FilterCondition{
+			Operator: operator,
+			Keyword:  strings.TrimSpace(filter.Keyword),
+		}
+	}
+	return match, normalized, nil
+}
+
+func validateFilterSet(name, sourceURL string, match domain.FilterMatch, filters []domain.FilterCondition) error {
+	if name == "" || sourceURL == "" || len(filters) == 0 {
+		return fmt.Errorf("%w: name, source URL, and at least one filter are required", ErrInvalidFeed)
+	}
+	if !match.Valid() {
+		return fmt.Errorf("%w: unsupported filter combination", ErrInvalidFeed)
+	}
+	if len(filters) > MaxFilterConditions {
+		return fmt.Errorf("%w: no more than %d filters are allowed", ErrInvalidFeed, MaxFilterConditions)
+	}
+	if len(name) > 120 || len(sourceURL) > 2048 {
 		return fmt.Errorf("%w: one or more fields are too long", ErrInvalidFeed)
+	}
+	for _, filter := range filters {
+		if filter.Operator == "" || filter.Keyword == "" {
+			return fmt.Errorf("%w: filter operator and keyword are required", ErrInvalidFeed)
+		}
+		if !filter.Operator.Valid() {
+			return fmt.Errorf("%w: unsupported filter operator", ErrInvalidFeed)
+		}
+		if len(filter.Keyword) > 200 {
+			return fmt.Errorf("%w: one or more fields are too long", ErrInvalidFeed)
+		}
 	}
 	return validateSourceURL(sourceURL)
 }

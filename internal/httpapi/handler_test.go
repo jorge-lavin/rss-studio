@@ -1376,6 +1376,46 @@ func TestVersionedCreateReturnsFeedMetadata(t *testing.T) {
 	}
 }
 
+func TestVersionedCreateAndSplitCombineFilters(t *testing.T) {
+	server, _ := newAuthenticatedServer(t)
+	token := loginToken(t, server)
+	create := `{"name":"Keep or drop","source_url":"https://example.test/rss","match":"any","filters":[{"operator":"starts_with","keyword":"Keep"},{"operator":"equals","keyword":"Drop"}]}`
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/feeds", strings.NewReader(create))
+	request.Header.Set("Authorization", "Bearer "+token)
+	request.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+	server.Config.Handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("combined create failed: %d %s", recorder.Code, recorder.Body.String())
+	}
+	var created struct {
+		Match   string `json:"match"`
+		Filters []struct {
+			Operator string `json:"operator"`
+			Keyword  string `json:"keyword"`
+		} `json:"filters"`
+	}
+	if err := json.NewDecoder(recorder.Body).Decode(&created); err != nil {
+		t.Fatal(err)
+	}
+	if created.Match != "any" || len(created.Filters) != 2 || created.Filters[1].Keyword != "Drop" {
+		t.Fatalf("unexpected combined create response: %#v", created)
+	}
+
+	split := `{"source_url":"https://example.test/rss","outputs":[{"name":"Keep or drop","match":"any","filters":[{"operator":"starts_with","keyword":"Keep"},{"operator":"equals","keyword":"Drop"}]}]}`
+	request = httptest.NewRequest(http.MethodPost, "/api/v1/feeds/split", strings.NewReader(split))
+	request.Header.Set("Authorization", "Bearer "+token)
+	request.Header.Set("Content-Type", "application/json")
+	recorder = httptest.NewRecorder()
+	server.Config.Handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("combined split failed: %d %s", recorder.Code, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), `"match":"any"`) || !strings.Contains(recorder.Body.String(), `"keyword":"Drop"`) {
+		t.Fatalf("combined split response omitted conditions: %s", recorder.Body.String())
+	}
+}
+
 func TestVersionedCreateIdempotencyReplaysAndRejectsChangedPayload(t *testing.T) {
 	server, store := newAuthenticatedServer(t)
 	token := loginToken(t, server)
