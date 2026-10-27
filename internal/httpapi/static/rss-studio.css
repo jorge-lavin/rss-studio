@@ -309,6 +309,7 @@ input::placeholder {
   [class~="lg:justify-between"] { justify-content: space-between; }
   [class~="lg:mb-0"] { margin-bottom: 0; }
   [class~="lg:border-0"] { border-width: 0; }
+  [class~="lg:col-span-full"] { grid-column: 1 / -1; }
   [class~="lg:pt-0"] { padding-top: 0; }
   [class~="lg:grid-cols-2"] { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   [class~="lg:grid-cols-[1.1fr_0.9fr]"] { grid-template-columns: 1.1fr 0.9fr; }

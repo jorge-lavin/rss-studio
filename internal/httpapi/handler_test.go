@@ -475,6 +475,7 @@ func TestHomeRendersSplitFeedWorkflow(t *testing.T) {
 	page := recorder.Body.String()
 	for _, marker := range []string{
 		`id="create-feed-form"`,
+		`lg:col-span-full`,
 		`id="create-preview"`,
 		"Preview feed",
 		`id="split-form"`,
@@ -509,6 +510,19 @@ func TestHomeRendersSplitFeedWorkflow(t *testing.T) {
 		if !strings.Contains(page, marker) {
 			t.Fatalf("home page missing split workflow marker %q: %s", marker, page)
 		}
+	}
+
+	response, err := http.Get(server.URL + "/assets/rss-studio.css")
+	if err != nil {
+		t.Fatal(err)
+	}
+	stylesheet, err := io.ReadAll(response.Body)
+	response.Body.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.StatusCode != http.StatusOK || !strings.Contains(string(stylesheet), `[class~="lg:col-span-full"] { grid-column: 1 / -1; }`) {
+		t.Fatalf("stylesheet does not make combined-filter controls span form: status=%d body=%s", response.StatusCode, stylesheet)
 	}
 }
 
