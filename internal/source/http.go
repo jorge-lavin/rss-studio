@@ -2,6 +2,8 @@ package source
 
 import (
 	"context"
+	"crypto/tls"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -15,6 +17,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
+	"rss-studio/internal/observability"
 )
 
 const (
@@ -50,7 +53,7 @@ func NewHTTPSource(client *http.Client) *HTTPSource {
 	configured.Transport = transport
 	configured.CheckRedirect = func(request *http.Request, _ []*http.Request) error {
 		if _, err := validateURL(request.URL.String()); err != nil {
-			return fmt.Errorf("unsafe redirect: %w", err)
+			return &redirectError{cause: err}
 		}
 		return nil
 	}
@@ -59,11 +62,17 @@ func NewHTTPSource(client *http.Client) *HTTPSource {
 
 func (s *HTTPSource) Head(ctx context.Context, sourceURL string) (lastModified time.Time, err error) {
 	ctx, span := startSourceSpan(ctx, http.MethodHead)
-	defer func() { finishSourceSpan(span, err, 0) }()
+	started := time.Now()
+	statusCode := 0
+	defer func() {
+		recordUpstream(ctx, sourceURL, statusCode, err, started)
+		finishSourceSpan(span, err, 0)
+	}()
 	response, err := s.do(ctx, http.MethodHead, sourceURL)
 	if err != nil {
 		return time.Time{}, err
 	}
+	statusCode = response.StatusCode
 	defer response.Body.Close()
 	span.SetAttributes(attribute.Int(sourceStatusCodeAttr, response.StatusCode))
 	return parseLastModified(response.Header.Get("Last-Modified")), nil
@@ -71,11 +80,17 @@ func (s *HTTPSource) Head(ctx context.Context, sourceURL string) (lastModified t
 
 func (s *HTTPSource) Get(ctx context.Context, sourceURL string) (data []byte, lastModified time.Time, err error) {
 	ctx, span := startSourceSpan(ctx, http.MethodGet)
-	defer func() { finishSourceSpan(span, err, len(data)) }()
+	started := time.Now()
+	statusCode := 0
+	defer func() {
+		recordUpstream(ctx, sourceURL, statusCode, err, started)
+		finishSourceSpan(span, err, len(data))
+	}()
 	response, err := s.do(ctx, http.MethodGet, sourceURL)
 	if err != nil {
 		return nil, time.Time{}, err
 	}
+	statusCode = response.StatusCode
 	defer response.Body.Close()
 	span.SetAttributes(attribute.Int(sourceStatusCodeAttr, response.StatusCode))
 	data, err = io.ReadAll(io.LimitReader(response.Body, maxFeedSize+1))
@@ -122,7 +137,11 @@ func (s *HTTPSource) do(ctx context.Context, method, sourceURL string) (*http.Re
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		trace.SpanFromContext(ctx).SetAttributes(attribute.Int(sourceStatusCodeAttr, response.StatusCode))
 		response.Body.Close()
-		return nil, fmt.Errorf("source %s returned status %d", method, response.StatusCode)
+		return nil, &sourceError{
+			message: fmt.Sprintf("source %s returned status %d", method, response.StatusCode),
+			class:   errorClassHTTP,
+			status:  response.StatusCode,
+		}
 	}
 	return response, nil
 }
@@ -197,6 +216,8 @@ func blockedIP(ip netip.Addr) bool {
 type sourceError struct {
 	message string
 	cause   error
+	class   string
+	status  int
 }
 
 func (e *sourceError) Error() string {
@@ -208,5 +229,84 @@ func (e *sourceError) Unwrap() error {
 }
 
 func wrapSourceError(message string, cause error) error {
-	return &sourceError{message: message, cause: cause}
+	return &sourceError{message: message, cause: cause, class: classifyError(cause)}
+}
+
+type redirectError struct {
+	cause error
+}
+
+func (e *redirectError) Error() string { return "source redirect rejected" }
+
+func (e *redirectError) Unwrap() error { return e.cause }
+
+const (
+	errorClassDNS      = "dns"
+	errorClassTLS      = "tls"
+	errorClassTimeout  = "timeout"
+	errorClassRedirect = "redirect"
+	errorClassHTTP     = "http"
+	errorClassOther    = "other"
+)
+
+func classifyError(err error) string {
+	if err == nil {
+		return ""
+	}
+	var sourceErr *sourceError
+	if errors.As(err, &sourceErr) && sourceErr.class != "" {
+		return sourceErr.class
+	}
+	var redirectErr *redirectError
+	if errors.As(err, &redirectErr) {
+		return errorClassRedirect
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return errorClassTimeout
+	}
+	var networkErr net.Error
+	if errors.As(err, &networkErr) && networkErr.Timeout() {
+		return errorClassTimeout
+	}
+	var certificateErr *tls.CertificateVerificationError
+	var echErr *tls.ECHRejectionError
+	var recordHeaderErr tls.RecordHeaderError
+	if errors.As(err, &certificateErr) || errors.As(err, &echErr) || errors.As(err, &recordHeaderErr) {
+		return errorClassTLS
+	}
+	var dnsErr *net.DNSError
+	if errors.As(err, &dnsErr) {
+		return errorClassDNS
+	}
+	return errorClassOther
+}
+
+func upstreamDiagnostic(err error) (class string, statusCode int) {
+	class = classifyError(err)
+	var sourceErr *sourceError
+	if errors.As(err, &sourceErr) {
+		statusCode = sourceErr.status
+	}
+	return class, statusCode
+}
+
+func recordUpstream(ctx context.Context, sourceURL string, statusCode int, err error, started time.Time) {
+	errorClass, diagnosticStatus := upstreamDiagnostic(err)
+	if statusCode == 0 {
+		statusCode = diagnosticStatus
+	}
+	result := "success"
+	if err != nil {
+		result = "error"
+	}
+	observability.Record(ctx, observability.Event{
+		Event:              observability.EventUpstream,
+		Operation:          observability.Operation(ctx),
+		Result:             result,
+		DurationMS:         time.Since(started).Milliseconds(),
+		UpstreamFailure:    err != nil,
+		UpstreamIdentity:   observability.SanitizeUpstreamIdentity(sourceURL),
+		UpstreamStatusCode: statusCode,
+		UpstreamErrorClass: errorClass,
+	})
 }

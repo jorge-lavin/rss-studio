@@ -340,6 +340,7 @@ func (s *Service) PreviewForOwner(ctx context.Context, owner domain.User, source
 }
 
 func (s *Service) preview(ctx context.Context, owner domain.User, sourceURL string, rules []PreviewRule) (previews []PreviewResult, err error) {
+	ctx = observability.WithOperation(ctx, policy.OperationFeedsPreview)
 	started := time.Now()
 	defer func() {
 		observability.Record(ctx, observability.Event{
@@ -448,6 +449,7 @@ func (s *Service) CreateFeedWithOperator(ctx context.Context, owner domain.User,
 }
 
 func (s *Service) CreateFeedWithFilters(ctx context.Context, owner domain.User, name, sourceURL string, match domain.FilterMatch, filters []domain.FilterCondition) (feed domain.Feed, err error) {
+	ctx = observability.WithOperation(ctx, policy.OperationFeedsCreate)
 	started := time.Now()
 	defer func() {
 		observability.Record(ctx, observability.Event{
@@ -515,6 +517,7 @@ func (s *Service) CreateFeedWithFilters(ctx context.Context, owner domain.User, 
 
 // CreateSplitFeeds publishes one filtered feed for each output using one source fetch.
 func (s *Service) CreateSplitFeeds(ctx context.Context, owner domain.User, sourceURL string, rules []PreviewRule) (feeds []domain.Feed, err error) {
+	ctx = observability.WithOperation(ctx, policy.OperationFeedsSplit)
 	started := time.Now()
 	defer func() {
 		observability.Record(ctx, observability.Event{
@@ -789,6 +792,7 @@ func (s *Service) cacheIsFresh(ctx context.Context, feed domain.Feed) (bool, err
 }
 
 func (s *Service) refreshFeedGroup(ctx context.Context, feed domain.Feed) error {
+	ctx = observability.WithOperation(ctx, policy.OperationFeedsPublic)
 	s.refreshMu.Lock()
 	defer s.refreshMu.Unlock()
 

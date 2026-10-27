@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net/url"
 	"strings"
 	"time"
 
@@ -23,34 +24,41 @@ const (
 	EventQuota     = "quota"
 	EventUpstream  = "upstream"
 
-	auditEventAttr           = "rss_studio.audit.event"
-	auditOperationAttr       = "rss_studio.operation"
-	auditActorIDAttr         = "rss_studio.actor.id"
-	auditTokenIDAttr         = "rss_studio.token.id"
-	auditResultAttr          = "rss_studio.result"
-	auditDurationAttr        = "rss_studio.duration_ms"
-	auditRateRejectedAttr    = "rss_studio.rate_rejected"
-	auditQuotaRejectedAttr   = "rss_studio.quota_rejected"
-	auditUpstreamFailureAttr = "rss_studio.upstream_failure"
-	failureStageAttr         = "rss_studio.failure.stage"
-	failureTypeAttr          = "rss_studio.failure.type"
+	auditEventAttr            = "rss_studio.audit.event"
+	auditOperationAttr        = "rss_studio.operation"
+	auditActorIDAttr          = "rss_studio.actor.id"
+	auditTokenIDAttr          = "rss_studio.token.id"
+	auditResultAttr           = "rss_studio.result"
+	auditDurationAttr         = "rss_studio.duration_ms"
+	auditRateRejectedAttr     = "rss_studio.rate_rejected"
+	auditQuotaRejectedAttr    = "rss_studio.quota_rejected"
+	auditUpstreamFailureAttr  = "rss_studio.upstream_failure"
+	auditUpstreamIdentityAttr = "rss_studio.upstream.identity"
+	auditUpstreamStatusAttr   = "rss_studio.upstream.status_code"
+	auditUpstreamClassAttr    = "rss_studio.upstream.error_class"
+	auditUpstreamDurationAttr = "rss_studio.upstream.duration_ms"
+	failureStageAttr          = "rss_studio.failure.stage"
+	failureTypeAttr           = "rss_studio.failure.type"
 )
 
 // Event is the safe, structured audit record shared by HTTP, application, and
 // future adapters. It deliberately has no request, feed, credential, or
 // idempotency-key fields.
 type Event struct {
-	Timestamp       time.Time `json:"timestamp"`
-	Event           string    `json:"event"`
-	Operation       string    `json:"operation"`
-	ActorID         int64     `json:"actor_id"`
-	TokenID         int64     `json:"token_id"`
-	Result          string    `json:"result"`
-	DurationMS      int64     `json:"duration_ms"`
-	RateRejected    bool      `json:"rate_rejected"`
-	QuotaRejected   bool      `json:"quota_rejected"`
-	UpstreamFailure bool      `json:"upstream_failure"`
-	RequestID       string    `json:"request_id,omitempty"`
+	Timestamp          time.Time `json:"timestamp"`
+	Event              string    `json:"event"`
+	Operation          string    `json:"operation"`
+	ActorID            int64     `json:"actor_id"`
+	TokenID            int64     `json:"token_id"`
+	Result             string    `json:"result"`
+	DurationMS         int64     `json:"duration_ms"`
+	RateRejected       bool      `json:"rate_rejected"`
+	QuotaRejected      bool      `json:"quota_rejected"`
+	UpstreamFailure    bool      `json:"upstream_failure"`
+	UpstreamIdentity   string    `json:"upstream_identity,omitempty"`
+	UpstreamStatusCode int       `json:"upstream_status_code,omitempty"`
+	UpstreamErrorClass string    `json:"upstream_error_class,omitempty"`
+	RequestID          string    `json:"request_id,omitempty"`
 }
 
 // Recorder receives safe audit events. Implementations must not add request
@@ -65,6 +73,26 @@ type recorderContextKey struct{}
 // for deterministic tests and embedding RSS Studio in another process.
 func WithRecorder(ctx context.Context, recorder Recorder) context.Context {
 	return context.WithValue(ctx, recorderContextKey{}, recorder)
+}
+
+type operationContextKey struct{}
+
+// WithOperation carries stable operation identity into lower-level adapters.
+func WithOperation(ctx context.Context, operation string) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, operationContextKey{}, operation)
+}
+
+// Operation returns stable operation identity for lower-level telemetry.
+func Operation(ctx context.Context) string {
+	if ctx != nil {
+		if operation, ok := ctx.Value(operationContextKey{}).(string); ok && strings.TrimSpace(operation) != "" {
+			return safeField(operation)
+		}
+	}
+	return "upstream.fetch"
 }
 
 func recorderFromContext(ctx context.Context) Recorder {
@@ -91,6 +119,8 @@ func Record(ctx context.Context, event Event) {
 	event.Event = safeField(event.Event)
 	event.Operation = safeField(event.Operation)
 	event.Result = safeField(event.Result)
+	event.UpstreamIdentity = SanitizeUpstreamIdentity(event.UpstreamIdentity)
+	event.UpstreamErrorClass = safeField(event.UpstreamErrorClass)
 	event.RequestID = safeField(event.RequestID)
 
 	span := trace.SpanFromContext(ctx)
@@ -106,6 +136,14 @@ func Record(ctx context.Context, event Event) {
 			attribute.Bool(auditQuotaRejectedAttr, event.QuotaRejected),
 			attribute.Bool(auditUpstreamFailureAttr, event.UpstreamFailure),
 		)
+		if event.Event == EventUpstream {
+			span.SetAttributes(
+				attribute.String(auditUpstreamIdentityAttr, event.UpstreamIdentity),
+				attribute.Int(auditUpstreamStatusAttr, event.UpstreamStatusCode),
+				attribute.String(auditUpstreamClassAttr, event.UpstreamErrorClass),
+				attribute.Int64(auditUpstreamDurationAttr, event.DurationMS),
+			)
+		}
 	}
 	if recorder := recorderFromContext(ctx); recorder != nil {
 		recorder.Record(event)
@@ -152,6 +190,28 @@ func SetOperationAttributes(ctx context.Context, operation string, actorID, toke
 		attribute.Int64(auditActorIDAttr, actorID),
 		attribute.Int64(auditTokenIDAttr, tokenID),
 	)
+}
+
+// SanitizeUpstreamIdentity keeps only scheme, hostname, and optional port.
+// Paths, queries, fragments, and credentials are intentionally discarded.
+func SanitizeUpstreamIdentity(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	parsed, err := url.ParseRequestURI(value)
+	if err != nil || parsed.Hostname() == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+		return "unknown"
+	}
+	host := strings.ToLower(parsed.Hostname())
+	if strings.Contains(host, ":") {
+		host = "[" + host + "]"
+	}
+	identity := strings.ToLower(parsed.Scheme) + "://" + host
+	if port := parsed.Port(); port != "" {
+		identity += ":" + port
+	}
+	return identity
 }
 
 // RecordFailure adds a safe failure location and error type to the active

@@ -2,6 +2,8 @@ package source
 
 import (
 	"context"
+	"crypto/tls"
+	"encoding/json"
 	"errors"
 	"io"
 	"net"
@@ -14,7 +16,16 @@ import (
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
+	"rss-studio/internal/observability"
 )
+
+type upstreamEventRecorder struct {
+	event observability.Event
+}
+
+func (r *upstreamEventRecorder) Record(event observability.Event) {
+	r.event = event
+}
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
 
@@ -151,6 +162,71 @@ func TestHTTPSourcePreservesContextCancellation(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), "example.com") {
 		t.Fatalf("error exposes source URL: %v", err)
+	}
+}
+
+func TestHTTPSourceRecordsSafeUpstreamDiagnostics(t *testing.T) {
+	recorder := &upstreamEventRecorder{}
+	ctx := observability.WithOperation(
+		observability.WithRecorder(context.Background(), recorder),
+		"feeds.create",
+	)
+	source := &HTTPSource{client: &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusBadGateway,
+			Body:       io.NopCloser(strings.NewReader("feed content secret")),
+			Request:    request,
+		}, nil
+	})}}
+
+	_, _, err := source.Get(ctx, "https://feed.example/private/feed.xml?token=secret#fragment")
+	if err == nil {
+		t.Fatal("expected upstream HTTP failure")
+	}
+	if recorder.event.Event != observability.EventUpstream || recorder.event.Operation != "feeds.create" {
+		t.Fatalf("unexpected upstream event identity: %#v", recorder.event)
+	}
+	if recorder.event.UpstreamIdentity != "https://feed.example" {
+		t.Fatalf("upstream identity = %q, want sanitized host identity", recorder.event.UpstreamIdentity)
+	}
+	if recorder.event.UpstreamStatusCode != http.StatusBadGateway || recorder.event.UpstreamErrorClass != errorClassHTTP {
+		t.Fatalf("unexpected upstream diagnosis: %#v", recorder.event)
+	}
+	if recorder.event.DurationMS < 0 {
+		t.Fatalf("upstream duration = %d, want non-negative", recorder.event.DurationMS)
+	}
+	data, marshalErr := json.Marshal(recorder.event)
+	if marshalErr != nil {
+		t.Fatal(marshalErr)
+	}
+	for _, sensitive := range []string{"/private/feed.xml", "token=secret", "secret", "feed content"} {
+		if strings.Contains(string(data), sensitive) {
+			t.Fatalf("upstream event contains sensitive value %q: %s", sensitive, data)
+		}
+	}
+	if identity := observability.SanitizeUpstreamIdentity("https://user:password@feed.example/private/feed.xml?token=secret"); identity != "https://feed.example" {
+		t.Fatalf("credential-bearing identity = %q, want sanitized host identity", identity)
+	}
+}
+
+func TestClassifyErrorCategories(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{name: "dns", err: &net.DNSError{Name: "feed.example", Err: "no such host"}, want: errorClassDNS},
+		{name: "tls", err: &tls.CertificateVerificationError{Err: errors.New("certificate verify failed")}, want: errorClassTLS},
+		{name: "timeout", err: context.DeadlineExceeded, want: errorClassTimeout},
+		{name: "redirect", err: &redirectError{}, want: errorClassRedirect},
+		{name: "http", err: &sourceError{class: errorClassHTTP, status: http.StatusBadGateway}, want: errorClassHTTP},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := classifyError(test.err); got != test.want {
+				t.Fatalf("classifyError(%T) = %q, want %q", test.err, got, test.want)
+			}
+		})
 	}
 }
 
