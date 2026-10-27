@@ -1,8 +1,11 @@
 package rss
 
 import (
+	"bytes"
+	"encoding/xml"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 
 	"github.com/beevik/etree"
@@ -19,6 +22,8 @@ type diagnosticError struct {
 	class   string
 	message string
 	cause   error
+	reason  string
+	line    int
 }
 
 func (e *diagnosticError) Error() string { return e.message }
@@ -27,8 +32,39 @@ func (e *diagnosticError) Unwrap() error { return e.cause }
 
 func (e *diagnosticError) FailureClass() string { return e.class }
 
+func (e *diagnosticError) FailureReason() string { return e.reason }
+
+func (e *diagnosticError) FailureLine() int { return e.line }
+
 func newDiagnosticError(class, message string, cause error) error {
-	return &diagnosticError{class: class, message: message, cause: cause}
+	reason, line := failureDetails(cause)
+	return &diagnosticError{class: class, message: message, cause: cause, reason: reason, line: line}
+}
+
+func failureDetails(err error) (reason string, line int) {
+	if err == nil {
+		return "", 0
+	}
+	var syntaxErr *xml.SyntaxError
+	if errors.As(err, &syntaxErr) {
+		line = syntaxErr.Line
+		switch {
+		case strings.Contains(syntaxErr.Msg, "unexpected EOF"):
+			return "unexpected_eof", line
+		case strings.Contains(syntaxErr.Msg, "unexpected end element"):
+			return "unexpected_end_element", line
+		case strings.Contains(syntaxErr.Msg, "expected element name"):
+			return "expected_element_name", line
+		case strings.Contains(syntaxErr.Msg, "closed by"):
+			return "mismatched_end_element", line
+		default:
+			return "syntax_error", line
+		}
+	}
+	if err.Error() == "etree: invalid XML format" {
+		return "invalid_format", 0
+	}
+	return "parse_error", 0
 }
 
 // FilterRule names one filtered output and its title conditions.
@@ -173,8 +209,13 @@ func parseDocument(source []byte) (*etree.Document, error) {
 	}
 	document := etree.NewDocument()
 	document.ReadSettings = etree.ReadSettings{
-		MaxDepth:      maxXMLDepth,
-		ValidateInput: true,
+		MaxDepth: maxXMLDepth,
+	}
+	if err := validateXML(source); err != nil {
+		if errors.Is(err, etree.ErrMaxDepth) {
+			return nil, newDiagnosticError("xml_depth_limit", fmt.Sprintf("parse source feed: XML depth exceeds limit of %d: %v", maxXMLDepth, err), err)
+		}
+		return nil, newDiagnosticError("invalid_xml", fmt.Sprintf("parse source feed: %v", err), err)
 	}
 	if err := document.ReadFromBytes(source); err != nil {
 		if errors.Is(err, etree.ErrMaxDepth) {
@@ -186,6 +227,30 @@ func parseDocument(source []byte) (*etree.Document, error) {
 		return nil, newDiagnosticError("invalid_rss", "source is not an RSS 2.0 feed", nil)
 	}
 	return document, nil
+}
+
+func validateXML(source []byte) error {
+	decoder := xml.NewDecoder(bytes.NewReader(source))
+	if err := decoder.Decode(new(interface{})); err != nil {
+		return err
+	}
+	for {
+		token, err := decoder.Token()
+		if err == io.EOF {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		switch value := token.(type) {
+		case xml.CharData:
+			if strings.TrimSpace(string(value)) != "" {
+				return etree.ErrXML
+			}
+		case xml.StartElement, xml.EndElement:
+			return etree.ErrXML
+		}
+	}
 }
 
 func filterDocument(document *etree.Document, match domain.FilterMatch, filters []domain.FilterCondition, outputTitle string) ([]byte, int, []string, error) {

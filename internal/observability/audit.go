@@ -41,6 +41,8 @@ const (
 	failureStageAttr          = "rss_studio.failure.stage"
 	failureTypeAttr           = "rss_studio.failure.type"
 	failureClassAttr          = "rss_studio.failure.class"
+	failureReasonAttr         = "rss_studio.failure.reason"
+	failureLineAttr           = "rss_studio.failure.line"
 )
 
 // Event is the safe, structured audit record shared by HTTP, application, and
@@ -236,12 +238,26 @@ func RecordFailure(ctx context.Context, stage string, err error) {
 	if class := failureClass(err); class != "" {
 		span.SetAttributes(attribute.String(failureClassAttr, class))
 	}
+	var details failureDetailer
+	if errors.As(err, &details) {
+		if reason := safeField(details.FailureReason()); reason != "" {
+			span.SetAttributes(attribute.String(failureReasonAttr, reason))
+		}
+		if line := details.FailureLine(); line > 0 {
+			span.SetAttributes(attribute.Int(failureLineAttr, line))
+		}
+	}
 	span.RecordError(fmt.Errorf("%s: %s", stage, errorType))
 	span.SetStatus(codes.Error, stage)
 }
 
 type failureClassifier interface {
 	FailureClass() string
+}
+
+type failureDetailer interface {
+	FailureReason() string
+	FailureLine() int
 }
 
 func failureClass(err error) string {

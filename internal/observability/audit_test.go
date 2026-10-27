@@ -22,8 +22,10 @@ type eventRecorder struct {
 
 type classifiedFailureError struct{}
 
-func (classifiedFailureError) Error() string        { return "private parser detail" }
-func (classifiedFailureError) FailureClass() string { return "invalid_xml" }
+func (classifiedFailureError) Error() string         { return "private parser detail" }
+func (classifiedFailureError) FailureClass() string  { return "invalid_xml" }
+func (classifiedFailureError) FailureReason() string { return "unexpected_eof" }
+func (classifiedFailureError) FailureLine() int      { return 17 }
 
 func (r *eventRecorder) Record(event Event) {
 	r.events = append(r.events, event)
@@ -136,12 +138,22 @@ func TestRecordFailureAddsStableClass(t *testing.T) {
 		t.Fatalf("expected one span, got %d", len(spans))
 	}
 	var class string
+	var reason string
+	var line int
 	for _, attribute := range spans[0].Attributes {
-		if attribute.Key == failureClassAttr {
+		switch attribute.Key {
+		case failureClassAttr:
 			class = attribute.Value.AsString()
+		case failureReasonAttr:
+			reason = attribute.Value.AsString()
+		case failureLineAttr:
+			line = int(attribute.Value.AsInt64())
 		}
 	}
 	if class != "invalid_xml" {
 		t.Fatalf("failure class = %q", class)
+	}
+	if reason != "unexpected_eof" || line != 17 {
+		t.Fatalf("failure details = %q at line %d", reason, line)
 	}
 }

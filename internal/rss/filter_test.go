@@ -39,6 +39,13 @@ func TestFilterKeepsMatchingItems(t *testing.T) {
 	}
 }
 
+func TestFilterAllowsTrailingXMLWhitespace(t *testing.T) {
+	source := []byte(`<rss version="2.0"><channel><title>Source</title></channel></rss>` + "\n")
+	if _, _, err := Filter(source, "foo", "Feed"); err != nil {
+		t.Fatalf("expected trailing XML whitespace to be valid: %v", err)
+	}
+}
+
 func TestFilterRejectsAtom(t *testing.T) {
 	_, _, err := Filter([]byte(`<feed xmlns="http://www.w3.org/2005/Atom"></feed>`), "foo", "Feed")
 	if err == nil {
@@ -87,6 +94,23 @@ func TestFilterReportsSafeFailureClasses(t *testing.T) {
 				t.Fatalf("failure class = %q, want %q", classifier.FailureClass(), test.class)
 			}
 		})
+	}
+}
+
+func TestFilterReportsSafeXMLFailureDetails(t *testing.T) {
+	_, _, err := Filter([]byte("<rss>\n<channel>\n"), "foo", "Feed")
+	if err == nil {
+		t.Fatal("expected filtering to fail")
+	}
+	detailer, ok := err.(interface {
+		FailureReason() string
+		FailureLine() int
+	})
+	if !ok {
+		t.Fatalf("error does not expose failure details: %T", err)
+	}
+	if detailer.FailureReason() != "unexpected_eof" || detailer.FailureLine() != 3 {
+		t.Fatalf("failure details = %q at line %d", detailer.FailureReason(), detailer.FailureLine())
 	}
 }
 
