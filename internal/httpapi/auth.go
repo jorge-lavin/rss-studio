@@ -26,6 +26,7 @@ var (
 	ErrInvalidCredentials        = errors.New("invalid credentials")
 	ErrInvalidToken              = errors.New("invalid token")
 	ErrRegistrationUnavailable   = errors.New("registration unavailable")
+	ErrUserListingUnavailable    = errors.New("user listing unavailable")
 	ErrServiceTokenUnavailable   = errors.New("service tokens unavailable")
 	ErrBrowserSessionUnavailable = errors.New("browser sessions unavailable")
 )
@@ -43,6 +44,10 @@ type UserStore interface {
 
 type UserRegistrar interface {
 	CreateUser(username, password string) (domain.User, error)
+}
+
+type UserLister interface {
+	ListUsers() ([]domain.UserSummary, error)
 }
 
 type ServiceTokenStore interface {
@@ -109,7 +114,11 @@ func (a *Authenticator) IssueToken(username, password string) (string, time.Time
 	expires := now.Add(a.ttl)
 	// Login intentionally preserves the former full-session behavior. Long-lived
 	// integrations should use separately created, narrowly scoped tokens.
-	_, token, err := a.serviceTokens.CreateServiceToken(user, loginServiceTokenName, domain.AllServiceTokenScopes(), expires)
+	scopes := domain.AllServiceTokenScopes()
+	if !user.IsAdmin {
+		scopes = []string{domain.ScopeFeedsRead, domain.ScopeFeedsPreview, domain.ScopeFeedsWrite, domain.ScopeFeedsDelete, domain.ScopeTokensManage}
+	}
+	_, token, err := a.serviceTokens.CreateServiceToken(user, loginServiceTokenName, scopes, expires)
 	if err != nil {
 		return "", time.Time{}, err
 	}
@@ -139,6 +148,14 @@ func (a *Authenticator) Register(username, password string) error {
 	}
 	_, err := registrar.CreateUser(username, password)
 	return err
+}
+
+func (a *Authenticator) ListUsers() ([]domain.UserSummary, error) {
+	lister, ok := a.userStore.(UserLister)
+	if !ok {
+		return nil, ErrUserListingUnavailable
+	}
+	return lister.ListUsers()
 }
 
 func (a *Authenticator) CreateServiceToken(owner domain.User, name string, scopes []string, expiresAt time.Time) (domain.ServiceToken, string, error) {

@@ -41,6 +41,7 @@ const (
 	OperationTokensList   = "auth.tokens.list"
 	OperationTokensCreate = "auth.tokens.create"
 	OperationTokensRevoke = "auth.tokens.revoke"
+	OperationUsersList    = "admin.users.list"
 )
 
 // RateLimitSpec is the fixed-window policy for one operation.
@@ -55,7 +56,7 @@ type RateLimitSpec struct {
 func RateLimitSpecFor(operation string) (RateLimitSpec, bool) {
 	spec := RateLimitSpec{Operation: operation, Window: RateLimitWindow}
 	switch operation {
-	case OperationFeedsList, OperationTokensList:
+	case OperationFeedsList, OperationTokensList, OperationUsersList:
 		spec.Class, spec.Limit = RateLimitCheapRead, CheapReadRateLimit
 	case OperationFeedsDelete, OperationTokensRevoke:
 		spec.Class, spec.Limit = RateLimitDelete, DeleteRateLimit
@@ -90,6 +91,8 @@ func RateLimitOperationForHTTP(method, path string) (string, bool) {
 		return OperationFeedsDelete, true
 	case method == http.MethodGet && path == "/api/v1/auth/tokens":
 		return OperationTokensList, true
+	case method == http.MethodGet && path == "/api/v1/admin/users":
+		return OperationUsersList, true
 	case method == http.MethodPost && path == "/api/v1/auth/tokens":
 		return OperationTokensCreate, true
 	case (method == http.MethodPost || method == http.MethodDelete) && strings.HasPrefix(path, "/api/v1/auth/tokens/"):

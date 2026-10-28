@@ -27,8 +27,8 @@ func TestSQLiteStoreMigratesAndPersistsMultipleUsers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if version != 9 {
-		t.Fatalf("expected schema version 9, got %d", version)
+	if version != 10 {
+		t.Fatalf("expected schema version 10, got %d", version)
 	}
 	if err := store.Migrate(); err != nil {
 		t.Fatalf("rerunning migrations: %v", err)
@@ -80,6 +80,37 @@ func TestSQLiteStoreMigratesAndPersistsMultipleUsers(t *testing.T) {
 	}
 	if _, err := second.Authenticate("reader", "reader password"); err != nil {
 		t.Fatalf("second persisted user rejected: %v", err)
+	}
+}
+
+func TestSQLiteStoreListsSafeUserSummariesAndBootstrapsAdmin(t *testing.T) {
+	store, err := NewSQLiteStore(filepath.Join(t.TempDir(), "rss-studio.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	admin, err := store.CreateUser("admin", "password-1234")
+	if err != nil {
+		t.Fatal(err)
+	}
+	reader, err := store.CreateUser("reader", "password-1234")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !admin.IsAdmin || reader.IsAdmin {
+		t.Fatalf("unexpected admin flags: admin=%v reader=%v", admin.IsAdmin, reader.IsAdmin)
+	}
+
+	users, err := store.ListUsers()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(users) != 2 || users[0].Username != "admin" || users[1].Username != "reader" {
+		t.Fatalf("unexpected users: %#v", users)
+	}
+	if users[0].ID != admin.ID || users[1].ID != reader.ID || users[0].CreatedAt.IsZero() || users[1].CreatedAt.IsZero() {
+		t.Fatalf("user summaries missing safe metadata: %#v", users)
 	}
 }
 
@@ -441,6 +472,7 @@ func TestSQLiteStoreUpgradePreservesUsersAndFeeds(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, statement := range []string{
+		"ALTER TABLE users DROP COLUMN is_admin",
 		"ALTER TABLE feeds DROP COLUMN filter_conditions",
 		"ALTER TABLE feeds DROP COLUMN filter_match",
 		"DROP TABLE quota_usage_buckets",
@@ -464,7 +496,7 @@ func TestSQLiteStoreUpgradePreservesUsersAndFeeds(t *testing.T) {
 	}
 	defer upgraded.Close()
 	version, err := upgraded.SchemaVersion()
-	if err != nil || version != 9 {
+	if err != nil || version != 10 {
 		t.Fatalf("unexpected upgraded schema version: version=%d err=%v", version, err)
 	}
 	if _, err := upgraded.Authenticate("alice", "password-1234"); err != nil {

@@ -120,6 +120,48 @@ func TestServiceTokensNeedManagementScope(t *testing.T) {
 	}
 }
 
+func TestAdminUsersEndpointRequiresUsersReadAndReturnsSafeSummaries(t *testing.T) {
+	server, store := newAuthenticatedServer(t)
+	if _, err := store.CreateUser("reader", "password-1234"); err != nil {
+		t.Fatal(err)
+	}
+
+	feedsToken := serviceTokenForScopes(t, store, []string{domain.ScopeFeedsRead})
+	status, _, body := doScopedAPIRequest(t, server.URL, http.MethodGet, "/api/v1/admin/users", feedsToken, "")
+	if status != http.StatusForbidden || !strings.Contains(string(body), `"insufficient_scope"`) {
+		t.Fatalf("missing users:read scope returned %d: %s", status, body)
+	}
+
+	adminToken := serviceTokenForScopes(t, store, []string{domain.ScopeUsersRead})
+	status, _, body = doScopedAPIRequest(t, server.URL, http.MethodGet, "/api/v1/admin/users", adminToken, "")
+	if status != http.StatusOK || !strings.Contains(string(body), `"username":"reader"`) || strings.Contains(string(body), "password_hash") || strings.Contains(string(body), "$2") {
+		t.Fatalf("unexpected admin user response: %d: %s", status, body)
+	}
+	request, err := http.NewRequest(http.MethodGet, server.URL+"/admin/users", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Authorization", "Bearer "+adminToken)
+	page, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pageBody, err := io.ReadAll(page.Body)
+	page.Body.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if page.StatusCode != http.StatusOK || !strings.Contains(string(pageBody), "Current accounts") || !strings.Contains(string(pageBody), "reader") {
+		t.Fatalf("unexpected admin page: %d: %s", page.StatusCode, pageBody)
+	}
+
+	readerToken := loginTokenAs(t, server, "reader", "password-1234")
+	status, _, body = doScopedAPIRequest(t, server.URL, http.MethodGet, "/api/v1/admin/users", readerToken, "")
+	if status != http.StatusForbidden {
+		t.Fatalf("non-admin login token accessed users: %d: %s", status, body)
+	}
+}
+
 func TestPolicyFailureDoesNotExposeTokenInRequestPathOrBody(t *testing.T) {
 	server, store := newAuthenticatedServer(t)
 	raw := serviceTokenForScopes(t, store, []string{domain.ScopeFeedsRead})

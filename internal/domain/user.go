@@ -15,4 +15,11 @@ type User struct {
 	Username     string
 	PasswordHash string
 	CreatedAt    time.Time
+	IsAdmin      bool
+}
+
+type UserSummary struct {
+	ID        int64
+	Username  string
+	CreatedAt time.Time
 }

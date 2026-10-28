@@ -61,7 +61,8 @@ loads before removing the backup.
 
 Existing browser JWT sessions are not compatible with this release; users must
 sign in again after upgrading. API credential login issues a full-scope service
-token named `login` so existing management routes continue to work. Browser
+token named `login` for the first account; later accounts receive all
+non-administration scopes so existing management routes continue to work. Browser
 login instead issues a separate database-backed browser session. Use a
 separately created token with only required scopes for integrations. Revoking a
 service token invalidates it immediately, and browser logout revokes the current
@@ -121,16 +122,21 @@ rejected. API errors never redirect to the browser UI.
 | `POST /api/v1/auth/tokens` | Create service token | Service token with `tokens:manage` |
 | `POST /api/v1/auth/tokens/{id}/revoke` | Revoke service token | Service token with `tokens:manage` |
 | `DELETE /api/v1/auth/tokens/{id}` | Revoke service token alias | Service token with `tokens:manage` |
+| `GET /api/v1/admin/users` | List current users | Service token with `users:read` |
 | `GET /api/v1/feeds` | List tenant feeds | Service token with `feeds:read` |
 | `POST /api/v1/feeds` | Publish one feed | Service token with `feeds:write` |
 | `POST /api/v1/feeds/preview` | Preview outputs | Service token with `feeds:preview` |
 | `POST /api/v1/feeds/split` | Publish up to 32 outputs | Service token with `feeds:write` |
 | `DELETE /api/v1/feeds/{path}` | Delete tenant feed | Service token with `feeds:delete` |
 
+The first account can open the browser admin panel at `/admin/users`.
+
 Send credentials as `Authorization: Bearer <service-token>`. Service tokens are
 expiring, revocable bearer credentials. Every management operation requires the
 scope granted to its service token; `tokens:manage` controls token management.
-Tenant isolation applies to every feed and token operation.
+Tenant isolation applies to every feed and token operation. The first account is
+the administrator; later accounts cannot access the admin user list or mint
+`users:read` tokens.
 
 ### Accounts and service tokens
 
@@ -162,8 +168,9 @@ curl -fsS "$BASE_URL/api/v1/auth/tokens" -H "Authorization: Bearer $token" | jq
 ```
 
 Supported scopes are `feeds:read`, `feeds:preview`, `feeds:write`,
-`feeds:delete`, and `tokens:manage`. Duplicate scopes are removed and returned
-in canonical order.
+`feeds:delete`, `tokens:manage`, and `users:read`. Duplicate scopes are removed
+and returned in canonical order. Only the first account can delegate
+`users:read` to another service token.
 The raw `token` value is returned only by creation; save it in a secret store,
 never put it in source control, URLs, logs, or support tickets. Listing tokens
 returns `id`, `name`, `scopes`, `created_at`, `expires_at`, and optional
@@ -303,7 +310,7 @@ for login protection according to its own trusted-proxy policy.
 | Policy | Default |
 | --- | --- |
 | Login and registration protection | 5 attempts per client IP per one-minute fixed window |
-| API cheap reads (`feeds.list`, `auth.tokens.list`) | 120 requests per account and credential per minute |
+| API cheap reads (`feeds.list`, `auth.tokens.list`, `admin.users.list`) | 120 requests per account and credential per minute |
 | API preview | 20 requests per account and credential per minute |
 | API delete/revoke | 10 requests per account and credential per minute |
 | API create/token creation | 10 requests per account and credential per minute |

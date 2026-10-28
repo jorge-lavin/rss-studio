@@ -39,6 +39,7 @@ type homePageData struct {
 	Version       string
 	Error         string
 	Authenticated bool
+	Admin         bool
 	CSRFToken     string
 }
 
@@ -206,6 +207,8 @@ func NewHandlerWithClock(service *application.Service, now func() time.Time, aut
 		mux.HandleFunc("POST /api/v1/auth/tokens", handler.apiCreateServiceToken)
 		mux.HandleFunc("POST /api/v1/auth/tokens/{id}/revoke", handler.apiRevokeServiceToken)
 		mux.HandleFunc("DELETE /api/v1/auth/tokens/{id}", handler.apiRevokeServiceToken)
+		mux.HandleFunc("GET /api/v1/admin/users", handler.apiListUsers)
+		mux.HandleFunc("/api/v1/admin/users", handler.apiAdminUsersMethodNotAllowed)
 		mux.HandleFunc("/api/v1/auth/login", handler.apiMethodNotAllowed)
 		mux.HandleFunc("/api/v1/auth/register", handler.apiMethodNotAllowed)
 		mux.HandleFunc("GET /api/v1/feeds", handler.apiListFeeds)
@@ -226,6 +229,8 @@ func NewHandlerWithClock(service *application.Service, now func() time.Time, aut
 		mux.HandleFunc("GET /api/v1/feeds/preview", handler.apiPreviewMethodNotAllowed)
 		mux.HandleFunc("PUT /api/v1/feeds/preview", handler.apiPreviewMethodNotAllowed)
 		mux.HandleFunc("PATCH /api/v1/feeds/preview", handler.apiPreviewMethodNotAllowed)
+		mux.HandleFunc("GET /admin", handler.adminUsersRedirect)
+		mux.HandleFunc("GET /admin/users", handler.adminUsers)
 	}
 	mux.HandleFunc("GET /assets/rss-studio.css", serveUIStylesheet)
 	mux.HandleFunc("GET /health", health)
@@ -402,6 +407,36 @@ func (h *Handler) apiListServiceTokens(writer http.ResponseWriter, request *http
 	writeAPIJSON(writer, http.StatusOK, struct {
 		Tokens []serviceTokenResponse `json:"tokens"`
 	}{Tokens: response})
+}
+
+type userResponse struct {
+	ID        int64     `json:"id"`
+	Username  string    `json:"username"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+func (h *Handler) apiListUsers(writer http.ResponseWriter, request *http.Request) {
+	users, err := h.auth.ListUsers()
+	if err != nil {
+		if errors.Is(err, ErrUserListingUnavailable) {
+			writeAPIError(writer, request, http.StatusNotImplemented, "user_listing_unavailable", "User listing is unavailable.")
+			return
+		}
+		log.Printf("list API users: %v", err)
+		writeAPIError(writer, request, http.StatusInternalServerError, "internal_error", "Could not list users.")
+		return
+	}
+	response := make([]userResponse, len(users))
+	for i, user := range users {
+		response[i] = userResponse{ID: user.ID, Username: user.Username, CreatedAt: user.CreatedAt}
+	}
+	writeAPIJSON(writer, http.StatusOK, struct {
+		Users []userResponse `json:"users"`
+	}{Users: response})
+}
+
+func (h *Handler) apiAdminUsersMethodNotAllowed(writer http.ResponseWriter, request *http.Request) {
+	h.apiMethodNotAllowedFor(writer, request, http.MethodGet)
 }
 
 func (h *Handler) apiRevokeServiceToken(writer http.ResponseWriter, request *http.Request) {
@@ -938,7 +973,12 @@ func (h *Handler) authenticate(next http.Handler) http.Handler {
 		}
 		policyStarted := time.Now()
 		if requiredScope, requiresScope := requiredScopeForRequest(request); requiresScope {
-			if !isBrowserSessionIdentity(identity) {
+			if isBrowserSessionIdentity(identity) {
+				if requiredScope == domain.ScopeUsersRead && !identity.User.IsAdmin {
+					writePolicyError(writer, request, policy.ErrInsufficientScope)
+					return
+				}
+			} else {
 				if err := policy.Authorize(identity, requiredScope); err != nil {
 					if !hasOperation {
 						operation = "request"
@@ -1002,6 +1042,8 @@ func requiredScopeForRequest(request *http.Request) (string, bool) {
 		switch {
 		case strings.HasPrefix(request.URL.Path, "/api/v1/auth/tokens"):
 			return domain.ScopeTokensManage, true
+		case request.Method == http.MethodGet && request.URL.Path == "/api/v1/admin/users":
+			return domain.ScopeUsersRead, true
 		case request.Method == http.MethodGet && request.URL.Path == "/api/v1/feeds":
 			return domain.ScopeFeedsRead, true
 		case request.Method == http.MethodPost && request.URL.Path == "/api/v1/feeds":
@@ -1016,6 +1058,8 @@ func requiredScopeForRequest(request *http.Request) (string, bool) {
 		return "", false
 	}
 	switch {
+	case request.Method == http.MethodGet && (request.URL.Path == "/admin" || request.URL.Path == "/admin/users"):
+		return domain.ScopeUsersRead, true
 	case request.Method == http.MethodGet && request.URL.Path == "/":
 		return domain.ScopeFeedsRead, true
 	case request.Method == http.MethodPost && request.URL.Path == "/feeds":
@@ -1346,7 +1390,7 @@ func (h *Handler) renderHome(writer http.ResponseWriter, request *http.Request, 
 	token := h.csrfToken(writer, request)
 	writer.Header().Set("Content-Type", "text/html; charset=utf-8")
 	writer.WriteHeader(status)
-	if err := homeTemplate.Execute(writer, homePageData{Feeds: feeds, BaseURL: baseURL(request), Version: version.Version, Error: message, Authenticated: h.auth != nil, CSRFToken: token}); err != nil {
+	if err := homeTemplate.Execute(writer, homePageData{Feeds: feeds, BaseURL: baseURL(request), Version: version.Version, Error: message, Authenticated: h.auth != nil, Admin: h.requestUser(request).IsAdmin, CSRFToken: token}); err != nil {
 		log.Printf("render home: %v", err)
 	}
 }
@@ -1522,9 +1566,10 @@ var homeTemplate = template.Must(template.New("home").Funcs(template.FuncMap{"fi
           <span class="flex h-8 w-8 items-center justify-center rounded-lg bg-violet-600 text-sm font-black text-white">R</span>
           RSS Studio
         </a>
-        <div class="flex items-center gap-4">
-          <a href="/api" class="text-xs font-medium text-slate-300 transition hover:text-white">API</a>
-          {{if .Authenticated}}<form method="post" action="/auth/logout"><input type="hidden" name="csrf_token" value="{{.CSRFToken}}"><button type="submit" class="inline-flex items-center gap-2 rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-xs font-medium text-slate-300 transition hover:bg-white/10 focus:outline-none focus:ring-4 focus:ring-violet-400/30">Logout</button></form>{{end}}
+		<div class="flex items-center gap-4">
+			<a href="/api" class="text-xs font-medium text-slate-300 transition hover:text-white">API</a>
+			{{if .Admin}}<a href="/admin/users" class="text-xs font-medium text-slate-300 transition hover:text-white">Admin</a>{{end}}
+			{{if .Authenticated}}<form method="post" action="/auth/logout"><input type="hidden" name="csrf_token" value="{{.CSRFToken}}"><button type="submit" class="inline-flex items-center gap-2 rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-xs font-medium text-slate-300 transition hover:bg-white/10 focus:outline-none focus:ring-4 focus:ring-violet-400/30">Logout</button></form>{{end}}
           <button id="theme-toggle" type="button" aria-pressed="false" aria-label="Switch to dark mode" class="inline-flex items-center gap-2 rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-xs font-medium text-slate-300 transition hover:bg-white/10 focus:outline-none focus:ring-4 focus:ring-violet-400/30">
             <span data-theme-icon aria-hidden="true">☾</span><span data-theme-label>Dark mode</span>
           </button>

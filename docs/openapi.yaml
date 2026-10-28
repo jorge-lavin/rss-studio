@@ -11,7 +11,9 @@ info:
     is limited to an aggregate 60 requests per feed URL per one-minute fixed
     window, shared by all readers of that URL.
 
-    Token-management endpoints require the `tokens:manage` scope. Feed
+    Token-management endpoints require the `tokens:manage` scope. User
+    administration requires the `users:read` scope and is available to the
+    first account only. Feed
     create and split mutations accept optional idempotency keys, and account quotas cover
     published feeds, daily previews, daily creations, daily split operations,
     and concurrent expensive operations. Feed responses expose `status` as
@@ -30,6 +32,7 @@ servers:
 tags:
   - name: Authentication
   - name: Service tokens
+  - name: Administration
   - name: Feeds
 paths:
   /api/v1/auth/login:
@@ -347,6 +350,55 @@ paths:
               schema: { $ref: '#/components/schemas/ErrorResponse' }
         '501':
           description: service_tokens_unavailable.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '503':
+          description: rate_limit_unavailable.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '500':
+          description: internal_error.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+  /api/v1/admin/users:
+    get:
+      tags: [Administration]
+      summary: List current users
+      description: Requires a service token with `users:read`. The response contains only safe account metadata.
+      operationId: listUsers
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Current users.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UserListResponse' }
+        '401':
+          description: authentication_required.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '403':
+          description: insufficient_scope; the bearer lacks `users:read`.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '429':
+          description: rate_limited; cheap-read limit is 120 requests per one-minute fixed window.
+          headers:
+            RateLimit-Limit: { $ref: '#/components/headers/RateLimitLimit' }
+            RateLimit-Remaining: { $ref: '#/components/headers/RateLimitRemaining' }
+            RateLimit-Reset: { $ref: '#/components/headers/RateLimitReset' }
+            Retry-After: { $ref: '#/components/headers/RetryAfter' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '501':
+          description: user_listing_unavailable.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorResponse' }
@@ -966,6 +1018,20 @@ components:
         status:
           type: string
           enum: [ready, refreshing]
+    UserListResponse:
+      type: object
+      required: [users]
+      properties:
+        users:
+          type: array
+          items: { $ref: '#/components/schemas/UserSummary' }
+    UserSummary:
+      type: object
+      required: [id, username, created_at]
+      properties:
+        id: { type: integer, format: int64, minimum: 1 }
+        username: { type: string }
+        created_at: { type: string, format: date-time }
     DeleteFeedResponse:
       type: object
       required: [deleted, path]
@@ -1002,6 +1068,7 @@ components:
             - method_not_allowed
             - registration_unavailable
             - service_tokens_unavailable
+            - user_listing_unavailable
             - internal_error
         message: { type: string }
         quota:

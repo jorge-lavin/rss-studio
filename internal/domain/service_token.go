@@ -15,6 +15,7 @@ const (
 	ScopeFeedsWrite   = "feeds:write"
 	ScopeFeedsDelete  = "feeds:delete"
 	ScopeTokensManage = "tokens:manage"
+	ScopeUsersRead    = "users:read"
 )
 
 var serviceTokenScopes = []string{
@@ -23,6 +24,7 @@ var serviceTokenScopes = []string{
 	ScopeFeedsWrite,
 	ScopeFeedsDelete,
 	ScopeTokensManage,
+	ScopeUsersRead,
 }
 
 // AllServiceTokenScopes returns a fresh list suitable for issuing a fully

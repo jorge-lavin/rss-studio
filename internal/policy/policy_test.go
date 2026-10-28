@@ -44,6 +44,7 @@ func TestRateLimitSpecForPreservesAuthenticatedLimits(t *testing.T) {
 		{policy.OperationTokensList, policy.RateLimitCheapRead, policy.CheapReadRateLimit},
 		{policy.OperationTokensCreate, policy.RateLimitCreate, policy.CreateRateLimit},
 		{policy.OperationTokensRevoke, policy.RateLimitDelete, policy.DeleteRateLimit},
+		{policy.OperationUsersList, policy.RateLimitCheapRead, policy.CheapReadRateLimit},
 	}
 	for _, test := range tests {
 		t.Run(test.operation, func(t *testing.T) {

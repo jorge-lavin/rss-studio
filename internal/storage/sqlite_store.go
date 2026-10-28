@@ -685,8 +685,8 @@ func (s *SQLiteStore) CreateUser(username, password string) (domain.User, error)
 	}
 	createdAt := time.Now().UTC()
 	result, err := s.db.Exec(`
-		INSERT INTO users (username, password_hash, created_at)
-		VALUES (?, ?, ?)
+		INSERT INTO users (username, password_hash, created_at, is_admin)
+		VALUES (?, ?, ?, CASE WHEN EXISTS (SELECT 1 FROM users) THEN 0 ELSE 1 END)
 		ON CONFLICT(username) DO NOTHING
 	`, username, string(hash), createdAt.Format(time.RFC3339Nano))
 	if err != nil {
@@ -699,21 +699,18 @@ func (s *SQLiteStore) CreateUser(username, password string) (domain.User, error)
 	if rows == 0 {
 		return domain.User{}, domain.ErrUsernameTaken
 	}
-	id, err := result.LastInsertId()
-	if err != nil {
-		return domain.User{}, fmt.Errorf("read created user: %w", err)
-	}
-	return domain.User{ID: id, Username: username, PasswordHash: string(hash), CreatedAt: createdAt}, nil
+	return s.User(username)
 }
 
 func (s *SQLiteStore) User(username string) (domain.User, error) {
 	username = strings.TrimSpace(username)
 	var user domain.User
 	var createdAt string
+	var isAdmin int
 	if err := s.db.QueryRow(
-		"SELECT id, username, password_hash, created_at FROM users WHERE username = ?",
+		"SELECT id, username, password_hash, created_at, is_admin FROM users WHERE username = ?",
 		username,
-	).Scan(&user.ID, &user.Username, &user.PasswordHash, &createdAt); err != nil {
+	).Scan(&user.ID, &user.Username, &user.PasswordHash, &createdAt, &isAdmin); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return domain.User{}, ErrUserNotFound
 		}
@@ -724,7 +721,34 @@ func (s *SQLiteStore) User(username string) (domain.User, error) {
 	if err != nil {
 		return domain.User{}, fmt.Errorf("parse user creation time: %w", err)
 	}
+	user.IsAdmin = isAdmin != 0
 	return user, nil
+}
+
+func (s *SQLiteStore) ListUsers() ([]domain.UserSummary, error) {
+	rows, err := s.db.Query("SELECT id, username, created_at FROM users ORDER BY id")
+	if err != nil {
+		return nil, fmt.Errorf("list users: %w", err)
+	}
+	defer rows.Close()
+
+	users := make([]domain.UserSummary, 0)
+	for rows.Next() {
+		var user domain.UserSummary
+		var createdAt string
+		if err := rows.Scan(&user.ID, &user.Username, &createdAt); err != nil {
+			return nil, fmt.Errorf("read user summary: %w", err)
+		}
+		user.CreatedAt, err = time.Parse(time.RFC3339Nano, createdAt)
+		if err != nil {
+			return nil, fmt.Errorf("parse user creation time: %w", err)
+		}
+		users = append(users, user)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate users: %w", err)
+	}
+	return users, nil
 }
 
 func (s *SQLiteStore) FirstUser() (domain.User, error) {
@@ -798,14 +822,15 @@ func (s *SQLiteStore) AuthenticateBrowserSession(raw string, now time.Time) (dom
 	var createdAt string
 	var expiresAt string
 	var id int64
+	var isAdmin int
 	err := s.db.QueryRow(`
 		SELECT browser_sessions.id, users.id, users.username, users.password_hash,
-		       users.created_at, browser_sessions.expires_at
+		       users.created_at, users.is_admin, browser_sessions.expires_at
 		FROM browser_sessions
 		JOIN users ON users.id = browser_sessions.user_id
 		WHERE browser_sessions.token_hash = ?
 		  AND browser_sessions.revoked_at IS NULL`, hash).Scan(
-		&id, &user.ID, &user.Username, &user.PasswordHash, &createdAt, &expiresAt)
+		&id, &user.ID, &user.Username, &user.PasswordHash, &createdAt, &isAdmin, &expiresAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return domain.User{}, 0, ErrInvalidBrowserSession
 	}
@@ -816,6 +841,7 @@ func (s *SQLiteStore) AuthenticateBrowserSession(raw string, now time.Time) (dom
 	if err != nil {
 		return domain.User{}, 0, fmt.Errorf("parse browser session user creation time: %w", err)
 	}
+	user.IsAdmin = isAdmin != 0
 	expires, err := time.Parse(time.RFC3339Nano, expiresAt)
 	if err != nil {
 		return domain.User{}, 0, fmt.Errorf("parse browser session expiry: %w", err)
@@ -896,6 +922,11 @@ func (s *SQLiteStore) CreateServiceToken(owner domain.User, name string, scopes 
 	scopes, err = domain.ParseServiceTokenScopes(scopes)
 	if err != nil {
 		return domain.ServiceToken{}, "", err
+	}
+	for _, scope := range scopes {
+		if scope == domain.ScopeUsersRead && !owner.IsAdmin {
+			return domain.ServiceToken{}, "", domain.ErrInvalidServiceToken
+		}
 	}
 	if err := s.cleanupServiceTokens(now); err != nil {
 		return domain.ServiceToken{}, "", fmt.Errorf("cleanup service tokens: %w", err)
