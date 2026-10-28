@@ -936,6 +936,9 @@ func TestAuthenticatedHandlerSupportsServiceTokenLogin(t *testing.T) {
 	if !strings.Contains(recorder.Body.String(), `id="theme-toggle"`) || !strings.Contains(recorder.Body.String(), `rss-studio-theme`) {
 		t.Fatalf("login page does not include dark-mode toggle: %s", recorder.Body.String())
 	}
+	if !strings.Contains(recorder.Body.String(), "RSS Studio · Version "+version.Version) {
+		t.Fatalf("login page does not show version %q: %s", version.Version, recorder.Body.String())
+	}
 	assertLocalStylesheet(t, recorder.Body.String())
 	csrfCookie := recorder.Result().Cookies()[0]
 	csrfToken := strings.Split(strings.Split(recorder.Body.String(), `name="csrf_token" value="`)[1], `"`)[0]
@@ -947,6 +950,9 @@ func TestAuthenticatedHandlerSupportsServiceTokenLogin(t *testing.T) {
 	handler.ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `action="/auth/sign-up"`) {
 		t.Fatalf("expected sign-up page to be publicly reachable, got %d", recorder.Code)
+	}
+	if !strings.Contains(recorder.Body.String(), "RSS Studio · Version "+version.Version) {
+		t.Fatalf("sign-up page does not show version %q: %s", version.Version, recorder.Body.String())
 	}
 	assertLocalStylesheet(t, recorder.Body.String())
 

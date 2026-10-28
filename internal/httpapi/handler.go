@@ -47,6 +47,7 @@ type authPageData struct {
 	Error        string
 	Registration bool
 	CSRFToken    string
+	Version      string
 }
 
 //go:embed static/rss-studio.css
@@ -919,7 +920,7 @@ func (h *Handler) renderLogin(writer http.ResponseWriter, request *http.Request,
 	token := h.csrfToken(writer, request)
 	writer.Header().Set("Content-Type", "text/html; charset=utf-8")
 	writer.WriteHeader(status)
-	if err := authTemplate.Execute(writer, authPageData{Error: message, CSRFToken: token}); err != nil {
+	if err := authTemplate.Execute(writer, authPageData{Error: message, CSRFToken: token, Version: version.Version}); err != nil {
 		log.Printf("render login: %v", err)
 	}
 }
@@ -929,7 +930,7 @@ func (h *Handler) renderRegister(writer http.ResponseWriter, request *http.Reque
 	token := h.csrfToken(writer, request)
 	writer.Header().Set("Content-Type", "text/html; charset=utf-8")
 	writer.WriteHeader(status)
-	if err := authTemplate.Execute(writer, authPageData{Error: message, Registration: true, CSRFToken: token}); err != nil {
+	if err := authTemplate.Execute(writer, authPageData{Error: message, Registration: true, CSRFToken: token, Version: version.Version}); err != nil {
 		log.Printf("render login: %v", err)
 	}
 }
@@ -2209,7 +2210,7 @@ var authTemplate = template.Must(template.New("auth").Parse(`<!doctype html>
   <link rel="stylesheet" href="/assets/rss-studio.css">
   <title>{{if .Registration}}Create account{{else}}Login{{end}} · RSS Studio</title>
 </head>
-<body class="flex min-h-full items-center justify-center bg-slate-100 px-5 py-12 text-slate-950 antialiased dark:bg-slate-950 dark:text-slate-100">
+<body class="flex min-h-full flex-col items-center justify-center bg-slate-100 px-5 py-12 text-slate-950 antialiased dark:bg-slate-950 dark:text-slate-100">
   <main class="w-full max-w-md rounded-2xl bg-white p-6 shadow-xl shadow-slate-900/5 ring-1 ring-slate-200 dark:bg-slate-900 dark:ring-slate-800 sm:p-8">
     <div class="mb-8">
       <div class="flex items-start justify-between gap-4">
@@ -2241,6 +2242,7 @@ var authTemplate = template.Must(template.New("auth").Parse(`<!doctype html>
     </form>
     <p class="mt-6 text-center text-sm text-slate-500 dark:text-slate-400">{{if .Registration}}Already have an account? <a class="font-semibold text-violet-600 hover:text-violet-700 dark:text-violet-400 dark:hover:text-violet-300" href="/auth/login">Login</a>{{else}}Need an account? <a class="font-semibold text-violet-600 hover:text-violet-700 dark:text-violet-400 dark:hover:text-violet-300" href="/auth/sign-up">Create one</a>{{end}}</p>
   </main>
+  <footer class="mt-6 text-center text-xs text-slate-400">RSS Studio · Version {{.Version}}</footer>
 <script>
   (() => {
     const root = document.documentElement;
