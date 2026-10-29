@@ -1663,7 +1663,7 @@ var landingTemplate = template.Must(template.New("landing").Parse(`<!doctype htm
       </div>
     </section>
 
-    <section class="mt-8 rounded-2xl border border-violet-200 bg-violet-50 p-6 dark:border-slate-800 dark:bg-violet-950/50 sm:p-8" aria-labelledby="beta-heading">
+    <section class="mt-8 rounded-2xl border border-violet-200 bg-violet-50 p-6 dark:border-slate-800 dark:bg-violet-950 sm:p-8" aria-labelledby="beta-heading">
       <h2 id="beta-heading" class="text-xl font-semibold tracking-tight">Help shape the beta</h2>
       <p class="mt-2 max-w-2xl text-sm leading-6 text-slate-700 dark:text-slate-300">We are validating demand with listeners and creators before adding paid plans. The beta focuses on title filtering and RSS delivery; it does not include description filtering, payment processing, or plan enforcement.</p>
     </section>

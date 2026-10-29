@@ -549,6 +549,7 @@ func TestPublicLandingPage(t *testing.T) {
 		"$5/month",
 		"No billing or checkout is implemented yet",
 		"description filtering",
+		"dark:bg-violet-950",
 		`href="/auth/sign-up"`,
 	} {
 		if !strings.Contains(page, marker) {
