@@ -43,6 +43,10 @@ type homePageData struct {
 	CSRFToken     string
 }
 
+type landingPageData struct {
+	Version string
+}
+
 type authPageData struct {
 	Error        string
 	Registration bool
@@ -944,6 +948,10 @@ func (h *Handler) authenticate(next http.Handler) http.Handler {
 		return next
 	}
 	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if isPublicLandingRequest(request) {
+			next.ServeHTTP(writer, request)
+			return
+		}
 		if isPublicRequest(request) {
 			next.ServeHTTP(writer, request)
 			return
@@ -1117,7 +1125,24 @@ func isPublicRequest(request *http.Request) bool {
 	return request.Method == http.MethodGet && strings.HasPrefix(request.URL.Path, "/feeds/") && strings.HasSuffix(request.URL.Path, ".xml")
 }
 
+func isPublicLandingRequest(request *http.Request) bool {
+	if request.Method != http.MethodGet && request.Method != http.MethodHead || request.URL.Path != "/" {
+		return false
+	}
+	if request.Header.Get("Authorization") != "" {
+		return false
+	}
+	cookie, err := request.Cookie(authCookieName)
+	return err != nil || cookie.Value == ""
+}
+
 func (h *Handler) home(writer http.ResponseWriter, request *http.Request) {
+	if h.auth != nil {
+		if _, ok := userFromContext(request.Context()); !ok {
+			h.renderLanding(writer)
+			return
+		}
+	}
 	h.renderHome(writer, request, "", http.StatusOK)
 }
 
@@ -1396,6 +1421,14 @@ func (h *Handler) renderHome(writer http.ResponseWriter, request *http.Request, 
 	}
 }
 
+func (h *Handler) renderLanding(writer http.ResponseWriter) {
+	writer.Header().Set("Cache-Control", "public, max-age=300")
+	writer.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if err := landingTemplate.Execute(writer, landingPageData{Version: version.Version}); err != nil {
+		log.Printf("render landing: %v", err)
+	}
+}
+
 func (h *Handler) requestUser(request *http.Request) domain.User {
 	if user, ok := userFromContext(request.Context()); ok {
 		return user
@@ -1538,6 +1571,134 @@ func sameOriginRequest(request *http.Request) bool {
 	}
 	return strings.EqualFold(parsed.Scheme, scheme) && strings.EqualFold(parsed.Host, request.Host)
 }
+
+var landingTemplate = template.Must(template.New("landing").Parse(`<!doctype html>
+<html lang="en" class="h-full bg-slate-100 dark:bg-slate-950">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <script>
+    (() => {
+      try {
+        const preference = localStorage.getItem("rss-studio-theme");
+        const dark = preference === "dark" || (preference !== "light" && window.matchMedia("(prefers-color-scheme: dark)").matches);
+        document.documentElement.classList.toggle("dark", dark);
+        document.documentElement.style.colorScheme = dark ? "dark" : "light";
+      } catch {}
+    })();
+  </script>
+  <link rel="stylesheet" href="/assets/rss-studio.css">
+  <title>RSS Studio · Filtered podcast feeds</title>
+</head>
+<body class="min-h-full bg-slate-100 text-slate-950 antialiased dark:bg-slate-950 dark:text-slate-100">
+<div class="min-h-screen">
+  <header class="bg-slate-950 text-white">
+    <div class="mx-auto max-w-6xl px-5 sm:px-8">
+      <nav aria-label="Primary" class="flex items-center justify-between border-b border-white/10 py-5">
+        <a href="/" class="flex items-center gap-2 text-base font-semibold tracking-tight">
+          <span class="flex h-8 w-8 items-center justify-center rounded-lg bg-violet-600 text-sm font-black text-white">R</span>
+          RSS Studio
+        </a>
+        <div class="flex items-center gap-3">
+          <a href="/api" class="text-xs font-medium text-slate-300 transition hover:text-white">API</a>
+          <a href="/auth/sign-in" class="rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-xs font-medium text-slate-300 transition hover:bg-white/10 hover:text-white">Sign in</a>
+          <button id="theme-toggle" type="button" aria-pressed="false" aria-label="Switch to dark mode" class="inline-flex items-center gap-2 rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-xs font-medium text-slate-300 transition hover:bg-white/10 focus:outline-none focus:ring-4 focus:ring-violet-400/30">
+            <span data-theme-icon aria-hidden="true">☾</span><span data-theme-label>Dark mode</span>
+          </button>
+        </div>
+      </nav>
+    </div>
+  </header>
+
+  <main class="mx-auto max-w-6xl px-5 pb-16 sm:px-8">
+    <section class="grid gap-8 py-12 lg:grid-cols-[1.1fr_0.9fr] lg:items-center lg:py-20" aria-labelledby="hero-heading">
+      <div>
+        <p class="text-xs font-semibold uppercase tracking-widest text-violet-600 dark:text-violet-300">Filtered podcast feeds</p>
+        <h1 id="hero-heading" class="mt-4 max-w-2xl text-3xl font-semibold tracking-tight sm:text-4xl">Follow the episodes you actually want.</h1>
+        <p class="mt-5 max-w-2xl text-base leading-7 text-slate-600 dark:text-slate-300">RSS Studio filters podcast episodes by topic, guest, or series names in episode titles, then gives you a feed to subscribe to in any RSS-compatible app.</p>
+        <a href="/auth/sign-up" class="mt-7 inline-flex min-h-[46px] items-center justify-center gap-2 rounded-lg bg-violet-600 px-5 py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-violet-700 focus:outline-none focus:ring-4 focus:ring-violet-600/20">Join the beta <span aria-hidden="true">→</span></a>
+        <p class="mt-4 max-w-2xl text-sm text-slate-500 dark:text-slate-400">Pricing under validation: proposed 7-day trial, then a target founder price of $5/month for personal use. No billing or checkout is implemented yet.</p>
+      </div>
+      <div class="rounded-2xl bg-white p-5 shadow-xl shadow-slate-900/5 ring-1 ring-slate-200 dark:bg-slate-900 dark:ring-slate-800 sm:p-8" aria-label="Example title filters">
+        <div class="flex items-center justify-between border-b border-slate-100 pb-4 dark:border-slate-800">
+          <p class="text-sm font-semibold text-slate-900 dark:text-slate-100">One show, focused feeds</p>
+          <span class="rounded-full bg-violet-50 px-2.5 py-1 text-xs font-medium text-violet-700 dark:bg-violet-950 dark:text-violet-300">RSS output</span>
+        </div>
+        <div class="mt-5 space-y-3">
+          <div class="rounded-xl border border-slate-200 bg-slate-50 p-4 dark:border-slate-800 dark:bg-slate-950">
+            <p class="text-xs font-medium uppercase tracking-wider text-slate-400">Topic feed</p>
+            <p class="mt-1 text-sm font-semibold text-slate-800 dark:text-slate-200">Contains “climate”</p>
+          </div>
+          <div class="rounded-xl border border-slate-200 bg-slate-50 p-4 dark:border-slate-800 dark:bg-slate-950">
+            <p class="text-xs font-medium uppercase tracking-wider text-slate-400">Guest feed</p>
+            <p class="mt-1 text-sm font-semibold text-slate-800 dark:text-slate-200">Starts with “Interview:”</p>
+          </div>
+          <div class="rounded-xl border border-slate-200 bg-slate-50 p-4 dark:border-slate-800 dark:bg-slate-950">
+            <p class="text-xs font-medium uppercase tracking-wider text-slate-400">Series feed</p>
+            <p class="mt-1 text-sm font-semibold text-slate-800 dark:text-slate-200">Contains “Deep Dives”</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="rounded-2xl bg-white p-6 shadow-xl shadow-slate-900/5 ring-1 ring-slate-200 dark:bg-slate-900 dark:ring-slate-800 sm:p-8" aria-labelledby="how-heading">
+      <div class="max-w-2xl">
+        <p class="text-xs font-semibold uppercase tracking-widest text-violet-600 dark:text-violet-300">What works today</p>
+        <h2 id="how-heading" class="mt-2 text-2xl font-semibold tracking-tight">A small tool for a specific podcast problem.</h2>
+      </div>
+      <div class="mt-8 grid gap-6 sm:grid-cols-3">
+        <article>
+          <h3 class="text-base font-semibold text-slate-900 dark:text-slate-100">Filter episode titles</h3>
+          <p class="mt-2 text-sm leading-6 text-slate-600 dark:text-slate-400">Match titles by contains, starts with, ends with, or equals.</p>
+        </article>
+        <article>
+          <h3 class="text-base font-semibold text-slate-900 dark:text-slate-100">Publish a stable feed</h3>
+          <p class="mt-2 text-sm leading-6 text-slate-600 dark:text-slate-400">Get a public RSS URL that keeps working in your podcast workflow.</p>
+        </article>
+        <article>
+          <h3 class="text-base font-semibold text-slate-900 dark:text-slate-100">Use your existing app</h3>
+          <p class="mt-2 text-sm leading-6 text-slate-600 dark:text-slate-400">Subscribe in any RSS-compatible app. No new player required.</p>
+        </article>
+      </div>
+    </section>
+
+    <section class="mt-8 rounded-2xl border border-violet-200 bg-violet-50 p-6 dark:border-slate-800 dark:bg-violet-950/50 sm:p-8" aria-labelledby="beta-heading">
+      <h2 id="beta-heading" class="text-xl font-semibold tracking-tight">Help shape the beta</h2>
+      <p class="mt-2 max-w-2xl text-sm leading-6 text-slate-700 dark:text-slate-300">We are validating demand with listeners and creators before adding paid plans. The beta focuses on title filtering and RSS delivery; it does not include description filtering, payment processing, or plan enforcement.</p>
+    </section>
+  </main>
+
+  <footer class="mx-auto max-w-6xl px-5 pb-8 text-xs text-slate-400 sm:px-8">RSS Studio · Version {{.Version}}</footer>
+</div>
+<script>
+  (() => {
+    const root = document.documentElement;
+    const toggle = document.getElementById("theme-toggle");
+    if (!toggle) return;
+    const icon = toggle.querySelector("[data-theme-icon]");
+    const label = toggle.querySelector("[data-theme-label]");
+    const update = () => {
+      const dark = root.classList.contains("dark");
+      root.style.colorScheme = dark ? "dark" : "light";
+      toggle.setAttribute("aria-pressed", String(dark));
+      toggle.setAttribute("aria-label", dark ? "Switch to light mode" : "Switch to dark mode");
+      icon.textContent = dark ? "☀" : "☾";
+      label.textContent = dark ? "Light mode" : "Dark mode";
+    };
+    toggle.addEventListener("click", () => {
+      const dark = !root.classList.contains("dark");
+      root.classList.toggle("dark", dark);
+      try {
+        localStorage.setItem("rss-studio-theme", dark ? "dark" : "light");
+      } catch {}
+      update();
+    });
+    update();
+  })();
+</script>
+</body>
+</html>`))
 
 var homeTemplate = template.Must(template.New("home").Funcs(template.FuncMap{"filterSummary": filterSummary}).Parse(`<!doctype html>
 <html lang="en" class="h-full bg-slate-100 dark:bg-slate-950">

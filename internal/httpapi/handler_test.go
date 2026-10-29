@@ -526,6 +526,41 @@ func TestHomeRendersSplitFeedWorkflow(t *testing.T) {
 	}
 }
 
+func TestPublicLandingPage(t *testing.T) {
+	server, _ := newAuthenticatedServer(t)
+	response, err := http.Get(server.URL + "/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	body, err := io.ReadAll(response.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("expected public landing page, got %d: %s", response.StatusCode, body)
+	}
+	page := string(body)
+	for _, marker := range []string{
+		"filters podcast episodes by topic, guest, or series names in episode titles",
+		"any RSS-compatible app",
+		"Join the beta",
+		"proposed 7-day trial",
+		"$5/month",
+		"No billing or checkout is implemented yet",
+		"description filtering",
+		`href="/auth/sign-up"`,
+	} {
+		if !strings.Contains(page, marker) {
+			t.Fatalf("public landing page missing %q: %s", marker, page)
+		}
+	}
+	if strings.Count(page, "Join the beta") != 1 {
+		t.Fatalf("expected one beta CTA, page has %d: %s", strings.Count(page, "Join the beta"), page)
+	}
+	assertLocalStylesheet(t, page)
+}
+
 func TestAuthJSONEndpointsRejectOversizedBodies(t *testing.T) {
 	server, _ := newAuthenticatedServer(t)
 	body := `{"username":"admin","password":"password-1234"}` + strings.Repeat(" ", 16<<10)
@@ -583,8 +618,8 @@ func TestAuthenticatedHandlerProtectsManagementAndLeavesFeedsPublic(t *testing.T
 		t.Fatal(err)
 	}
 	response.Body.Close()
-	if response.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("expected unauthenticated management request to fail, got %d", response.StatusCode)
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("expected unauthenticated request to render public landing page, got %d", response.StatusCode)
 	}
 
 	response, err = http.Post(server.URL+"/auth/login", "application/json", strings.NewReader(`{"username":"admin","password":"password-1234"}`))
@@ -922,8 +957,8 @@ func TestAuthenticatedHandlerSupportsServiceTokenLogin(t *testing.T) {
 	request.Header.Set("Accept", "text/html")
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, request)
-	if recorder.Code != http.StatusSeeOther || recorder.Header().Get("Location") != "/auth/login" {
-		t.Fatalf("expected browser request to redirect to login, got %d and %q", recorder.Code, recorder.Header().Get("Location"))
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), "Join the beta") {
+		t.Fatalf("expected browser request to render public landing page, got %d and %q", recorder.Code, recorder.Header().Get("Location"))
 	}
 
 	request = httptest.NewRequest(http.MethodGet, "/auth/login", nil)
@@ -1017,8 +1052,8 @@ func TestAuthenticatedHandlerSupportsServiceTokenLogin(t *testing.T) {
 	request.Header.Set("Accept", "text/html")
 	recorder = httptest.NewRecorder()
 	handler.ServeHTTP(recorder, request)
-	if recorder.Code != http.StatusSeeOther || recorder.Header().Get("Location") != "/auth/login" {
-		t.Fatalf("expected logged-out home request to redirect to login, got %d and %q", recorder.Code, recorder.Header().Get("Location"))
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), "Join the beta") {
+		t.Fatalf("expected logged-out home request to render public landing page, got %d and %q", recorder.Code, recorder.Header().Get("Location"))
 	}
 }
 
