@@ -896,7 +896,7 @@ paths:
               $ref: '#/components/schemas/CheckoutRequest'
       responses:
         '200':
-          description: Hosted Checkout URL. No Stripe session or credential is returned.
+          description: Hosted Checkout URL. No provider session or credential is returned.
           content:
             application/json:
               schema:
@@ -918,6 +918,48 @@ paths:
               schema: { $ref: '#/components/schemas/ErrorResponse' }
         '503':
           description: Billing flags, configuration, or Stripe API unavailable.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+  /api/v1/billing/checkout/btcpay:
+    post:
+      tags: [Billing]
+      summary: Create hosted BTCPay subscription checkout
+      description: Requires authenticated account access with `billing:write`; both `billing.enabled` and `billing.bitcoin` must be enabled. The provisional hosted listener personal product is the only accepted product.
+      operationId: createBitcoinBillingCheckout
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CheckoutRequest'
+      responses:
+        '200':
+          description: Hosted BTCPay checkout URL. No BTCPay session or credential is returned.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CheckoutResponse' }
+        '400':
+          description: validation_error or invalid JSON.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '401':
+          description: authentication_required.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '403':
+          description: insufficient_scope; the bearer lacks `billing:write`.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '503':
+          description: Billing flags, configuration, or BTCPay API unavailable.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorResponse' }
@@ -947,6 +989,39 @@ paths:
                   received: { type: boolean, const: true }
         '400':
           description: Invalid or replayed signature, malformed event, or unsupported required fields.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '503':
+          description: Webhook configuration or billing state storage unavailable.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+  /api/v1/billing/webhook/btcpay:
+    post:
+      tags: [Billing]
+      summary: Receive verified BTCPay webhook
+      description: Public endpoint. BTCPay-Sig HMAC, durable delivery IDs, and provider plan/store matching are verified before provider-neutral state changes.
+      operationId: receiveBTCPayWebhook
+      parameters:
+        - $ref: '#/components/parameters/BTCPaySignature'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object }
+      responses:
+        '200':
+          description: Event accepted, already applied, or safely ignored as unsupported.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [received]
+                properties:
+                  received: { type: boolean, const: true }
+        '400':
+          description: Invalid signature or malformed event.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorResponse' }
@@ -1015,6 +1090,12 @@ components:
       required: true
       description: Stripe-signed timestamp and v1 HMAC header. Never log this value.
       schema: { type: string }
+    BTCPaySignature:
+      name: BTCPay-Sig
+      in: header
+      required: true
+      description: HMAC-SHA256 signature over the exact request body, formatted as sha256=hex. Never log this value.
+      schema: { type: string }
   schemas:
     CheckoutRequest:
       type: object
@@ -1031,7 +1112,7 @@ components:
         checkout_url:
           type: string
           format: uri
-          description: HTTPS URL hosted by Stripe.
+          description: HTTPS URL hosted by payment provider.
     Credentials:
       type: object
       additionalProperties: false

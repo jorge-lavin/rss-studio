@@ -171,10 +171,12 @@ curl -fsS '{{.BaseURL}}/api/v1/feeds' \
         </article>
 
         <article class="overflow-hidden rounded-2xl bg-white shadow-xl shadow-slate-900/5 ring-1 ring-slate-200 dark:bg-slate-900 dark:ring-slate-800">
-          <div class="border-b border-slate-100 px-5 py-4 dark:border-slate-800 sm:px-6"><h3 class="font-semibold">Billing</h3><p class="mt-1 text-sm text-slate-500 dark:text-slate-400">Stripe Checkout is dormant until both billing rollout flags are enabled.</p></div>
+          <div class="border-b border-slate-100 px-5 py-4 dark:border-slate-800 sm:px-6"><h3 class="font-semibold">Billing</h3><p class="mt-1 text-sm text-slate-500 dark:text-slate-400">Stripe and BTCPay Checkout are dormant until their billing rollout flags are enabled.</p></div>
           <div class="divide-y divide-slate-100 dark:divide-slate-800">
             <div class="flex flex-col gap-2 px-5 py-4 sm:flex-row sm:items-center sm:gap-4 sm:px-6"><span class="w-16 rounded-md bg-violet-50 px-2 py-1 text-center text-xs font-bold text-violet-700 dark:bg-violet-950 dark:text-violet-300">POST</span><code class="text-sm font-semibold">/billing/checkout</code><span class="text-sm text-slate-500 dark:text-slate-400">Create hosted Checkout URL for the personal product. Requires <code>billing:write</code>.</span></div>
             <div class="flex flex-col gap-2 px-5 py-4 sm:flex-row sm:items-center sm:gap-4 sm:px-6"><span class="w-16 rounded-md bg-amber-50 px-2 py-1 text-center text-xs font-bold text-amber-700 dark:bg-amber-950 dark:text-amber-300">POST</span><code class="text-sm font-semibold">/billing/webhook/stripe</code><span class="text-sm text-slate-500 dark:text-slate-400">Public Stripe webhook; valid signature required.</span></div>
+            <div class="flex flex-col gap-2 px-5 py-4 sm:flex-row sm:items-center sm:gap-4 sm:px-6"><span class="w-16 rounded-md bg-violet-50 px-2 py-1 text-center text-xs font-bold text-violet-700 dark:bg-violet-950 dark:text-violet-300">POST</span><code class="text-sm font-semibold">/billing/checkout/btcpay</code><span class="text-sm text-slate-500 dark:text-slate-400">Create hosted BTCPay subscription checkout. Requires <code>billing:write</code>.</span></div>
+            <div class="flex flex-col gap-2 px-5 py-4 sm:flex-row sm:items-center sm:gap-4 sm:px-6"><span class="w-16 rounded-md bg-amber-50 px-2 py-1 text-center text-xs font-bold text-amber-700 dark:bg-amber-950 dark:text-amber-300">POST</span><code class="text-sm font-semibold">/billing/webhook/btcpay</code><span class="text-sm text-slate-500 dark:text-slate-400">Public BTCPay webhook; valid signature required.</span></div>
           </div>
         </article>
       </div>

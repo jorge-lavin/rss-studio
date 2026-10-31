@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"rss-studio/internal/application"
+	"rss-studio/internal/btcpay"
 	"rss-studio/internal/cache"
 	"rss-studio/internal/httpapi"
 	"rss-studio/internal/mcp"
@@ -85,6 +86,7 @@ func main() {
 		quotas,
 	)
 	stripeService := stripe.New(stripe.ConfigFromEnv(), service.FeatureFlagStore(), service.BillingWebhookStore())
+	btcpayService := btcpay.New(btcpay.ConfigFromEnv(), service.FeatureFlagStore(), service.BillingWebhookStore())
 	mux := http.NewServeMux()
 	mcpEnabled, err := mcpEnabledFromEnv()
 	if err != nil {
@@ -95,7 +97,7 @@ func main() {
 	} else {
 		mux.HandleFunc("/mcp", http.NotFound)
 	}
-	mux.Handle("/", httpapi.NewHandlerWithStripe(service, time.Now, stripeService, auth))
+	mux.Handle("/", httpapi.NewHandlerWithBillingProviders(service, time.Now, stripeService, btcpayService, auth))
 	server := newHTTPServer(address, mux)
 
 	log.Printf("RSS Studio listening on %s", address)

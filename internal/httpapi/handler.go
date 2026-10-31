@@ -18,6 +18,7 @@ import (
 	"unicode"
 
 	"rss-studio/internal/application"
+	"rss-studio/internal/btcpay"
 	"rss-studio/internal/domain"
 	"rss-studio/internal/observability"
 	"rss-studio/internal/policy"
@@ -30,6 +31,7 @@ type Handler struct {
 	service      *application.Service
 	auth         *Authenticator
 	stripe       *stripe.Service
+	btcpay       *btcpay.Service
 	now          func() time.Time
 	loginLimiter *loginRateLimiter
 	apiLimiter   *apiRateLimiter
@@ -205,17 +207,25 @@ func NewHandlerWithClock(service *application.Service, now func() time.Time, aut
 // NewHandlerWithStripe adds dormant Stripe billing routes without changing
 // existing feed, account, or public-feed routing.
 func NewHandlerWithStripe(service *application.Service, now func() time.Time, stripeService *stripe.Service, authenticators ...*Authenticator) http.Handler {
+	return NewHandlerWithBillingProviders(service, now, stripeService, nil, authenticators...)
+}
+
+// NewHandlerWithBillingProviders adds dormant Stripe and BTCPay routes without
+// changing existing feed, account, or public-feed routing.
+func NewHandlerWithBillingProviders(service *application.Service, now func() time.Time, stripeService *stripe.Service, btcpayService *btcpay.Service, authenticators ...*Authenticator) http.Handler {
 	var auth *Authenticator
 	if len(authenticators) > 0 {
 		auth = authenticators[0]
 	}
 	handler := &Handler{
-		service: service, auth: auth, stripe: stripeService, now: now, loginLimiter: newLoginRateLimiterWithClock(now),
+		service: service, auth: auth, stripe: stripeService, btcpay: btcpayService, now: now, loginLimiter: newLoginRateLimiterWithClock(now),
 		apiLimiter: newAPIRateLimiter(service.RateLimitStore(), now),
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /api/v1/billing/webhook/stripe", handler.stripeWebhook)
 	mux.HandleFunc("/api/v1/billing/webhook/stripe", handler.stripeWebhook)
+	mux.HandleFunc("POST /api/v1/billing/webhook/btcpay", handler.btcpayWebhook)
+	mux.HandleFunc("/api/v1/billing/webhook/btcpay", handler.btcpayWebhook)
 	mux.HandleFunc("GET /{$}", handler.home)
 	if auth != nil {
 		mux.HandleFunc("GET /auth/sign-in", handler.loginPage)
@@ -244,6 +254,8 @@ func NewHandlerWithStripe(service *application.Service, now func() time.Time, st
 		mux.HandleFunc("/api/v1/auth/register", handler.apiMethodNotAllowed)
 		mux.HandleFunc("POST /api/v1/billing/checkout", handler.apiCreateCheckout)
 		mux.HandleFunc("/api/v1/billing/checkout", handler.apiCheckoutMethodNotAllowed)
+		mux.HandleFunc("POST /api/v1/billing/checkout/btcpay", handler.apiCreateBTCPayCheckout)
+		mux.HandleFunc("/api/v1/billing/checkout/btcpay", handler.apiCheckoutMethodNotAllowed)
 		mux.HandleFunc("GET /api/v1/feeds", handler.apiListFeeds)
 		mux.HandleFunc("POST /api/v1/feeds", handler.apiCreateFeed)
 		mux.HandleFunc("PUT /api/v1/feeds", handler.apiFeedsMethodNotAllowed)
@@ -1229,7 +1241,7 @@ func (h *Handler) authenticate(next http.Handler) http.Handler {
 func requiredScopeForRequest(request *http.Request) (string, bool) {
 	if isAPIRequest(request) {
 		switch {
-		case request.Method == http.MethodPost && request.URL.Path == "/api/v1/billing/checkout":
+		case request.Method == http.MethodPost && (request.URL.Path == "/api/v1/billing/checkout" || request.URL.Path == "/api/v1/billing/checkout/btcpay"):
 			return domain.ScopeBillingWrite, true
 		case strings.HasPrefix(request.URL.Path, "/api/v1/auth/tokens"):
 			return domain.ScopeTokensManage, true
@@ -1296,6 +1308,9 @@ func acceptsHTML(request *http.Request) bool {
 
 func isPublicRequest(request *http.Request) bool {
 	if request.URL.Path == "/api/v1/billing/webhook/stripe" {
+		return true
+	}
+	if request.URL.Path == "/api/v1/billing/webhook/btcpay" {
 		return true
 	}
 	if request.Method == http.MethodGet && request.URL.Path == "/assets/rss-studio.css" {

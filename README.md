@@ -122,8 +122,10 @@ rejected. API errors never redirect to the browser UI.
 | `POST /api/v1/auth/tokens` | Create service token | Service token with `tokens:manage` |
 | `POST /api/v1/auth/tokens/{id}/revoke` | Revoke service token | Service token with `tokens:manage` |
 | `DELETE /api/v1/auth/tokens/{id}` | Revoke service token alias | Service token with `tokens:manage` |
-| `POST /api/v1/billing/checkout` | Create hosted Checkout session for provisional hosted listener personal product | Authenticated account with `billing:write`; both billing flags enabled |
+| `POST /api/v1/billing/checkout` | Create hosted Stripe Checkout session for provisional hosted listener personal product | Authenticated account with `billing:write`; `billing.enabled` and `billing.stripe` enabled |
+| `POST /api/v1/billing/checkout/btcpay` | Create hosted BTCPay subscription checkout | Authenticated account with `billing:write`; `billing.enabled` and `billing.bitcoin` enabled |
 | `POST /api/v1/billing/webhook/stripe` | Receive verified Stripe subscription events | Public route; valid `Stripe-Signature` required |
+| `POST /api/v1/billing/webhook/btcpay` | Receive verified BTCPay subscription events | Public route; valid `BTCPay-Sig` required |
 | `GET /api/v1/admin/users` | List current users | Service token with `users:read` |
 | `GET /api/v1/admin/flags` | List persisted rollout flags | Administrator with `users:read` |
 | `GET /api/v1/admin/flags/{name}` | Read one persisted rollout flag | Administrator with `users:read` |
@@ -185,20 +187,23 @@ returns `id`, `name`, `scopes`, `created_at`, `expires_at`, and optional
 `revoked_at`, never the raw token. `DELETE /api/v1/auth/tokens/{id}` is an
 alias for the revoke POST.
 
-### Dormant Stripe Checkout
+### Dormant hosted billing
 
-Stripe Checkout is dormant until both `billing.enabled` and `billing.stripe` are
-enabled. The checkout endpoint accepts an optional JSON `product_key`; omitted
-or empty selects `hosted_listener_personal`. Successful responses contain only
-`checkout_url`. Stripe subscription metadata carries opaque account and product
-references; webhook events update provider-neutral billing state without
-enforcing entitlements.
+Stripe and BTCPay Checkout remain dormant until `billing.enabled` plus their
+provider flag are enabled. Successful responses contain only `checkout_url`.
+Provider metadata carries opaque account and product references; webhook events
+update provider-neutral billing state without enforcing entitlements.
 
 Configure Stripe at runtime with `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`,
 `STRIPE_PRICE_ID`, `STRIPE_SUCCESS_URL`, and `STRIPE_CANCEL_URL`. Do not commit,
 log, or expose their values. Stripe sends signed events to the public webhook
 route; signatures use the standard timestamp tolerance and durable event IDs
 prevent duplicate or out-of-order state changes.
+
+Configure BTCPay at runtime with `BTCPAY_URL`, `BTCPAY_API_KEY`,
+`BTCPAY_WEBHOOK_SECRET`, `BTCPAY_STORE_ID`, `BTCPAY_OFFERING_ID`,
+`BTCPAY_PLAN_ID`, and optional `BTCPAY_SUCCESS_URL`. The API key requires
+`btcpay.store.canmanagesubscribers`. Keep API and webhook secrets private.
 
 ### Feed request and response shapes
 
