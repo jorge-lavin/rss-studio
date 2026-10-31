@@ -123,6 +123,9 @@ rejected. API errors never redirect to the browser UI.
 | `POST /api/v1/auth/tokens/{id}/revoke` | Revoke service token | Service token with `tokens:manage` |
 | `DELETE /api/v1/auth/tokens/{id}` | Revoke service token alias | Service token with `tokens:manage` |
 | `GET /api/v1/admin/users` | List current users | Service token with `users:read` |
+| `GET /api/v1/admin/flags` | List persisted rollout flags | Administrator with `users:read` |
+| `GET /api/v1/admin/flags/{name}` | Read one persisted rollout flag | Administrator with `users:read` |
+| `PUT /api/v1/admin/flags/{name}` | Update one rollout flag | Administrator with `users:read` and CSRF for browser sessions |
 | `GET /api/v1/feeds` | List tenant feeds | Service token with `feeds:read` |
 | `POST /api/v1/feeds` | Publish one feed | Service token with `feeds:write` |
 | `POST /api/v1/feeds/preview` | Preview outputs | Service token with `feeds:preview` |
@@ -130,6 +133,9 @@ rejected. API errors never redirect to the browser UI.
 | `DELETE /api/v1/feeds/{path}` | Delete tenant feed | Service token with `feeds:delete` |
 
 The first account can open the browser admin panel at `/admin/users`.
+The four persisted rollout flags are `billing.enabled`, `billing.stripe`,
+`billing.bitcoin`, and `billing.enforcement`; flag updates are read from SQLite
+at request time and do not require a process restart.
 
 Send credentials as `Authorization: Bearer <service-token>`. Service tokens are
 expiring, revocable bearer credentials. Every management operation requires the

@@ -42,6 +42,9 @@ const (
 	OperationTokensCreate = "auth.tokens.create"
 	OperationTokensRevoke = "auth.tokens.revoke"
 	OperationUsersList    = "admin.users.list"
+	OperationFlagsList    = "admin.flags.list"
+	OperationFlagsRead    = "admin.flags.read"
+	OperationFlagsUpdate  = "admin.flags.update"
 )
 
 // RateLimitSpec is the fixed-window policy for one operation.
@@ -56,13 +59,13 @@ type RateLimitSpec struct {
 func RateLimitSpecFor(operation string) (RateLimitSpec, bool) {
 	spec := RateLimitSpec{Operation: operation, Window: RateLimitWindow}
 	switch operation {
-	case OperationFeedsList, OperationTokensList, OperationUsersList:
+	case OperationFeedsList, OperationTokensList, OperationUsersList, OperationFlagsList, OperationFlagsRead:
 		spec.Class, spec.Limit = RateLimitCheapRead, CheapReadRateLimit
 	case OperationFeedsDelete, OperationTokensRevoke:
 		spec.Class, spec.Limit = RateLimitDelete, DeleteRateLimit
 	case OperationFeedsPreview:
 		spec.Class, spec.Limit = RateLimitPreview, PreviewRateLimit
-	case OperationFeedsCreate, OperationTokensCreate:
+	case OperationFeedsCreate, OperationTokensCreate, OperationFlagsUpdate:
 		spec.Class, spec.Limit = RateLimitCreate, CreateRateLimit
 	case OperationFeedsSplit:
 		spec.Class, spec.Limit = RateLimitCreate, SplitRateLimit
@@ -93,6 +96,12 @@ func RateLimitOperationForHTTP(method, path string) (string, bool) {
 		return OperationTokensList, true
 	case method == http.MethodGet && path == "/api/v1/admin/users":
 		return OperationUsersList, true
+	case method == http.MethodGet && path == "/api/v1/admin/flags":
+		return OperationFlagsList, true
+	case method == http.MethodGet && strings.HasPrefix(path, "/api/v1/admin/flags/"):
+		return OperationFlagsRead, true
+	case method == http.MethodPut && strings.HasPrefix(path, "/api/v1/admin/flags/"):
+		return OperationFlagsUpdate, true
 	case method == http.MethodPost && path == "/api/v1/auth/tokens":
 		return OperationTokensCreate, true
 	case (method == http.MethodPost || method == http.MethodDelete) && strings.HasPrefix(path, "/api/v1/auth/tokens/"):

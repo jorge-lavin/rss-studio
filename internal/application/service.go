@@ -246,6 +246,12 @@ func (s *Service) RateLimitStore() policy.RateLimitStore {
 	return store
 }
 
+// FeatureFlagStore exposes persisted rollout controls to the admin adapter.
+func (s *Service) FeatureFlagStore() FeatureFlagStore {
+	store, _ := s.store.(FeatureFlagStore)
+	return store
+}
+
 // QuotaError is safe to expose through an API response: it contains only
 // quota metadata and never request, credential, or source data.
 type QuotaError struct {

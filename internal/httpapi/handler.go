@@ -154,6 +154,17 @@ type serviceTokenCreateRequest struct {
 	ExpiresAt *time.Time `json:"expires_at"`
 }
 
+type featureFlagUpdateRequest struct {
+	Enabled json.RawMessage `json:"enabled"`
+}
+
+type featureFlagResponse struct {
+	Name      string    `json:"name"`
+	Enabled   bool      `json:"enabled"`
+	UpdatedAt time.Time `json:"updated_at"`
+	UpdatedBy *int64    `json:"updated_by,omitempty"`
+}
+
 type serviceTokenResponse struct {
 	ID        int64      `json:"id"`
 	Name      string     `json:"name"`
@@ -214,6 +225,11 @@ func NewHandlerWithClock(service *application.Service, now func() time.Time, aut
 		mux.HandleFunc("DELETE /api/v1/auth/tokens/{id}", handler.apiRevokeServiceToken)
 		mux.HandleFunc("GET /api/v1/admin/users", handler.apiListUsers)
 		mux.HandleFunc("/api/v1/admin/users", handler.apiAdminUsersMethodNotAllowed)
+		mux.HandleFunc("GET /api/v1/admin/flags", handler.apiListFeatureFlags)
+		mux.HandleFunc("GET /api/v1/admin/flags/{name}", handler.apiGetFeatureFlag)
+		mux.HandleFunc("PUT /api/v1/admin/flags/{name}", handler.apiUpdateFeatureFlag)
+		mux.HandleFunc("/api/v1/admin/flags", handler.apiFeatureFlagsMethodNotAllowed)
+		mux.HandleFunc("/api/v1/admin/flags/{name}", handler.apiFeatureFlagMethodNotAllowed)
 		mux.HandleFunc("/api/v1/auth/login", handler.apiMethodNotAllowed)
 		mux.HandleFunc("/api/v1/auth/register", handler.apiMethodNotAllowed)
 		mux.HandleFunc("GET /api/v1/feeds", handler.apiListFeeds)
@@ -442,6 +458,145 @@ func (h *Handler) apiListUsers(writer http.ResponseWriter, request *http.Request
 
 func (h *Handler) apiAdminUsersMethodNotAllowed(writer http.ResponseWriter, request *http.Request) {
 	h.apiMethodNotAllowedFor(writer, request, http.MethodGet)
+}
+
+func (h *Handler) apiListFeatureFlags(writer http.ResponseWriter, request *http.Request) {
+	started := time.Now()
+	result := "error"
+	defer func() {
+		observability.Record(request.Context(), observability.Event{
+			Event:      observability.EventOperation,
+			Operation:  policy.OperationFlagsList,
+			Result:     result,
+			DurationMS: time.Since(started).Milliseconds(),
+		})
+	}()
+
+	store := h.service.FeatureFlagStore()
+	if store == nil {
+		writeAPIError(writer, request, http.StatusNotImplemented, "feature_flags_unavailable", "Feature flags are unavailable.")
+		return
+	}
+	flags, err := store.ListFeatureFlags()
+	if err != nil {
+		log.Printf("list feature flags: %v", err)
+		writeAPIError(writer, request, http.StatusInternalServerError, "internal_error", "Could not list feature flags.")
+		return
+	}
+	response := make([]featureFlagResponse, len(flags))
+	for i, flag := range flags {
+		response[i] = featureFlagResponseFor(flag)
+	}
+	writeAPIJSON(writer, http.StatusOK, struct {
+		Flags []featureFlagResponse `json:"flags"`
+	}{Flags: response})
+	result = "success"
+}
+
+func (h *Handler) apiGetFeatureFlag(writer http.ResponseWriter, request *http.Request) {
+	started := time.Now()
+	result := "error"
+	defer func() {
+		observability.Record(request.Context(), observability.Event{
+			Event:      observability.EventOperation,
+			Operation:  policy.OperationFlagsRead,
+			Result:     result,
+			DurationMS: time.Since(started).Milliseconds(),
+		})
+	}()
+
+	name := request.PathValue("name")
+	if !domain.IsKnownFeatureFlag(name) {
+		writeAPIError(writer, request, http.StatusNotFound, "not_found", "Feature flag not found.")
+		return
+	}
+	store := h.service.FeatureFlagStore()
+	if store == nil {
+		writeAPIError(writer, request, http.StatusNotImplemented, "feature_flags_unavailable", "Feature flags are unavailable.")
+		return
+	}
+	flag, err := store.GetFeatureFlag(name)
+	if err != nil {
+		if errors.Is(err, domain.ErrFeatureFlagNotFound) {
+			writeAPIError(writer, request, http.StatusNotFound, "not_found", "Feature flag not found.")
+			return
+		}
+		log.Printf("get feature flag: %v", err)
+		writeAPIError(writer, request, http.StatusInternalServerError, "internal_error", "Could not read feature flag.")
+		return
+	}
+	writeAPIJSON(writer, http.StatusOK, featureFlagResponseFor(flag))
+	result = "success"
+}
+
+func (h *Handler) apiUpdateFeatureFlag(writer http.ResponseWriter, request *http.Request) {
+	started := time.Now()
+	result := "error"
+	defer func() {
+		observability.Record(request.Context(), observability.Event{
+			Event:      observability.EventMutation,
+			Operation:  policy.OperationFlagsUpdate,
+			Result:     result,
+			DurationMS: time.Since(started).Milliseconds(),
+		})
+	}()
+
+	name := request.PathValue("name")
+	if !domain.IsKnownFeatureFlag(name) {
+		writeAPIError(writer, request, http.StatusNotFound, "not_found", "Feature flag not found.")
+		return
+	}
+	request.Body = http.MaxBytesReader(writer, request.Body, maxJSONRequestBody)
+	var input featureFlagUpdateRequest
+	if inputErr := parseAPIJSON(request, &input); inputErr != nil {
+		writeAPIError(writer, request, http.StatusBadRequest, inputErr.Code, inputErr.Message)
+		return
+	}
+	enabled, ok := strictJSONBool(input.Enabled)
+	if !ok {
+		writeAPIError(writer, request, http.StatusBadRequest, "validation_error", "Flag enabled must be a boolean.")
+		return
+	}
+	store := h.service.FeatureFlagStore()
+	if store == nil {
+		writeAPIError(writer, request, http.StatusNotImplemented, "feature_flags_unavailable", "Feature flags are unavailable.")
+		return
+	}
+	flag, err := store.SetFeatureFlag(name, enabled, h.requestUser(request).ID)
+	if err != nil {
+		if errors.Is(err, domain.ErrFeatureFlagNotFound) || errors.Is(err, domain.ErrInvalidFeatureFlag) {
+			writeAPIError(writer, request, http.StatusNotFound, "not_found", "Feature flag not found.")
+			return
+		}
+		log.Printf("update feature flag: %v", err)
+		writeAPIError(writer, request, http.StatusInternalServerError, "internal_error", "Could not update feature flag.")
+		return
+	}
+	writeAPIJSON(writer, http.StatusOK, featureFlagResponseFor(flag))
+	result = "success"
+}
+
+func strictJSONBool(value json.RawMessage) (bool, bool) {
+	switch strings.TrimSpace(string(value)) {
+	case "true":
+		return true, true
+	case "false":
+		return false, true
+	default:
+		return false, false
+	}
+}
+
+func featureFlagResponseFor(flag domain.FeatureFlag) featureFlagResponse {
+	return featureFlagResponse{Name: flag.Name, Enabled: flag.Enabled, UpdatedAt: flag.UpdatedAt, UpdatedBy: flag.UpdatedBy}
+}
+
+func (h *Handler) apiFeatureFlagsMethodNotAllowed(writer http.ResponseWriter, request *http.Request) {
+	h.apiMethodNotAllowedFor(writer, request, http.MethodGet)
+}
+
+func (h *Handler) apiFeatureFlagMethodNotAllowed(writer http.ResponseWriter, request *http.Request) {
+	h.apiMethodNotAllowedFor(writer, request, "GET, PUT")
 }
 
 func (h *Handler) apiRevokeServiceToken(writer http.ResponseWriter, request *http.Request) {
@@ -988,6 +1143,19 @@ func (h *Handler) authenticate(next http.Handler) http.Handler {
 					return
 				}
 			} else {
+				if isFeatureFlagAdminRequest(request) && !identity.User.IsAdmin {
+					if !hasOperation {
+						operation = "request"
+					}
+					observability.Record(request.Context(), observability.Event{
+						Event:      observability.EventPolicy,
+						Operation:  operation,
+						Result:     "denied",
+						DurationMS: time.Since(policyStarted).Milliseconds(),
+					})
+					writePolicyError(writer, request, policy.ErrInsufficientScope)
+					return
+				}
 				if err := policy.Authorize(identity, requiredScope); err != nil {
 					if !hasOperation {
 						operation = "request"
@@ -1053,6 +1221,8 @@ func requiredScopeForRequest(request *http.Request) (string, bool) {
 			return domain.ScopeTokensManage, true
 		case request.Method == http.MethodGet && request.URL.Path == "/api/v1/admin/users":
 			return domain.ScopeUsersRead, true
+		case strings.HasPrefix(request.URL.Path, "/api/v1/admin/flags"):
+			return domain.ScopeUsersRead, true
 		case request.Method == http.MethodGet && request.URL.Path == "/api/v1/feeds":
 			return domain.ScopeFeedsRead, true
 		case request.Method == http.MethodPost && request.URL.Path == "/api/v1/feeds":
@@ -1082,6 +1252,10 @@ func requiredScopeForRequest(request *http.Request) (string, bool) {
 	default:
 		return "", false
 	}
+}
+
+func isFeatureFlagAdminRequest(request *http.Request) bool {
+	return isAPIRequest(request) && strings.HasPrefix(request.URL.Path, "/api/v1/admin/flags")
 }
 
 func writeAPIPolicyError(writer http.ResponseWriter, request *http.Request, err error) {
