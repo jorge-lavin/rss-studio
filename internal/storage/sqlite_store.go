@@ -39,6 +39,8 @@ var (
 	ErrInvalidBrowserSession  = errors.New("invalid browser session")
 	ErrFeatureFlagNotFound    = domain.ErrFeatureFlagNotFound
 	ErrInvalidFeatureFlag     = domain.ErrInvalidFeatureFlag
+	ErrBillingStateNotFound   = domain.ErrBillingStateNotFound
+	ErrInvalidBillingState    = domain.ErrInvalidBillingState
 )
 
 const (
@@ -275,6 +277,99 @@ func (s *SQLiteStore) SetFeatureFlag(name string, enabled bool, updatedBy int64)
 		return domain.FeatureFlag{}, fmt.Errorf("commit feature flag update: %w", err)
 	}
 	return flag, nil
+}
+
+func (s *SQLiteStore) GetBillingState(accountID int64) (domain.BillingState, error) {
+	if accountID <= 0 {
+		return domain.BillingState{}, ErrInvalidBillingState
+	}
+	state, err := scanBillingState(s.db.QueryRow(`
+		SELECT user_id, product_key, status, trial_started_at, trial_ends_at,
+		       current_period_start, current_period_end, provider,
+		       provider_customer_ref, provider_subscription_ref, created_at, updated_at
+		FROM billing_states
+		WHERE user_id = ?`, accountID))
+	if errors.Is(err, sql.ErrNoRows) {
+		return domain.BillingState{}, ErrBillingStateNotFound
+	}
+	if err != nil {
+		return domain.BillingState{}, fmt.Errorf("read billing state: %w", err)
+	}
+	return state, nil
+}
+
+// UpsertBillingState commits one complete account state. Repeating an
+// unchanged upsert preserves its timestamps and row identity.
+func (s *SQLiteStore) UpsertBillingState(state domain.BillingState) (domain.BillingState, error) {
+	if !state.Valid() {
+		return domain.BillingState{}, ErrInvalidBillingState
+	}
+	now := time.Now().UTC()
+	tx, err := s.db.Begin()
+	if err != nil {
+		return domain.BillingState{}, fmt.Errorf("begin billing state upsert: %w", err)
+	}
+	defer tx.Rollback()
+
+	var exists bool
+	if err := tx.QueryRow("SELECT EXISTS(SELECT 1 FROM users WHERE id = ?)", state.AccountID).Scan(&exists); err != nil {
+		return domain.BillingState{}, fmt.Errorf("check billing account: %w", err)
+	}
+	if !exists {
+		return domain.BillingState{}, ErrUserNotFound
+	}
+
+	_, err = tx.Exec(`
+		INSERT INTO billing_states (
+			user_id, product_key, status, trial_started_at, trial_ends_at,
+			current_period_start, current_period_end, provider,
+			provider_customer_ref, provider_subscription_ref, created_at, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(user_id) DO UPDATE SET
+			product_key = excluded.product_key,
+			status = excluded.status,
+			trial_started_at = excluded.trial_started_at,
+			trial_ends_at = excluded.trial_ends_at,
+			current_period_start = excluded.current_period_start,
+			current_period_end = excluded.current_period_end,
+			provider = excluded.provider,
+			provider_customer_ref = excluded.provider_customer_ref,
+			provider_subscription_ref = excluded.provider_subscription_ref,
+			updated_at = CASE
+				WHEN billing_states.product_key = excluded.product_key
+				 AND billing_states.status = excluded.status
+				 AND billing_states.trial_started_at IS excluded.trial_started_at
+				 AND billing_states.trial_ends_at IS excluded.trial_ends_at
+				 AND billing_states.current_period_start IS excluded.current_period_start
+				 AND billing_states.current_period_end IS excluded.current_period_end
+				 AND billing_states.provider = excluded.provider
+				 AND billing_states.provider_customer_ref IS excluded.provider_customer_ref
+				 AND billing_states.provider_subscription_ref IS excluded.provider_subscription_ref
+				THEN billing_states.updated_at
+				ELSE excluded.updated_at
+			END`,
+		state.AccountID, state.ProductKey, state.Status,
+		billingTimeValue(state.TrialStartedAt), billingTimeValue(state.TrialEndsAt),
+		billingTimeValue(state.CurrentPeriodStart), billingTimeValue(state.CurrentPeriodEnd),
+		state.Provider, billingReferenceValue(state.ProviderCustomerRef), billingReferenceValue(state.ProviderSubscriptionRef),
+		now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano))
+	if err != nil {
+		return domain.BillingState{}, fmt.Errorf("upsert billing state: %w", err)
+	}
+
+	stored, err := scanBillingState(tx.QueryRow(`
+		SELECT user_id, product_key, status, trial_started_at, trial_ends_at,
+		       current_period_start, current_period_end, provider,
+		       provider_customer_ref, provider_subscription_ref, created_at, updated_at
+		FROM billing_states
+		WHERE user_id = ?`, state.AccountID))
+	if err != nil {
+		return domain.BillingState{}, fmt.Errorf("read upserted billing state: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return domain.BillingState{}, fmt.Errorf("commit billing state upsert: %w", err)
+	}
+	return stored, nil
 }
 
 func (s *SQLiteStore) CheckRateLimits(operation string, limit int, window time.Duration, buckets []policy.RateLimitBucket, now time.Time) (policy.RateLimitDecision, error) {
@@ -1519,6 +1614,71 @@ func scanFeatureFlag(row rowScanner) (domain.FeatureFlag, error) {
 		flag.UpdatedBy = &updatedBy.Int64
 	}
 	return flag, nil
+}
+
+func scanBillingState(row rowScanner) (domain.BillingState, error) {
+	var state domain.BillingState
+	var status string
+	var trialStartedAt, trialEndsAt, currentPeriodStart, currentPeriodEnd sql.NullString
+	var providerCustomerRef, providerSubscriptionRef sql.NullString
+	var createdAt, updatedAt string
+	if err := row.Scan(
+		&state.AccountID, &state.ProductKey, &status, &trialStartedAt, &trialEndsAt,
+		&currentPeriodStart, &currentPeriodEnd, &state.Provider,
+		&providerCustomerRef, &providerSubscriptionRef, &createdAt, &updatedAt,
+	); err != nil {
+		return domain.BillingState{}, err
+	}
+	state.Status = domain.BillingStatus(status)
+	var err error
+	if state.TrialStartedAt, err = parseBillingTime(trialStartedAt); err != nil {
+		return domain.BillingState{}, fmt.Errorf("parse billing trial start: %w", err)
+	}
+	if state.TrialEndsAt, err = parseBillingTime(trialEndsAt); err != nil {
+		return domain.BillingState{}, fmt.Errorf("parse billing trial end: %w", err)
+	}
+	if state.CurrentPeriodStart, err = parseBillingTime(currentPeriodStart); err != nil {
+		return domain.BillingState{}, fmt.Errorf("parse billing period start: %w", err)
+	}
+	if state.CurrentPeriodEnd, err = parseBillingTime(currentPeriodEnd); err != nil {
+		return domain.BillingState{}, fmt.Errorf("parse billing period end: %w", err)
+	}
+	state.ProviderCustomerRef = providerCustomerRef.String
+	state.ProviderSubscriptionRef = providerSubscriptionRef.String
+	state.CreatedAt, err = time.Parse(time.RFC3339Nano, createdAt)
+	if err != nil {
+		return domain.BillingState{}, fmt.Errorf("parse billing creation time: %w", err)
+	}
+	state.UpdatedAt, err = time.Parse(time.RFC3339Nano, updatedAt)
+	if err != nil {
+		return domain.BillingState{}, fmt.Errorf("parse billing update time: %w", err)
+	}
+	return state, nil
+}
+
+func billingTimeValue(value *time.Time) any {
+	if value == nil {
+		return nil
+	}
+	return value.UTC().Format(time.RFC3339Nano)
+}
+
+func billingReferenceValue(value string) any {
+	if value == "" {
+		return nil
+	}
+	return value
+}
+
+func parseBillingTime(value sql.NullString) (*time.Time, error) {
+	if !value.Valid || value.String == "" {
+		return nil, nil
+	}
+	parsed, err := time.Parse(time.RFC3339Nano, value.String)
+	if err != nil {
+		return nil, err
+	}
+	return &parsed, nil
 }
 
 func boolToSQLiteInt(value bool) int {

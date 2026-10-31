@@ -20,6 +20,13 @@ type FeatureFlagStore interface {
 	SetFeatureFlag(name string, enabled bool, updatedBy int64) (domain.FeatureFlag, error)
 }
 
+// BillingStore persists dormant provider-neutral billing state. It does not
+// decide entitlements or perform provider operations.
+type BillingStore interface {
+	GetBillingState(accountID int64) (domain.BillingState, error)
+	UpsertBillingState(state domain.BillingState) (domain.BillingState, error)
+}
+
 type OperatorFeedStore interface {
 	CreateWithOperator(owner domain.User, name, sourceURL string, operator domain.FilterOperator, keyword string) (domain.Feed, error)
 }
