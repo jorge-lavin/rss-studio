@@ -2,7 +2,8 @@ openapi: 3.1.0
 info:
   title: RSS Studio API
   description: |
-    Versioned management API for tenant-scoped filtered RSS feeds.
+    Versioned management API for tenant-scoped filtered RSS feeds and dormant
+    hosted Stripe Checkout.
 
     Every management operation requires an expiring service token with the
     scope required by that operation. Generated RSS documents are public and
@@ -34,6 +35,7 @@ tags:
   - name: Service tokens
   - name: Administration
   - name: Feeds
+  - name: Billing
 paths:
   /api/v1/auth/login:
     post:
@@ -876,6 +878,83 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorResponse' }
+  /api/v1/billing/checkout:
+    post:
+      tags: [Billing]
+      summary: Create hosted Stripe Checkout session
+      description: Requires authenticated account access with `billing:write`; both `billing.enabled` and `billing.stripe` must be enabled. The provisional hosted listener personal product is the only accepted product.
+      operationId: createBillingCheckout
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CheckoutRequest'
+      responses:
+        '200':
+          description: Hosted Checkout URL. No Stripe session or credential is returned.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CheckoutResponse'
+        '400':
+          description: validation_error or invalid JSON.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '401':
+          description: authentication_required.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '403':
+          description: insufficient_scope; the bearer lacks `billing:write`.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '503':
+          description: Billing flags, configuration, or Stripe API unavailable.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+  /api/v1/billing/webhook/stripe:
+    post:
+      tags: [Billing]
+      summary: Receive verified Stripe webhook
+      description: Public endpoint. Stripe-Signature HMAC, timestamp tolerance, durable event IDs, and event ordering are verified before provider-neutral state changes.
+      operationId: receiveStripeWebhook
+      parameters:
+        - $ref: '#/components/parameters/StripeSignature'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '200':
+          description: Event accepted, already applied, or safely ignored as unsupported.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [received]
+                properties:
+                  received: { type: boolean, const: true }
+        '400':
+          description: Invalid or replayed signature, malformed event, or unsupported required fields.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '503':
+          description: Webhook configuration or billing state storage unavailable.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
 components:
   securitySchemes:
     bearerAuth:
@@ -930,7 +1009,29 @@ components:
       in: header
       description: Seconds before retrying a rate-limited or daily/concurrent-quota request.
       schema: { type: integer, minimum: 1 }
+    StripeSignature:
+      name: Stripe-Signature
+      in: header
+      required: true
+      description: Stripe-signed timestamp and v1 HMAC header. Never log this value.
+      schema: { type: string }
   schemas:
+    CheckoutRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        product_key:
+          type: string
+          enum: [hosted_listener_personal]
+          default: hosted_listener_personal
+    CheckoutResponse:
+      type: object
+      required: [checkout_url]
+      properties:
+        checkout_url:
+          type: string
+          format: uri
+          description: HTTPS URL hosted by Stripe.
     Credentials:
       type: object
       additionalProperties: false
@@ -961,7 +1062,7 @@ components:
           minItems: 1
           items:
             type: string
-            enum: [feeds:read, feeds:preview, feeds:write, feeds:delete, tokens:manage, users:read]
+            enum: [feeds:read, feeds:preview, feeds:write, feeds:delete, tokens:manage, users:read, billing:write]
         expires_in:
           type: integer
           format: int64
@@ -986,7 +1087,7 @@ components:
           type: array
           items:
             type: string
-            enum: [feeds:read, feeds:preview, feeds:write, feeds:delete, tokens:manage, users:read]
+            enum: [feeds:read, feeds:preview, feeds:write, feeds:delete, tokens:manage, users:read, billing:write]
         created_at: { type: string, format: date-time }
         expires_at: { type: string, format: date-time }
         revoked_at:

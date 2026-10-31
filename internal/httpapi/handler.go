@@ -22,12 +22,14 @@ import (
 	"rss-studio/internal/observability"
 	"rss-studio/internal/policy"
 	"rss-studio/internal/storage"
+	"rss-studio/internal/stripe"
 	"rss-studio/internal/version"
 )
 
 type Handler struct {
 	service      *application.Service
 	auth         *Authenticator
+	stripe       *stripe.Service
 	now          func() time.Time
 	loginLimiter *loginRateLimiter
 	apiLimiter   *apiRateLimiter
@@ -191,21 +193,29 @@ const (
 )
 
 func NewHandler(service *application.Service, authenticators ...*Authenticator) http.Handler {
-	return NewHandlerWithClock(service, time.Now, authenticators...)
+	return NewHandlerWithStripe(service, time.Now, nil, authenticators...)
 }
 
 // NewHandlerWithClock builds the HTTP handler with an injectable clock for
 // deterministic rate-limit tests and single-instance policy checks.
 func NewHandlerWithClock(service *application.Service, now func() time.Time, authenticators ...*Authenticator) http.Handler {
+	return NewHandlerWithStripe(service, now, nil, authenticators...)
+}
+
+// NewHandlerWithStripe adds dormant Stripe billing routes without changing
+// existing feed, account, or public-feed routing.
+func NewHandlerWithStripe(service *application.Service, now func() time.Time, stripeService *stripe.Service, authenticators ...*Authenticator) http.Handler {
 	var auth *Authenticator
 	if len(authenticators) > 0 {
 		auth = authenticators[0]
 	}
 	handler := &Handler{
-		service: service, auth: auth, now: now, loginLimiter: newLoginRateLimiterWithClock(now),
+		service: service, auth: auth, stripe: stripeService, now: now, loginLimiter: newLoginRateLimiterWithClock(now),
 		apiLimiter: newAPIRateLimiter(service.RateLimitStore(), now),
 	}
 	mux := http.NewServeMux()
+	mux.HandleFunc("POST /api/v1/billing/webhook/stripe", handler.stripeWebhook)
+	mux.HandleFunc("/api/v1/billing/webhook/stripe", handler.stripeWebhook)
 	mux.HandleFunc("GET /{$}", handler.home)
 	if auth != nil {
 		mux.HandleFunc("GET /auth/sign-in", handler.loginPage)
@@ -232,6 +242,8 @@ func NewHandlerWithClock(service *application.Service, now func() time.Time, aut
 		mux.HandleFunc("/api/v1/admin/flags/{name}", handler.apiFeatureFlagMethodNotAllowed)
 		mux.HandleFunc("/api/v1/auth/login", handler.apiMethodNotAllowed)
 		mux.HandleFunc("/api/v1/auth/register", handler.apiMethodNotAllowed)
+		mux.HandleFunc("POST /api/v1/billing/checkout", handler.apiCreateCheckout)
+		mux.HandleFunc("/api/v1/billing/checkout", handler.apiCheckoutMethodNotAllowed)
 		mux.HandleFunc("GET /api/v1/feeds", handler.apiListFeeds)
 		mux.HandleFunc("POST /api/v1/feeds", handler.apiCreateFeed)
 		mux.HandleFunc("PUT /api/v1/feeds", handler.apiFeedsMethodNotAllowed)
@@ -1217,6 +1229,8 @@ func (h *Handler) authenticate(next http.Handler) http.Handler {
 func requiredScopeForRequest(request *http.Request) (string, bool) {
 	if isAPIRequest(request) {
 		switch {
+		case request.Method == http.MethodPost && request.URL.Path == "/api/v1/billing/checkout":
+			return domain.ScopeBillingWrite, true
 		case strings.HasPrefix(request.URL.Path, "/api/v1/auth/tokens"):
 			return domain.ScopeTokensManage, true
 		case request.Method == http.MethodGet && request.URL.Path == "/api/v1/admin/users":
@@ -1281,6 +1295,9 @@ func acceptsHTML(request *http.Request) bool {
 }
 
 func isPublicRequest(request *http.Request) bool {
+	if request.URL.Path == "/api/v1/billing/webhook/stripe" {
+		return true
+	}
 	if request.Method == http.MethodGet && request.URL.Path == "/assets/rss-studio.css" {
 		return true
 	}
@@ -1792,7 +1809,7 @@ var landingTemplate = template.Must(template.New("landing").Parse(`<!doctype htm
         <h1 id="hero-heading" class="mt-4 max-w-2xl text-3xl font-semibold tracking-tight sm:text-4xl">Follow the episodes you actually want.</h1>
         <p class="mt-5 max-w-2xl text-base leading-7 text-slate-600 dark:text-slate-300">RSS Studio filters podcast episodes by topic, guest, or series names in episode titles, then gives you a feed to subscribe to in any RSS-compatible app.</p>
         <a href="/auth/sign-up" class="mt-7 inline-flex min-h-[46px] items-center justify-center gap-2 rounded-lg bg-violet-600 px-5 py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-violet-700 focus:outline-none focus:ring-4 focus:ring-violet-600/20">Join the beta <span aria-hidden="true">→</span></a>
-        <p class="mt-4 max-w-2xl text-sm text-slate-500 dark:text-slate-400">Pricing under validation: proposed 7-day trial, then a target founder price of $5/month for personal use. No billing or checkout is implemented yet.</p>
+        <p class="mt-4 max-w-2xl text-sm text-slate-500 dark:text-slate-400">Pricing under validation: proposed 7-day trial, then a target founder price of $5/month for personal use. Stripe Checkout remains dormant until both billing rollout flags are enabled.</p>
       </div>
       <div class="rounded-2xl bg-white p-5 shadow-xl shadow-slate-900/5 ring-1 ring-slate-200 dark:bg-slate-900 dark:ring-slate-800 sm:p-8" aria-label="Example title filters">
         <div class="flex items-center justify-between border-b border-slate-100 pb-4 dark:border-slate-800">

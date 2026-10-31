@@ -252,6 +252,20 @@ func (s *Service) FeatureFlagStore() FeatureFlagStore {
 	return store
 }
 
+// BillingStore exposes persisted provider-neutral billing state to billing
+// adapters without making feed use cases depend on a payment provider.
+func (s *Service) BillingStore() BillingStore {
+	store, _ := s.store.(BillingStore)
+	return store
+}
+
+// BillingWebhookStore exposes atomic provider-event application to billing
+// adapters when the backing store supports it.
+func (s *Service) BillingWebhookStore() BillingWebhookStore {
+	store, _ := s.store.(BillingWebhookStore)
+	return store
+}
+
 // QuotaError is safe to expose through an API response: it contains only
 // quota metadata and never request, credential, or source data.
 type QuotaError struct {

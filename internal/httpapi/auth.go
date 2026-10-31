@@ -116,7 +116,7 @@ func (a *Authenticator) IssueToken(username, password string) (string, time.Time
 	// integrations should use separately created, narrowly scoped tokens.
 	scopes := domain.AllServiceTokenScopes()
 	if !user.IsAdmin {
-		scopes = []string{domain.ScopeFeedsRead, domain.ScopeFeedsPreview, domain.ScopeFeedsWrite, domain.ScopeFeedsDelete, domain.ScopeTokensManage}
+		scopes = []string{domain.ScopeFeedsRead, domain.ScopeFeedsPreview, domain.ScopeFeedsWrite, domain.ScopeFeedsDelete, domain.ScopeTokensManage, domain.ScopeBillingWrite}
 	}
 	_, token, err := a.serviceTokens.CreateServiceToken(user, loginServiceTokenName, scopes, expires)
 	if err != nil {

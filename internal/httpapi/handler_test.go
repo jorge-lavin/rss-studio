@@ -547,7 +547,7 @@ func TestPublicLandingPage(t *testing.T) {
 		"Join the beta",
 		"proposed 7-day trial",
 		"$5/month",
-		"No billing or checkout is implemented yet",
+		"Stripe Checkout remains dormant until both billing rollout flags are enabled",
 		"description filtering",
 		"dark:bg-violet-950",
 		`href="/auth/sign-up"`,

@@ -43,7 +43,7 @@ If an older deployment has `/data/feeds.json` and an existing account, startup
 imports its feeds into the first account and removes the legacy file after a
 successful import.
 
-The service-token, idempotency, rate-limit, and quota migrations are additive and run
+The service-token, idempotency, rate-limit, quota, and billing webhook migrations are additive and run
 in one transaction each at startup. There is no destructive down migration: older
 binaries reject databases at the newer schema version, so rolling back after
 this release requires restoring a pre-migration database backup or deploying a
@@ -122,6 +122,8 @@ rejected. API errors never redirect to the browser UI.
 | `POST /api/v1/auth/tokens` | Create service token | Service token with `tokens:manage` |
 | `POST /api/v1/auth/tokens/{id}/revoke` | Revoke service token | Service token with `tokens:manage` |
 | `DELETE /api/v1/auth/tokens/{id}` | Revoke service token alias | Service token with `tokens:manage` |
+| `POST /api/v1/billing/checkout` | Create hosted Checkout session for provisional hosted listener personal product | Authenticated account with `billing:write`; both billing flags enabled |
+| `POST /api/v1/billing/webhook/stripe` | Receive verified Stripe subscription events | Public route; valid `Stripe-Signature` required |
 | `GET /api/v1/admin/users` | List current users | Service token with `users:read` |
 | `GET /api/v1/admin/flags` | List persisted rollout flags | Administrator with `users:read` |
 | `GET /api/v1/admin/flags/{name}` | Read one persisted rollout flag | Administrator with `users:read` |
@@ -174,7 +176,7 @@ curl -fsS "$BASE_URL/api/v1/auth/tokens" -H "Authorization: Bearer $token" | jq
 ```
 
 Supported scopes are `feeds:read`, `feeds:preview`, `feeds:write`,
-`feeds:delete`, `tokens:manage`, and `users:read`. Duplicate scopes are removed
+`feeds:delete`, `tokens:manage`, `users:read`, and `billing:write`. Duplicate scopes are removed
 and returned in canonical order. Only the first account can delegate
 `users:read` to another service token.
 The raw `token` value is returned only by creation; save it in a secret store,
@@ -182,6 +184,21 @@ never put it in source control, URLs, logs, or support tickets. Listing tokens
 returns `id`, `name`, `scopes`, `created_at`, `expires_at`, and optional
 `revoked_at`, never the raw token. `DELETE /api/v1/auth/tokens/{id}` is an
 alias for the revoke POST.
+
+### Dormant Stripe Checkout
+
+Stripe Checkout is dormant until both `billing.enabled` and `billing.stripe` are
+enabled. The checkout endpoint accepts an optional JSON `product_key`; omitted
+or empty selects `hosted_listener_personal`. Successful responses contain only
+`checkout_url`. Stripe subscription metadata carries opaque account and product
+references; webhook events update provider-neutral billing state without
+enforcing entitlements.
+
+Configure Stripe at runtime with `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`,
+`STRIPE_PRICE_ID`, `STRIPE_SUCCESS_URL`, and `STRIPE_CANCEL_URL`. Do not commit,
+log, or expose their values. Stripe sends signed events to the public webhook
+route; signatures use the standard timestamp tolerance and durable event IDs
+prevent duplicate or out-of-order state changes.
 
 ### Feed request and response shapes
 

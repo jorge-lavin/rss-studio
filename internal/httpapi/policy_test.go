@@ -170,3 +170,18 @@ func TestPolicyFailureDoesNotExposeTokenInRequestPathOrBody(t *testing.T) {
 		t.Fatalf("unsafe policy failure: status=%d body=%s", status, body)
 	}
 }
+
+func TestBillingCheckoutRequiresBillingWriteScope(t *testing.T) {
+	server, store := newAuthenticatedServer(t)
+	readToken := serviceTokenForScopes(t, store, []string{domain.ScopeFeedsRead})
+	status, _, body := doScopedAPIRequest(t, server.URL, http.MethodPost, "/api/v1/billing/checkout", readToken, `{}`)
+	if status != http.StatusForbidden || !strings.Contains(string(body), `"insufficient_scope"`) {
+		t.Fatalf("billing checkout without scope returned %d: %s", status, body)
+	}
+
+	billingToken := serviceTokenForScopes(t, store, []string{domain.ScopeBillingWrite})
+	status, _, body = doScopedAPIRequest(t, server.URL, http.MethodPost, "/api/v1/billing/checkout", billingToken, `{}`)
+	if status != http.StatusServiceUnavailable || !strings.Contains(string(body), `"billing_unavailable"`) {
+		t.Fatalf("billing checkout with scope did not reach dormant handler: %d: %s", status, body)
+	}
+}

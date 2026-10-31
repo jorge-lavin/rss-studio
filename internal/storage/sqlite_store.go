@@ -310,6 +310,84 @@ func (s *SQLiteStore) UpsertBillingState(state domain.BillingState) (domain.Bill
 		return domain.BillingState{}, fmt.Errorf("begin billing state upsert: %w", err)
 	}
 	defer tx.Rollback()
+	stored, err := upsertBillingStateTx(tx, state, now)
+	if err != nil {
+		return domain.BillingState{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return domain.BillingState{}, fmt.Errorf("commit billing state upsert: %w", err)
+	}
+	return stored, nil
+}
+
+// ApplyBillingWebhook atomically records one provider event and applies its
+// state only when it is newer than the last applied event for that account.
+func (s *SQLiteStore) ApplyBillingWebhook(provider, eventID string, eventCreatedAt time.Time, state domain.BillingState) (bool, error) {
+	provider = strings.TrimSpace(provider)
+	eventID = strings.TrimSpace(eventID)
+	eventCreatedAt = eventCreatedAt.UTC()
+	if provider == "" || len(provider) > 100 || eventID == "" || len(eventID) > 255 || eventCreatedAt.IsZero() || !state.Valid() {
+		return false, ErrInvalidBillingState
+	}
+	now := time.Now().UTC()
+	tx, err := s.db.Begin()
+	if err != nil {
+		return false, fmt.Errorf("begin billing webhook: %w", err)
+	}
+	defer tx.Rollback()
+
+	var latestEvent sql.NullString
+	err = tx.QueryRow(`
+		SELECT event_created_at
+		FROM billing_webhook_events
+		WHERE provider = ? AND account_id = ?
+		ORDER BY event_created_at DESC
+		LIMIT 1`, provider, state.AccountID).Scan(&latestEvent)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return false, fmt.Errorf("read latest billing webhook: %w", err)
+	}
+	result, err := tx.Exec(`
+		INSERT INTO billing_webhook_events (provider, event_id, account_id, event_created_at, received_at)
+		VALUES (?, ?, ?, ?, ?)
+		ON CONFLICT(provider, event_id) DO NOTHING`,
+		provider, eventID, state.AccountID, eventCreatedAt.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano))
+	if err != nil {
+		return false, fmt.Errorf("record billing webhook: %w", err)
+	}
+	inserted, err := result.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("check billing webhook: %w", err)
+	}
+	if inserted == 0 {
+		if err := tx.Commit(); err != nil {
+			return false, fmt.Errorf("commit duplicate billing webhook: %w", err)
+		}
+		return false, nil
+	}
+	if latestEvent.Valid && latestEvent.String != "" {
+		latest, parseErr := time.Parse(time.RFC3339Nano, latestEvent.String)
+		if parseErr != nil {
+			return false, fmt.Errorf("parse latest billing webhook: %w", parseErr)
+		}
+		if !eventCreatedAt.After(latest) {
+			if err := tx.Commit(); err != nil {
+				return false, fmt.Errorf("commit old billing webhook: %w", err)
+			}
+			return false, nil
+		}
+	}
+
+	state.Provider = provider
+	if _, err := upsertBillingStateTx(tx, state, now); err != nil {
+		return false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return false, fmt.Errorf("commit billing webhook: %w", err)
+	}
+	return true, nil
+}
+
+func upsertBillingStateTx(tx *sql.Tx, state domain.BillingState, now time.Time) (domain.BillingState, error) {
 
 	var exists bool
 	if err := tx.QueryRow("SELECT EXISTS(SELECT 1 FROM users WHERE id = ?)", state.AccountID).Scan(&exists); err != nil {
@@ -319,7 +397,7 @@ func (s *SQLiteStore) UpsertBillingState(state domain.BillingState) (domain.Bill
 		return domain.BillingState{}, ErrUserNotFound
 	}
 
-	_, err = tx.Exec(`
+	_, err := tx.Exec(`
 		INSERT INTO billing_states (
 			user_id, product_key, status, trial_started_at, trial_ends_at,
 			current_period_start, current_period_end, provider,
@@ -365,9 +443,6 @@ func (s *SQLiteStore) UpsertBillingState(state domain.BillingState) (domain.Bill
 		WHERE user_id = ?`, state.AccountID))
 	if err != nil {
 		return domain.BillingState{}, fmt.Errorf("read upserted billing state: %w", err)
-	}
-	if err := tx.Commit(); err != nil {
-		return domain.BillingState{}, fmt.Errorf("commit billing state upsert: %w", err)
 	}
 	return stored, nil
 }

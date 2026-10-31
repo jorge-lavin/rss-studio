@@ -20,6 +20,7 @@ import (
 	"rss-studio/internal/rss"
 	"rss-studio/internal/source"
 	"rss-studio/internal/storage"
+	"rss-studio/internal/stripe"
 )
 
 const (
@@ -83,6 +84,7 @@ func main() {
 		rss.FilterWithConditions,
 		quotas,
 	)
+	stripeService := stripe.New(stripe.ConfigFromEnv(), service.FeatureFlagStore(), service.BillingWebhookStore())
 	mux := http.NewServeMux()
 	mcpEnabled, err := mcpEnabledFromEnv()
 	if err != nil {
@@ -93,7 +95,7 @@ func main() {
 	} else {
 		mux.HandleFunc("/mcp", http.NotFound)
 	}
-	mux.Handle("/", httpapi.NewHandler(service, auth))
+	mux.Handle("/", httpapi.NewHandlerWithStripe(service, time.Now, stripeService, auth))
 	server := newHTTPServer(address, mux)
 
 	log.Printf("RSS Studio listening on %s", address)

@@ -27,6 +27,12 @@ type BillingStore interface {
 	UpsertBillingState(state domain.BillingState) (domain.BillingState, error)
 }
 
+// BillingWebhookStore atomically deduplicates and applies one provider event.
+// Implementations must ignore an already-applied or older event.
+type BillingWebhookStore interface {
+	ApplyBillingWebhook(provider, eventID string, eventCreatedAt time.Time, state domain.BillingState) (bool, error)
+}
+
 type OperatorFeedStore interface {
 	CreateWithOperator(owner domain.User, name, sourceURL string, operator domain.FilterOperator, keyword string) (domain.Feed, error)
 }

@@ -27,8 +27,8 @@ func TestSQLiteStoreMigratesAndPersistsMultipleUsers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if version != 12 {
-		t.Fatalf("expected schema version 12, got %d", version)
+	if version != 13 {
+		t.Fatalf("expected schema version 13, got %d", version)
 	}
 	if err := store.Migrate(); err != nil {
 		t.Fatalf("rerunning migrations: %v", err)
@@ -132,8 +132,8 @@ func TestSQLiteStoreFeatureFlagMigrationPreservesExistingRows(t *testing.T) {
 	if !preserved.Enabled || preserved.UpdatedBy == nil || *preserved.UpdatedBy != 42 || !preserved.UpdatedAt.Equal(updated.UpdatedAt) {
 		t.Fatalf("feature flag row was changed by migration: before=%#v after=%#v", updated, preserved)
 	}
-	if version, err := store.SchemaVersion(); err != nil || version != 12 {
-		t.Fatalf("expected schema version 12 after migration replay, got %d (err=%v)", version, err)
+	if version, err := store.SchemaVersion(); err != nil || version != 13 {
+		t.Fatalf("expected schema version 13 after migration replay, got %d (err=%v)", version, err)
 	}
 }
 
@@ -619,7 +619,7 @@ func TestSQLiteStoreUpgradePreservesUsersAndFeeds(t *testing.T) {
 	}
 	defer upgraded.Close()
 	version, err := upgraded.SchemaVersion()
-	if err != nil || version != 12 {
+	if err != nil || version != 13 {
 		t.Fatalf("unexpected upgraded schema version: version=%d err=%v", version, err)
 	}
 	if _, err := upgraded.Authenticate("alice", "password-1234"); err != nil {
