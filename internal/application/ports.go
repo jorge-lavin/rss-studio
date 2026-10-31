@@ -14,6 +14,12 @@ type FeedStore interface {
 	Delete(owner domain.User, path string) error
 }
 
+type FeatureFlagStore interface {
+	ListFeatureFlags() ([]domain.FeatureFlag, error)
+	GetFeatureFlag(name string) (domain.FeatureFlag, error)
+	SetFeatureFlag(name string, enabled bool, updatedBy int64) (domain.FeatureFlag, error)
+}
+
 type OperatorFeedStore interface {
 	CreateWithOperator(owner domain.User, name, sourceURL string, operator domain.FilterOperator, keyword string) (domain.Feed, error)
 }

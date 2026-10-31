@@ -27,8 +27,8 @@ func TestSQLiteStoreMigratesAndPersistsMultipleUsers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if version != 10 {
-		t.Fatalf("expected schema version 10, got %d", version)
+	if version != 11 {
+		t.Fatalf("expected schema version 11, got %d", version)
 	}
 	if err := store.Migrate(); err != nil {
 		t.Fatalf("rerunning migrations: %v", err)
@@ -80,6 +80,129 @@ func TestSQLiteStoreMigratesAndPersistsMultipleUsers(t *testing.T) {
 	}
 	if _, err := second.Authenticate("reader", "reader password"); err != nil {
 		t.Fatalf("second persisted user rejected: %v", err)
+	}
+}
+
+func TestSQLiteStoreMigratesDisabledFeatureFlags(t *testing.T) {
+	store, err := NewSQLiteStore(filepath.Join(t.TempDir(), "rss-studio.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	flags, err := store.ListFeatureFlags()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(flags) != len(domain.KnownFeatureFlags()) {
+		t.Fatalf("expected %d feature flags, got %d", len(domain.KnownFeatureFlags()), len(flags))
+	}
+	for _, flag := range flags {
+		if !domain.IsKnownFeatureFlag(flag.Name) || flag.Enabled {
+			t.Fatalf("expected known disabled feature flag, got %#v", flag)
+		}
+		if flag.UpdatedAt.IsZero() || flag.UpdatedBy != nil {
+			t.Fatalf("expected migration metadata for disabled flag, got %#v", flag)
+		}
+	}
+}
+
+func TestSQLiteStoreFeatureFlagMigrationPreservesExistingRows(t *testing.T) {
+	store, err := NewSQLiteStore(filepath.Join(t.TempDir(), "rss-studio.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	updated, err := store.SetFeatureFlag(domain.FeatureFlagBillingEnabled, true, 42)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.Exec("DELETE FROM schema_migrations WHERE version = ?", 11); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Migrate(); err != nil {
+		t.Fatalf("reapply feature flag migration: %v", err)
+	}
+
+	preserved, err := store.GetFeatureFlag(domain.FeatureFlagBillingEnabled)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !preserved.Enabled || preserved.UpdatedBy == nil || *preserved.UpdatedBy != 42 || !preserved.UpdatedAt.Equal(updated.UpdatedAt) {
+		t.Fatalf("feature flag row was changed by migration: before=%#v after=%#v", updated, preserved)
+	}
+	if version, err := store.SchemaVersion(); err != nil || version != 11 {
+		t.Fatalf("expected schema version 11 after migration replay, got %d (err=%v)", version, err)
+	}
+}
+
+func TestSQLiteStoreFeatureFlagsPersistAndSetIdempotently(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "rss-studio.db")
+	store, err := NewSQLiteStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	first, err := store.SetFeatureFlag(domain.FeatureFlagBillingStripe, true, 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Name != domain.FeatureFlagBillingStripe || !first.Enabled || first.UpdatedBy == nil || *first.UpdatedBy != 7 {
+		t.Fatalf("unexpected set feature flag result: %#v", first)
+	}
+	read, err := store.GetFeatureFlag(domain.FeatureFlagBillingStripe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !read.Enabled || read.UpdatedBy == nil || *read.UpdatedBy != 7 {
+		t.Fatalf("unexpected immediately read feature flag: %#v", read)
+	}
+
+	second, err := store.SetFeatureFlag(domain.FeatureFlagBillingStripe, true, 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !second.Enabled || second.UpdatedBy == nil || *second.UpdatedBy != 7 {
+		t.Fatalf("unexpected repeated set feature flag result: %#v", second)
+	}
+	var count int
+	if err := store.db.QueryRow("SELECT COUNT(*) FROM feature_flags WHERE name = ?", domain.FeatureFlagBillingStripe).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("expected one persisted row after repeated set, got %d", count)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, err := NewSQLiteStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	persisted, err := reopened.GetFeatureFlag(domain.FeatureFlagBillingStripe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !persisted.Enabled || persisted.UpdatedBy == nil || *persisted.UpdatedBy != 7 {
+		t.Fatalf("feature flag did not persist across reopen: %#v", persisted)
+	}
+}
+
+func TestSQLiteStoreRejectsUnknownFeatureFlags(t *testing.T) {
+	store, err := NewSQLiteStore(filepath.Join(t.TempDir(), "rss-studio.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	if _, err := store.GetFeatureFlag("billing.unknown"); !errors.Is(err, ErrFeatureFlagNotFound) {
+		t.Fatalf("expected unknown feature flag read to fail, got %v", err)
+	}
+	if _, err := store.SetFeatureFlag("billing.unknown", true, 1); !errors.Is(err, ErrInvalidFeatureFlag) {
+		t.Fatalf("expected unknown feature flag update to fail, got %v", err)
 	}
 }
 
@@ -496,7 +619,7 @@ func TestSQLiteStoreUpgradePreservesUsersAndFeeds(t *testing.T) {
 	}
 	defer upgraded.Close()
 	version, err := upgraded.SchemaVersion()
-	if err != nil || version != 10 {
+	if err != nil || version != 11 {
 		t.Fatalf("unexpected upgraded schema version: version=%d err=%v", version, err)
 	}
 	if _, err := upgraded.Authenticate("alice", "password-1234"); err != nil {

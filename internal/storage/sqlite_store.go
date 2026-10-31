@@ -37,6 +37,8 @@ var (
 	ErrInvalidServiceToken    = domain.ErrInvalidServiceToken
 	ErrBrowserSessionNotFound = errors.New("browser session not found")
 	ErrInvalidBrowserSession  = errors.New("invalid browser session")
+	ErrFeatureFlagNotFound    = domain.ErrFeatureFlagNotFound
+	ErrInvalidFeatureFlag     = domain.ErrInvalidFeatureFlag
 )
 
 const (
@@ -184,6 +186,95 @@ func (s *SQLiteStore) SchemaVersion() (int, error) {
 		return 0, fmt.Errorf("read schema version: %w", err)
 	}
 	return version, nil
+}
+
+func (s *SQLiteStore) ListFeatureFlags() ([]domain.FeatureFlag, error) {
+	rows, err := s.db.Query(`
+		SELECT name, enabled, updated_at, updated_by
+		FROM feature_flags
+		WHERE name IN (?, ?, ?, ?)
+		ORDER BY name`,
+		domain.FeatureFlagBillingEnabled,
+		domain.FeatureFlagBillingStripe,
+		domain.FeatureFlagBillingBitcoin,
+		domain.FeatureFlagBillingEnforcement,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list feature flags: %w", err)
+	}
+	defer rows.Close()
+
+	flags := make([]domain.FeatureFlag, 0, len(domain.KnownFeatureFlags()))
+	for rows.Next() {
+		flag, err := scanFeatureFlag(rows)
+		if err != nil {
+			return nil, fmt.Errorf("read feature flag: %w", err)
+		}
+		flags = append(flags, flag)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate feature flags: %w", err)
+	}
+	return flags, nil
+}
+
+func (s *SQLiteStore) GetFeatureFlag(name string) (domain.FeatureFlag, error) {
+	if !domain.IsKnownFeatureFlag(name) {
+		return domain.FeatureFlag{}, ErrFeatureFlagNotFound
+	}
+	flag, err := scanFeatureFlag(s.db.QueryRow(
+		"SELECT name, enabled, updated_at, updated_by FROM feature_flags WHERE name = ?",
+		name,
+	))
+	if errors.Is(err, sql.ErrNoRows) {
+		return domain.FeatureFlag{}, ErrFeatureFlagNotFound
+	}
+	if err != nil {
+		return domain.FeatureFlag{}, fmt.Errorf("read feature flag: %w", err)
+	}
+	return flag, nil
+}
+
+func (s *SQLiteStore) SetFeatureFlag(name string, enabled bool, updatedBy int64) (domain.FeatureFlag, error) {
+	if !domain.IsKnownFeatureFlag(name) || updatedBy < 0 {
+		return domain.FeatureFlag{}, ErrInvalidFeatureFlag
+	}
+
+	now := time.Now().UTC()
+	var updatedByValue any
+	if updatedBy > 0 {
+		updatedByValue = updatedBy
+	}
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return domain.FeatureFlag{}, fmt.Errorf("begin feature flag update: %w", err)
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.Exec(`
+		INSERT INTO feature_flags (name, enabled, updated_at, updated_by)
+		VALUES (?, ?, ?, ?)
+		ON CONFLICT(name) DO UPDATE SET
+			enabled = excluded.enabled,
+			updated_at = excluded.updated_at,
+			updated_by = excluded.updated_by`,
+		name, boolToSQLiteInt(enabled), now.Format(time.RFC3339Nano), updatedByValue,
+	); err != nil {
+		return domain.FeatureFlag{}, fmt.Errorf("set feature flag: %w", err)
+	}
+
+	flag, err := scanFeatureFlag(tx.QueryRow(
+		"SELECT name, enabled, updated_at, updated_by FROM feature_flags WHERE name = ?",
+		name,
+	))
+	if err != nil {
+		return domain.FeatureFlag{}, fmt.Errorf("read set feature flag: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return domain.FeatureFlag{}, fmt.Errorf("commit feature flag update: %w", err)
+	}
+	return flag, nil
 }
 
 func (s *SQLiteStore) CheckRateLimits(operation string, limit int, window time.Duration, buckets []policy.RateLimitBucket, now time.Time) (policy.RateLimitDecision, error) {
@@ -1405,6 +1496,36 @@ func scanFeed(row rowScanner) (domain.Feed, error) {
 		return domain.Feed{}, fmt.Errorf("parse feed creation time: %w", err)
 	}
 	return feed, nil
+}
+
+func scanFeatureFlag(row rowScanner) (domain.FeatureFlag, error) {
+	var flag domain.FeatureFlag
+	var enabled int
+	var updatedAt string
+	var updatedBy sql.NullInt64
+	if err := row.Scan(&flag.Name, &enabled, &updatedAt, &updatedBy); err != nil {
+		return domain.FeatureFlag{}, err
+	}
+	if enabled != 0 && enabled != 1 {
+		return domain.FeatureFlag{}, errors.New("invalid feature flag enabled value")
+	}
+	var err error
+	flag.UpdatedAt, err = time.Parse(time.RFC3339Nano, updatedAt)
+	if err != nil {
+		return domain.FeatureFlag{}, fmt.Errorf("parse feature flag update time: %w", err)
+	}
+	flag.Enabled = enabled == 1
+	if updatedBy.Valid {
+		flag.UpdatedBy = &updatedBy.Int64
+	}
+	return flag, nil
+}
+
+func boolToSQLiteInt(value bool) int {
+	if value {
+		return 1
+	}
+	return 0
 }
 
 func loadMigrations() ([]migration, error) {
